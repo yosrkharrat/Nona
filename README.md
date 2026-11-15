@@ -18,7 +18,8 @@ Nona **reduces exposure**. It does not guarantee anonymity. Its leak rate will b
 2. [API & interfaces](docs/design/02-api.md): the OpenAI-compatible proxy, inspection API, library, CLI, config
 3. [High-level design](docs/design/03-architecture.md): components, request lifecycle, state, stack
 4. [Deep dives](docs/design/04-deep-dives.md): multilingual detection, entity linking, streaming restoration, tool calls, benchmark method
-5. Decisions: [ADR-0001 placeholder format](docs/adr/0001-placeholder-format.md) · [ADR-0002 stateless by default](docs/adr/0002-stateless-by-default.md) · [ADR-0003 fail closed](docs/adr/0003-fail-closed.md) · [ADR-0004 causal entity linking](docs/adr/0004-causal-entity-linking.md)
+5. [Benchmark dataset](docs/design/05-dataset.md): schema, labelling guidelines, synthetic value rules, how leaks are counted
+6. Decisions: [ADR-0001 placeholder format](docs/adr/0001-placeholder-format.md) · [ADR-0002 stateless by default](docs/adr/0002-stateless-by-default.md) · [ADR-0003 fail closed](docs/adr/0003-fail-closed.md) · [ADR-0004 causal entity linking](docs/adr/0004-causal-entity-linking.md)
 
 ## Roadmap
 - [x] **M0**: repo skeleton, CI (ruff, pyright, pytest), core types
