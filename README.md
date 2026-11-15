@@ -21,12 +21,27 @@ Nona **reduces exposure**. It does not guarantee anonymity. Its leak rate will b
 5. Decisions: [ADR-0001 placeholder format](docs/adr/0001-placeholder-format.md) · [ADR-0002 stateless by default](docs/adr/0002-stateless-by-default.md) · [ADR-0003 fail closed](docs/adr/0003-fail-closed.md) · [ADR-0004 causal entity linking](docs/adr/0004-causal-entity-linking.md)
 
 ## Roadmap
-- [ ] **M0**: repo skeleton, CI (ruff, pyright, pytest), 1 week
+- [x] **M0**: repo skeleton, CI (ruff, pyright, pytest), core types
 - [ ] **M1**: `core/` library: structured recognizers, GLiNER, linker, placeholders, restore, property tests
 - [ ] **M2**: synthetic dataset v0 (300+ msgs, frozen test split) and leak-rate script
 - [ ] **M3**: proxy, first non-streaming, then streaming
 - [ ] **M4**: Presidio and LLM Guard baselines, results table, demo GIF → **v0.1 release**
 - [ ] **M5**: Docker, tool calls, stateful sessions, ONNX, TypeScript client, MCP
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/). Python 3.11+.
+
+```bash
+uv sync                      # create .venv with dev tools
+uv run pytest --cov          # tests (unit + property-based)
+uv run ruff format . && uv run ruff check .
+uv run pyright               # strict on src/nona/core
+uv run nona --version
+```
+
+CI runs the same checks on Python 3.11, 3.12 and 3.13. `nona.core` must stay free of network and process I/O,
+which `tests/test_architecture.py` enforces.
 
 ## Data policy
 All test and benchmark data is synthetic and generated for this repository. No real or client data, not even anonymized.
