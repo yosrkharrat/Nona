@@ -249,7 +249,7 @@ wheels = [
 ]
 
 [[package]]
-name = "nona"
+name = "nona-proxy"
 version = "0.0.1"
 source = { editable = "." }
 

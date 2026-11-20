@@ -1,5 +1,6 @@
 [project]
-name = "nona"
+# Distribution name on PyPI. `nona` is taken (build plan Q1); the import name and the command stay `nona`.
+name = "nona-proxy"
 version = "0.0.1"
 description = "Local proxy that pseudonymizes personal data before it reaches an LLM, and restores it in the answer."
 readme = "README.md"
