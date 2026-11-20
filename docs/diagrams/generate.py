@@ -103,11 +103,12 @@ class Scene:
 
 
 # ───────────────────────── 1. architecture (container view) ─────────────────────────
+ORANGE = "#f08c00"
 s = Scene()
-s.text("title", 40, 28, "Nona: container view (v0.1)", 28, bold=True)
-s.text("sub", 40, 70, "one local process · anonymize on the way out · restore on the way back · nothing stored after the response", 15, GRAY)
+s.text("title", 40, 28, "Nona: container view (v0.1, with optional pieces)", 28, bold=True)
+s.text("sub", 40, 70, "one local process · anonymize on the way out · restore on the way back · stateless by default · dashed = optional", 15, GRAY)
 
-s.box("trust", 40, 120, 1300, 760, "TRUSTED ZONE: your machine / VPC (real data allowed here)", 14, GRAY, dash=True, label_top=True, color=GRAY)
+s.box("trust", 40, 120, 1300, 920, "TRUSTED ZONE: your machine / VPC (real data allowed here)", 14, GRAY, dash=True, label_top=True, color=GRAY)
 
 # client
 s.box("client", 70, 400, 210, 110, "client app\n(OpenAI SDK)\nbase_url → :8787", 15, bg=LIGHT)
@@ -137,9 +138,13 @@ s.box("d_cache", 680, 458, 168, 68, "detection cache\nLRU+TTL, RAM\nspans only",
 s.arrow("a_detect_dets", [(810, 315), (810, 350)], "detect", "dets", both=True)
 
 # mapping (the sensitive state)
-s.box("map", 886, 365, 244, 150, "MAPPING (per request)\nPERSON_1 ↔ Ahmed Ben Salem\nPHONE_1  ↔ +216 22 123 456\n\nRAM only · dropped after\nthe response (ADR-0002)", 12, "#f08c00", bg=YELLOW)
-s.arrow("a_pseudo_map", [(1074, 315), (1074, 365)], "pseudo", "map")
-s.text("t_write", 1080, 330, "write", 12, GRAY)
+s.box("map", 886, 340, 244, 120, "MAPPING (per request)\nPERSON_1 ↔ Ahmed Ben Salem\nPHONE_1  ↔ +216 22 123 456\nstateless: dropped after\nthe response (ADR-0002)", 12, ORANGE, bg=YELLOW)
+s.arrow("a_pseudo_map", [(1074, 315), (1074, 340)], "pseudo", "map")
+s.text("t_write", 1082, 319, "write", 12, GRAY)
+
+# session store: stateful mode only (v0.2)
+s.box("sess", 960, 500, 170, 105, "SessionStore (v0.2)\nADR-0006 · only with\nX-Nona-Session\nmemory | Redis/Valkey\nAES-256-GCM · TTL", 12, ORANGE, bg=YELLOW, dash=True)
+s.arrow("a_map_sess", [(1045, 460), (1045, 500)], "map", "sess", GRAY, dash=True, both=True)
 
 # upstream client
 s.box("up", 1160, 230, 130, 470, "upstream\nclient\n\nhttpx async\npooled\nSSE stream", 13, bg=LIGHT)
@@ -151,17 +156,25 @@ s.box("restore", 490, 620, 640, 80,
       "restore: streaming state machine\nholds back ≤16 chars that could start a placeholder\nswaps only placeholders issued in this request · JSON-escapes tool_call args", 12, bg=GREEN)
 s.arrow("a_up_restore", [(1160, 660), (1130, 660)], "up", "restore")
 s.arrow("a_restore_api", [(490, 660), (470, 660)], "restore", "api")
-s.arrow("a_map_restore", [(1010, 515), (1010, 620)], "map", "restore")
-s.text("t_read", 1016, 560, "read", 12, GRAY)
+s.arrow("a_map_restore", [(920, 460), (920, 620)], "map", "restore")
+s.text("t_read", 926, 548, "read", 12, GRAY)
 
 # client <-> api
 s.arrow("a_client_api", [(280, 430), (330, 430)], "client", "api")
 s.arrow("a_api_client", [(330, 480), (280, 480)], "api", "client")
 s.text("t_real", 70, 360, "→ real data in\n← restored answer out", 13)
 
-# side notes inside process
-s.box("fail", 330, 725, 500, 115, "FAIL CLOSED (ADR-0003)\ndetector error or timeout → HTTP 503\nnona_detector_unavailable\nnothing is forwarded upstream", 13, RED, color=RED)
-s.box("side", 850, 725, 440, 115, "side channels\nconfig: nona.yaml (policies, allow/deny)\nlogs + /metrics: counts & timings only,\nnever bodies (FR-19 CI grep test)", 13, GRAY, color=INK)
+# bottom row inside the process
+s.box("fail", 330, 725, 350, 115, "FAIL CLOSED (ADR-0003)\ndetector error or timeout → 503\nnona_detector_unavailable\nnothing is forwarded upstream", 13, RED, color=RED)
+s.box("telem", 700, 725, 430, 115, "telemetry (ADR-0005)\nOTel span per stage · Prometheus /metrics\nstructlog JSON logs with trace_id\nallowlisted fields only, never bodies\n(FR-19 CI test greps logs, spans, labels)", 13, GRAY, color=INK)
+s.box("config", 1160, 725, 130, 115, "config\nnona.yaml\npolicies\nallow/deny", 12, GRAY, color=INK)
+
+# optional services, still inside the trusted zone
+s.text("opt_n", 330, 915, "optional services stay in the trusted\nzone and never receive plaintext PII:\ntelemetry is PII-free by construction,\nRedis only ever sees ciphertext", 13, GRAY)
+s.box("obs", 700, 905, 310, 110, "observability backend (optional)\nPrometheus pulls /metrics\nOTLP → collector → Tempo · Grafana\ntrace export OFF by default (NFR-3)", 12, GRAY, dash=True, color=INK)
+s.arrow("a_telem_obs", [(855, 840), (855, 905)], "telem", "obs", GRAY, dash=True)
+s.box("redis", 1040, 905, 250, 110, "Redis / Valkey (optional, v0.2)\nshared by replicas\nkey: HMAC(session id)\nvalue: AES-256-GCM · TTL", 12, ORANGE, bg=YELLOW, dash=True)
+s.arrow("a_sess_redis", [(1130, 555), (1145, 555), (1145, 905)], "sess", "redis", GRAY, dash=True, both=True)
 
 # outside: upstream LLM
 s.box("llm", 1480, 400, 220, 110, "upstream LLM\nOpenAI · OpenRouter\nOllama", 15, bg=LIGHT)
@@ -171,7 +184,7 @@ s.arrow("a_llm_up", [(1480, 480), (1290, 480)], "llm", "up")
 s.text("t_out", 1352, 398, "placeholders\nonly", 12)
 s.text("t_in", 1352, 488, "PERSON_1\nin deltas", 12)
 s.text("leak", 1360, 545, "◆ LEAK RATE is measured on\n  this outbound wire: what\n  actually leaves, not what\n  the detector thinks it caught", 13, RED, bold=True)
-s.save("nona-architecture", 1740, 910)
+s.save("nona-architecture", 1740, 1070)
 
 # ───────────────────────── 2. benchmark harness ─────────────────────────
 b = Scene()
@@ -204,4 +217,37 @@ b.box("report", 1450, 200, 230, 190, "report.py\n\nresults table →\nREADME\n\n
 b.arrow("a_m_rep", [(1370, 295), (1450, 295)], "metrics", "report")
 b.text("rule", 1070, 560, "rule: no headline number in the README before\none clean run on the frozen test split (NFR-11)", 13, RED, bold=True)
 b.save("nona-benchmark", 1720, 620)
+
+# ───────────────────────── 3. release & deployment ─────────────────────────
+d = Scene()
+d.text("title", 40, 28, "Nona: release & deployment (ADR-0007)", 28, bold=True)
+d.text("sub", 40, 70, "built only in CI · signed and attested · you verify before you run it", 15, GRAY)
+
+d.box("tag", 40, 150, 240, 120, "release-please PR\nversion + CHANGELOG\nfrom Conventional\nCommits · merge → tag", 13, bg=LIGHT)
+d.box("ci", 340, 150, 340, 210, "GitHub Actions: release job\n\nactions pinned by commit SHA\nno caches (ultralytics lesson)\nshort-lived OIDC tokens,\nno stored secrets\nonly this job may publish", 13, bg=BLUE)
+d.arrow("a_tag_ci", [(280, 210), (340, 210)], "tag", "ci")
+
+d.box("wheel", 760, 130, 300, 100, "wheel + sdist → PyPI\nTrusted Publishing (OIDC)\nPEP 740 attestations", 13, bg=LIGHT)
+d.box("image", 760, 260, 300, 120, "image → ghcr.io/<owner>/nona\nlinux/amd64 + linux/arm64\nCPU-only · non-root\npinned model baked in", 13, bg=LIGHT)
+d.arrow("a_ci_wheel", [(680, 180), (760, 180)], "ci", "wheel")
+d.arrow("a_ci_image", [(680, 320), (760, 320)], "ci", "image")
+
+d.box("sign", 1140, 150, 280, 210, "signed + attested\n\ncosign keyless (Sigstore)\nSLSA build provenance\nCycloneDX SBOM (syft)\n\nidentity = this repo's\nrelease workflow", 13, bg=GREEN)
+d.arrow("a_wheel_sign", [(1060, 180), (1140, 180)], "wheel", "sign")
+d.arrow("a_image_sign", [(1060, 320), (1140, 320)], "image", "sign")
+
+d.box("verify", 1490, 190, 220, 130, "YOU, before running:\ncosign verify ghcr.io/…\ngh attestation verify\n(both in the README)", 12, RED, color=INK)
+d.arrow("a_sign_verify", [(1420, 255), (1490, 255)], "sign", "verify")
+
+d.box("pr", 40, 400, 640, 55, "every PR: ruff · pyright · pytest 3.11–3.13 · pip-audit · CodeQL\nweekly: OpenSSF Scorecard · Dependabot bumps action pins and uv.lock", 13, GRAY, color=INK)
+d.arrow("a_pr_tag", [(160, 400), (160, 270)], "pr", "tag", GRAY)
+d.text("t_gate", 168, 330, "gates every\nmerge to main", 12, GRAY)
+
+d.box("run", 300, 490, 1120, 200, "run it (03 §8)", 13, GRAY, label_top=True, color=GRAY)
+d.box("laptop", 320, 530, 320, 130, "laptop\npip install nona\nnona models pull · nona serve\nbinds 127.0.0.1:8787", 13, bg=LIGHT)
+d.box("compose", 660, 530, 340, 130, "docker compose\nnona + Grafana LGTM dashboard\n(ADR-0005)\n+ Valkey for stateful mode", 13, bg=LIGHT)
+d.box("k8s", 1020, 530, 380, 130, "Kubernetes (Helm chart)\nsidecar: app → http://nona:8787/v1\ngateway: N replicas share the\nRedis session store (ADR-0006)", 13, bg=LIGHT)
+d.arrow("a_verify_run", [(1600, 320), (1600, 590), (1420, 590)], "verify", "run")
+d.text("run_n", 40, 520, "verification is part of\nthe install docs, not an\nafterthought", 13, GRAY)
+d.save("nona-deployment", 1750, 730)
 print("ok")
