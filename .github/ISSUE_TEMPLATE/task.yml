@@ -1,0 +1,28 @@
+name: Task
+description: One step of the build plan (docs/design/06-build-plan.md)
+labels: ["task"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What works when this is done, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Files, modules or docs this touches. What is explicitly out of scope.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Tests, benchmark number, docs or ADR that prove it.
+      value: |
+        - [ ] Tests (property tests where the design names an invariant)
+        - [ ] `uv run pyright` and `uv run ruff check .` clean
+        - [ ] Docs updated in the same PR
+        - [ ] Benchmark number in the PR, if the slice moves one
+    validations:
+      required: true
