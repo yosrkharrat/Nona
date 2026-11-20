@@ -73,7 +73,7 @@ Priority: **M** = must (v0.1), **S** = should (v0.2), **C** = could (later).
 | FR-16 | CLI: `serve`, `scan <file>`, `bench` | M | — |
 | FR-17 | Python library API usable without the proxy | M | — |
 | FR-18 | Split-screen demo page: what you type vs what the LLM receives, with substitutions highlighted live | S | 10-second GIF in the README |
-| FR-19 | Audit events with **no PII**: counts per entity type, detector latency, request id | S | A log-scrubbing test greps logs for every gold PII value and finds none |
+| FR-19 | Audit events with **no PII**: counts per entity type, detector latency, request id | S | A leak test greps logs, trace spans and metric labels for every gold PII value and finds none |
 
 ### Benchmark
 | ID | Requirement | Pri | Acceptance criterion |
@@ -98,7 +98,7 @@ Targets are **hypotheses to measure**, not promises. The README reports actual n
 |---|---|---|
 | NFR-1 | **Privacy** | Nona never writes original values to disk by default. Mappings stay in process memory and are dropped at the end of the request (stateless mode, see ADR-0002) |
 | NFR-2 | **Privacy** | **Fail closed**: if detection errors or times out, the request is rejected (HTTP 503) and never forwarded unscrubbed (ADR-0003) |
-| NFR-3 | **Privacy** | No telemetry and no outbound network except to the configured upstream. Model weights are downloaded once, explicitly |
+| NFR-3 | **Privacy** | No telemetry and no outbound network except to the configured upstream. Model weights are downloaded once, explicitly. Trace export (OTLP) happens only if the user configures an endpoint (ADR-0005) |
 | NFR-4 | **Security** | Binds to `127.0.0.1` by default. The upstream API key is passed through and never logged |
 | NFR-5 | **Detection quality** | Recall is prioritized over precision: a leak costs more than over-masking. v0.1 targets on the test split: ≥ 0.98 recall on structured types, ≥ 0.85 on PERSON in mixed-language text |
 | NFR-6 | **Latency** | Added overhead p95 ≤ 150 ms for a 300-token message on an Apple M-series CPU. Time-to-first-token overhead ≤ 50 ms when streaming |
@@ -108,6 +108,9 @@ Targets are **hypotheses to measure**, not promises. The README reports actual n
 | NFR-10 | **Maintainability** | Typed (pyright strict on core), ruff, ≥ 85% line coverage on `core/`, and each recognizer is a self-contained plugin |
 | NFR-11 | **Honesty** | The README states the leak rate, the known failure modes and the threat-model limits next to the headline numbers |
 | NFR-12 | **Licensing** | Apache-2.0 code. Every model and gazetteer used has a compatible license, recorded in `THIRD_PARTY.md` |
+| NFR-13 | **Observability** | Per-stage traces (OpenTelemetry), Prometheus metrics and structured logs, all PII-free by construction and covered by the FR-19 leak test (ADR-0005) |
+| NFR-14 | **Supply chain** | Releases are built only in CI, signed (cosign) and attested (SLSA provenance, SBOM). Users can verify a wheel or image without trusting the maintainer (ADR-0007) |
+| NFR-15 | **Throughput** | Measured, not assumed: a k6 load test reports p50/p95 overhead and requests per second at 1, 8 and 32 concurrent clients against a mock upstream |
 
 ## 6. Threat model (summary)
 
@@ -125,6 +128,9 @@ direct identifiers present in the text.
 - *Cross-session mapping leak*: user A's `PERSON_1` restored as user B's name. Mitigation: no shared state in stateless mode; strict session scoping in stateful mode.
 - *Placeholder injection*: the text already contains `PERSON_1`, or the model invents `PERSON_7`. Mitigation: escape pre-existing placeholder-like strings, and restore only placeholders issued for this request.
 - *Log leakage*: debug logs printing request bodies. Mitigation: a structured logger with a deny-by-default field allowlist, plus a CI test (FR-19).
+- *Telemetry leakage*: traces or metrics carrying text, URLs or headers. Mitigation: hand-written spans with typed, allowlisted attributes, export off by default (ADR-0005).
+- *Session store compromise* (stateful mode only): Redis holds mappings. Mitigation: AES-GCM per session, keys derived from a master key plus the session id, storage keys are HMACs, TTL (ADR-0006).
+- *Supply-chain compromise*: a malicious release sees all traffic. Mitigation: signed, attested CI-only releases and pinned actions (ADR-0007).
 
 ## 7. Success criteria for v0.1
 

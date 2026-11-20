@@ -95,7 +95,8 @@ whole history on every request and keeps nothing between requests (ADR-0002).
   `sha256(model revision + detection config + message text)`, so a model or config change never serves stale spans (ADR-0004). It holds spans and offsets only. The hash of PII is still sensitive, so the cache lives in
   memory only and has a TTL.
 - **Stateful mode** (v0.2, `X-Nona-Session`) is for clients that truncate history or use server-side conversation state.
-  It has an in-memory vault with a TTL and strict session scoping.
+  A `SessionStore` holds the mapping: in memory for one process, or Redis/Valkey for several replicas, encrypted per
+  session with AES-GCM and a TTL ([ADR-0006](../adr/0006-encrypted-session-store.md)).
 
 ## 5. Concurrency & performance
 
@@ -104,6 +105,8 @@ whole history on every request and keeps nothing between requests (ADR-0002).
 - Latency budget (NFR-6, 300 tokens): normalize 2 ms · regex 3 ms · GLiNER ~80–120 ms · resolve and link 5 ms · rewrite 2 ms.
   GLiNER dominates, so the v0.2 lever is ONNX Runtime with int8 quantization.
 - Streaming: restoration holds back only the length of the longest possible placeholder prefix (≤ 16 chars), so the added time-to-first-token stays small.
+- Every stage emits an OpenTelemetry span and feeds `nona_stage_duration_seconds`, so this budget is checked against real traces ([ADR-0005](../adr/0005-observability.md)).
+- A k6 script (`load/`) drives the proxy against a mock upstream at 1, 8 and 32 concurrent clients and reports p50/p95 overhead and throughput (NFR-15).
 
 ## 6. Repository layout
 
@@ -112,6 +115,8 @@ nona/
 ├─ src/nona/
 │  ├─ core/            # walker, normalizer, recognizers/, resolver, linker, pseudonymizer, restorer
 │  ├─ proxy/           # FastAPI app, upstream client, SSE handling
+│  │  ├─ telemetry.py  # OTel spans, Prometheus metrics, allowlisted attributes (ADR-0005)
+│  │  └─ sessions/     # SessionStore: memory, redis (ADR-0006)
 │  ├─ cli.py
 │  └─ config.py
 ├─ bench/
@@ -120,7 +125,11 @@ nona/
 │  ├─ metrics.py       # leak rate, over-masking, utility, latency
 │  └─ report.py        # → results/README table
 ├─ demo/               # split-screen page
-├─ tests/              # unit, property (hypothesis), contract (mock upstream), e2e (ollama)
+├─ load/               # k6 load-test scripts and mock upstream
+├─ deploy/
+│  ├─ compose/         # nona + Grafana LGTM observability demo, nona + Valkey
+│  └─ helm/nona/       # Helm chart (sidecar or gateway)
+├─ tests/              # unit, property (hypothesis), contract (mock upstream), integration (testcontainers), e2e (ollama)
 ├─ docs/design/, docs/adr/
 ├─ Dockerfile, pyproject.toml (uv), THIRD_PARTY.md
 ```
@@ -134,8 +143,13 @@ nona/
 | HTTP | FastAPI + uvicorn + httpx | Async streaming, pydantic models for the OpenAI schema |
 | NER | GLiNER (multilingual), then ONNX | Zero-shot labels, small, CPU-friendly |
 | Phones | `phonenumbers` | Don't hand-roll E.164 |
-| Tests | pytest, hypothesis, respx | Property-based round-trip, mocked upstream |
-| Quality | ruff, pyright, pre-commit, GitHub Actions | — |
+| Tests | pytest, hypothesis, respx, testcontainers | Property-based round-trip, mocked upstream, real Valkey in integration tests |
+| Observability | OpenTelemetry (traces), Prometheus (metrics), structlog (JSON logs), Grafana LGTM for the demo | Vendor-neutral standards. Hand-written spans keep telemetry PII-free (ADR-0005) |
+| Session store | in-memory or Redis/Valkey, AES-256-GCM via `cryptography` | Shared state across replicas, unreadable without the session id (ADR-0006) |
+| Load testing | k6 | Scriptable, reports percentiles, runs in CI (NFR-15) |
+| Quality | ruff, pyright, pre-commit, GitHub Actions, CodeQL, pip-audit | — |
+| Release | release-please, PyPI Trusted Publishing, GHCR multi-arch, cosign, SLSA provenance, CycloneDX SBOM, OpenSSF Scorecard | Verifiable releases for a tool that sees every prompt (ADR-0007) |
+| Deployment | Docker, docker-compose, Helm | Local, demo, and Kubernetes sidecar |
 | Bench | Ollama (local model) for utility evals in CI, a hosted model for the published table | CI must stay free and offline-ish |
 
 ## 8. Deployment
@@ -143,3 +157,6 @@ nona/
 - `pip install nona && nona models pull && nona serve`
 - `docker run -p 127.0.0.1:8787:8787 ghcr.io/<you>/nona` with a CPU-only image and the model baked in at build time
 - Sidecar pattern in Kubernetes or docker-compose: the app talks to `http://nona:8787/v1`.
+- Helm chart (`deploy/helm/nona`) for the sidecar or a shared gateway. Several replicas need the Redis session store for stateful mode (ADR-0006).
+- `docker compose -f deploy/compose/observability.yml up` starts Nona with Grafana, Prometheus and Tempo and a ready-made dashboard (ADR-0005).
+- Every release image is signed and attested. Verify it with `cosign verify` or `gh attestation verify` before running it (ADR-0007).

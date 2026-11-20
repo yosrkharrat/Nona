@@ -60,7 +60,7 @@ client.chat.completions.create(model="gpt-4o-mini", messages=[...], stream=True)
 |---|---|---|
 | `X-Nona-Policy` | name of a policy profile from config | `default` |
 | `X-Nona-Dry-Run` | `true` → returns what *would* be sent upstream, sends nothing | `false` |
-| `X-Nona-Session` | opaque id → enables stateful mode (v0.2, ADR-0002) | absent = stateless |
+| `X-Nona-Session` | random id, ≥ 128 bits → enables stateful mode (v0.2, ADR-0002, ADR-0006) | absent = stateless |
 
 ### Response headers (PII-free)
 
@@ -184,4 +184,14 @@ on_detector_error: reject                 # fail closed (ADR-0003)
 logging:
   level: info
   log_bodies: false                       # cannot be enabled with real upstreams
+observability:                            # ADR-0005
+  metrics: true                           # GET /metrics, local pull, PII-free
+  otlp_endpoint: null                     # e.g. http://localhost:4317; null = traces go nowhere (NFR-3)
+  sample_ratio: 1.0
+sessions:                                 # stateful mode, ADR-0006
+  backend: memory                         # memory | redis
+  redis_url: null                         # e.g. redis://localhost:6379/0 (Redis 7+ or Valkey)
+  ttl_sliding_s: 3600
+  ttl_absolute_s: 86400
+  # master key comes from NONA_SESSION_KEY, never from this file
 ```
