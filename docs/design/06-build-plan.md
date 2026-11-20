@@ -160,4 +160,5 @@ a number or a user need justifies it.
 | Slice | Status | Headline number |
 |---|---|---|
 | S0 | local work done; GitHub repo pending | — |
-| S1 to S8 | not started | — |
+| S1 | done (branch `feat/s1-benchmark`) | identity system: 100% leak (116/116 direct-identifier mentions), 0% over-masking, on dev v0 (80 conversations) |
+| S2 to S8 | not started | — |
