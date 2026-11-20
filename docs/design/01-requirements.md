@@ -142,14 +142,14 @@ direct identifiers present in the text.
 ## 8. Constraints & assumptions
 
 - **Data provenance**: every test or benchmark message is synthetic, written or generated for this repo. No real personal data is ever used, not even "anonymized".
-- Solo developer, about 3–4 weekends for v0.1.
+- Solo developer, about 10 h/week: v0.1 after roughly 12–14 weeks (see the [build plan](06-build-plan.md)).
 - Assumption: the clients use the Chat Completions API (stateless, full history sent on every call). This assumption drives ADR-0002.
 
 ## 9. Open questions
 
 | # | Question | Proposed answer |
 |---|---|---|
-| Q1 | **Name.** ~~"Nano" collided with the GNU `nano` editor~~ | **Resolved 2026-11-15:** the project is **Nona**, with CLI `nona` and Python package `nona`. Still to check before the first release: the PyPI and GHCR names are free (fallback: `nona-proxy`) |
-| Q2 | Which upstreams are officially supported in v0.1? | OpenAI, OpenRouter, Ollama (local, used in CI) |
+| Q1 | **Name.** ~~"Nano" collided with the GNU `nano` editor~~ | **Resolved 2026-11-15:** the project is **Nona**, with CLI `nona` and Python package `nona`. **Updated 2026-11-20:** `nona` is taken on PyPI, so the distribution is published as `nona-proxy`. The command and `import nona` don't change |
+| Q2 | Which upstreams are officially supported in v0.1? | OpenAI, OpenRouter, Ollama (local, used for e2e tests) |
 | Q3 | Where do the Tunisian first-name, surname and city gazetteers come from, and under what license? | Public sources (Wikipedia/Wikidata, CC0/CC-BY). Verify before shipping |
 | Q4 | Should placeholders be `PERSON_1` or realistic fake names? | Decided by benchmark, see ADR-0001 |

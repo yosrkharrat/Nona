@@ -45,4 +45,4 @@ Storing it in a shared service needs a security design, not just a cache.
 - ➕ A compromised Redis instance, on its own, reveals neither the session ids nor the PII.
 - ➖ NFR-1 now says "by default". When this mode is on, encrypted PII sits in Redis memory for up to the TTL. The threat model gets a new row.
 - ➖ An attacker with both the master key and a session id can decrypt that session. Key rotation: new sessions use the new key, and old ones expire within 24 h.
-- ➖ Another runtime dependency (`redis`, `cryptography`) and a container in the test suite. Both are optional extras: `pip install nona[redis]`.
+- ➖ Another runtime dependency (`redis`, `cryptography`) and a container in the test suite. Both are optional extras: `pip install nona-proxy[redis]`.

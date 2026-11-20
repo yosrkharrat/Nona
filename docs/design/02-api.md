@@ -142,7 +142,7 @@ class Recognizer(Protocol):
 
 ## 4. CLI
 
-> Binary and package name: `nona` (Q1 resolved; check that the PyPI name is free before release).
+> Command and import name: `nona`. PyPI distribution name: `nona-proxy`, because `nona` is taken (06 §5 Q1).
 
 ```
 nona serve   [--config nona.yaml] [--port 8787] [--upstream https://api.openai.com/v1]
