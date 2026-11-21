@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from nona.core.normalize import NormalizedDoc
+from nona.core.recognizers.cin import CinRecognizer
 from nona.core.recognizers.email import EmailRecognizer
 from nona.core.recognizers.financial import CardRecognizer, IbanRecognizer, RibRecognizer
 from nona.core.recognizers.ip import IpRecognizer
@@ -37,11 +38,13 @@ def default_recognizers() -> list[Recognizer]:
         IbanRecognizer(),
         RibRecognizer(),
         CardRecognizer(),
+        CinRecognizer(),
     ]
 
 
 __all__ = [
     "CardRecognizer",
+    "CinRecognizer",
     "EmailRecognizer",
     "IbanRecognizer",
     "IpRecognizer",

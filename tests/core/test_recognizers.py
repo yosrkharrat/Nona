@@ -171,6 +171,7 @@ def test_default_recognizers_cover_their_types() -> None:
         "checksum:iban",
         "checksum:rib",
         "checksum:card",
+        "context:cin",
     ]
     covered = frozenset().union(*(r.supported_types for r in recognizers))
     assert covered == TYPES
@@ -193,6 +194,7 @@ TYPES = {
     EntityType.IBAN,
     EntityType.RIB,
     EntityType.CARD,
+    EntityType.NATIONAL_ID,
 }
 
 
