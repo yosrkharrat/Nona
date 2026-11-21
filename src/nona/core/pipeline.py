@@ -79,8 +79,15 @@ class Nona:
 
     def _detect(self, text: str, known: Iterable[tuple[EntityType, str]]) -> list[Span]:
         doc = normalize(text)
-        candidates: list[Span] = denylist_spans(doc, self._denylist) + known_spans(doc, known)
-        candidates.extend(self._recognize(doc, text))
+        propagated = known_spans(doc, known)
+        candidates: list[Span] = denylist_spans(doc, self._denylist) + propagated
+        # A span kept as is (an ORGANIZATION, by default) must not hide a value already masked earlier:
+        # `Clinique Ahmed Ben Salem` after `Ahmed Ben Salem` was issued would send the name in clear.
+        candidates.extend(
+            s
+            for s in self._recognize(doc, text)
+            if self._policies.get(s.type) is not Policy.KEEP or not any(s.overlaps(p) for p in propagated)
+        )
         spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
         # Look-ahead (ADR-0004, step 4): a bare first name before the full name in the same message.
         # Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left to the

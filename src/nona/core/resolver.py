@@ -18,6 +18,7 @@ import functools
 import re
 from collections.abc import Iterable, Sequence
 
+from nona.core.boundaries import LEFT, RIGHT
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -64,6 +65,8 @@ def known_spans(
 
     Multi-word forms match on the normalized view (case, spacing and digits don't matter). Single-word forms
     match the original text exactly, at word boundaries, so a known `Amal` doesn't mask *amal* ("hope").
+    Boundaries are the ones restoring uses (`core/boundaries.py`): `_` separates, and Arabic proclitics may
+    be attached (`لكنزة`), so a restored value is always caught again.
     """
     spans: list[Span] = []
     for etype, surface in dict.fromkeys(known):
@@ -85,10 +88,10 @@ def _known_pattern(surface: str) -> tuple[re.Pattern[str], bool]:
     re-runs the whole conversation on every request."""
     words = normalize(surface).text.split()
     if len(words) > 1:
-        return re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)"), True
+        return re.compile(LEFT + r"\s+".join(map(re.escape, words)) + RIGHT), True
     if not words:
         return re.compile(r"(?!)"), False  # matches nothing
-    return re.compile(r"(?<!\w)" + re.escape(surface.strip()) + r"(?!\w)"), False
+    return re.compile(LEFT + re.escape(surface.strip()) + RIGHT), False
 
 
 def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:

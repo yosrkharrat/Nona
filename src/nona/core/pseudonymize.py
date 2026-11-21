@@ -19,6 +19,7 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+from nona.core.boundaries import LEFT, RIGHT
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.types import Entity, EntityType, Span
 
@@ -41,11 +42,14 @@ def _type_pattern(etype: EntityType) -> str:
 
 
 def placeholder_regex(types: Iterable[EntityType]) -> re.Pattern[str]:
-    """`TYPE_n`, case-insensitive, also `TYPE n` and `TYPEn`. Group 1 is the type, group 2 the number."""
+    """`TYPE_n`, case-insensitive, also `TYPE n` and `TYPEn`. Group 1 is the type, group 2 the number.
+
+    Bounded like forward propagation (`core/boundaries.py`), so a restored value is always found again.
+    """
     names = sorted({_type_pattern(t) for t in types}, key=len, reverse=True)
     if not names:
         return re.compile(r"(?!)")  # matches nothing
-    return re.compile(r"(?<![A-Za-z0-9])(" + "|".join(names) + r")[ _]?(\d+)(?!\d)", re.IGNORECASE)
+    return re.compile(LEFT + "(" + "|".join(names) + r")[ _]?(\d+)" + RIGHT, re.IGNORECASE)
 
 
 _ANY_PLACEHOLDER = placeholder_regex(EntityType)
@@ -125,13 +129,16 @@ class Pseudonymizer:
         self._policies = dict(policies)
         self._linker = Linker()
         self._messages: list[_Message] = []
+        self._redacted: dict[tuple[EntityType, str], None] = {}  # redacted surfaces, for propagation
 
     def policy(self, etype: EntityType) -> Policy:
         return self._policies.get(etype, Policy.PSEUDONYMIZE)
 
     def known_surfaces(self) -> list[tuple[EntityType, str]]:
-        """Every surface form of every pseudonymized entity so far, for forward propagation."""
-        return [(e.type, s) for e in self._linker.entities if e.propagates for s in e.surfaces]
+        """Every surface form of every pseudonymized entity so far, and every redacted value, for forward
+        propagation: a redacted card must stay redacted when it comes back."""
+        linked = [(e.type, s) for e in self._linker.entities if e.propagates for s in e.surfaces]
+        return [*linked, *self._redacted]
 
     def add(self, original: str, spans: Iterable[Span]) -> str:
         """Pseudonymize the next message from its resolved (non-overlapping) spans; return its text."""
@@ -156,6 +163,9 @@ class Pseudonymizer:
         parts.append(original[pos:])
         text = "".join(parts)
         redacted = tuple(s for s in kept if s not in entities)
+        for span in redacted:
+            if span.detector != LITERAL_DETECTOR:
+                self._redacted[(span.type, span.text_in(original))] = None
         self._messages.append(_Message(original, text, tuple(entities.items()), redacted))
         return text
 
