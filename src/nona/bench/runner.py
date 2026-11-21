@@ -25,6 +25,7 @@ from nona.bench.systems import System
 _ABBREVIATIONS = {
     "PERSON": "PER", "LOCATION": "LOC", "ORGANIZATION": "ORG", "EMAIL": "EMAIL", "PHONE": "PHONE",
     "IBAN": "IBAN", "RIB": "RIB", "CARD": "CARD", "IP_ADDRESS": "IP", "NATIONAL_ID": "CIN",
+    "CUSTOM": "CUSTOM",
 }  # fmt: skip
 
 

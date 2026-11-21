@@ -1,0 +1,67 @@
+"""`Nona`: the library entry point (02 §3, FR-17). Normalize → detect → resolve → pseudonymize; restore.
+
+Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
+A partly masked text is never produced, so a caller can't forward it by mistake.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping as AbcMapping
+from collections.abc import Sequence
+
+from nona.core.normalize import normalize
+from nona.core.pseudonymize import DEFAULT_POLICIES, Anonymized, Mapping, Policy, pseudonymize, restore
+from nona.core.recognizers import Recognizer, default_recognizers
+from nona.core.resolver import denylist_spans, resolve
+from nona.core.types import EntityType, Span
+
+
+class DetectorError(RuntimeError):
+    """A recognizer failed. Nothing may be sent upstream (ADR-0003); the proxy turns this into HTTP 503."""
+
+    def __init__(self, detector: str) -> None:
+        # The message names the detector only. The cause stays attached for debugging, but the text being
+        # analysed is never copied into the message (deep dive G).
+        super().__init__(f"recognizer {detector!r} failed")
+        self.detector = detector
+
+
+class Nona:
+    def __init__(
+        self,
+        recognizers: Sequence[Recognizer] | None = None,
+        *,
+        policies: AbcMapping[EntityType, Policy] | None = None,
+        allowlist: Sequence[str] = (),
+        denylist: Sequence[str] = (),
+        min_score: float = 0.5,
+    ) -> None:
+        if not 0.0 <= min_score <= 1.0:
+            raise ValueError("min_score must be in [0, 1]")
+        folded_allow = {" ".join(t.casefold().split()) for t in allowlist}
+        clash = sorted(t for t in denylist if " ".join(t.casefold().split()) in folded_allow)
+        if clash:
+            raise ValueError(f"terms both allowed and denied: {clash}")
+        self._recognizers = list(default_recognizers() if recognizers is None else recognizers)
+        self._policies = dict(DEFAULT_POLICIES if policies is None else policies)
+        self._allowlist = tuple(allowlist)
+        self._denylist = tuple(denylist)
+        self._min_score = min_score
+
+    def detect(self, text: str) -> list[Span]:
+        """Resolved spans over `text`, before any policy is applied."""
+        doc = normalize(text)
+        candidates: list[Span] = denylist_spans(doc, self._denylist)
+        for recognizer in self._recognizers:
+            try:
+                candidates.extend(recognizer.detect(doc))
+            except Exception as exc:
+                raise DetectorError(recognizer.name) from exc
+        return resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+
+    def anonymize(self, text: str) -> Anonymized:
+        return pseudonymize(text, self.detect(text), self._policies)
+
+    @staticmethod
+    def restore(text: str, mapping: Mapping) -> str:
+        return restore(text, mapping)
