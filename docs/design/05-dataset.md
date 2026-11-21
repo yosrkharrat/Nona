@@ -115,6 +115,16 @@ The benchmark captures the **payload sent upstream** for each turn (04 §F). For
 - **Partially leaked:** not leaked, but a token of 3+ characters from the mention (not an honorific) appears at word boundaries. For example, the surname got through.
 - **Over-masking:** a placeholder in the upstream payload whose range doesn't overlap any gold mention. Reported overall and on `distractors`.
 
+**Details fixed by the implementation** (`src/nona/bench/metrics.py`, unit and property tests in `tests/bench/test_metrics.py`):
+
+- **Arabic proclitics** don't break the word boundary: `سامي` counts as leaked inside `لسامي` (up to two of `و ف ب ل ك`).
+- **Phones** also leak through their national number: `+216 22 123 456` counts as leaked if `22123456` reaches the upstream, and `+33 6 12 34 56 78` if `06 12 34 56 78` does.
+- **Partial leaks ignore tokens that identify no one:** honorifics, the name particles `ben`/`bin`/`bou`, phone country codes, the domain of an e-mail address, and the country-and-check head of an IBAN (`TN59`).
+- **Over-masking is measured black-box.** The original turn and the payload are split into tokens and aligned (`difflib`). A word token outside every gold mention that was replaced or removed counts as over-masked. Rate = over-masked tokens / non-PII word tokens. Distractors are reported apart: the share of distractors that were touched. This works the same for Nona, for baselines that don't report offsets, and for the on-the-wire capture (FR-21).
+- **Scopes:** the headline covers direct identifiers in `user`, `system` and `tool` turns. Restored `assistant` turns that the client re-sends get their own leak rate (ADR-0004).
+
+The `identity` system (sends everything unchanged) must score 100% leaked and 0% over-masked. A property test also checks that a system replacing exactly the gold mentions scores 0% and 0%, on any seed of the generator.
+
 **Known limit:** a word-boundary substring check can count a coincidental match as a leak, e.g. a gold name `Nour` while the payload legitimately contains the word *nour*. This makes the leak rate slightly pessimistic, which is the safe direction. Cases are listed in the report rather than silently removed.
 
 ## 7. Size and balance (v0.1)

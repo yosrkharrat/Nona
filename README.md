@@ -23,12 +23,20 @@ Nona **reduces exposure**. It does not guarantee anonymity. Its leak rate will b
 7. Decisions: [ADR-0001 placeholder format](docs/adr/0001-placeholder-format.md) · [ADR-0002 stateless by default](docs/adr/0002-stateless-by-default.md) · [ADR-0003 fail closed](docs/adr/0003-fail-closed.md) · [ADR-0004 causal entity linking](docs/adr/0004-causal-entity-linking.md) · [ADR-0005 observability](docs/adr/0005-observability.md) · [ADR-0006 encrypted session store](docs/adr/0006-encrypted-session-store.md) · [ADR-0007 signed releases](docs/adr/0007-release-supply-chain.md)
 
 ## Roadmap
-- [x] **M0**: repo skeleton, CI (ruff, pyright, pytest), core types
-- [ ] **M1**: `core/` library: structured recognizers, GLiNER, linker, placeholders, restore, property tests
-- [ ] **M2**: synthetic dataset v0 (300+ msgs, frozen test split) and leak-rate script
-- [ ] **M3**: proxy, first non-streaming, then streaming, instrumented from the start: OpenTelemetry traces, Prometheus metrics, PII-free structured logs ([ADR-0005](docs/adr/0005-observability.md))
-- [ ] **M4**: Presidio and LLM Guard baselines (resumable bench runner with cached results), results table, k6 load test (p50/p95 overhead, throughput), Grafana dashboard demo, demo GIF, signed release pipeline: PyPI trusted publishing, signed multi-arch GHCR image, SBOM ([ADR-0007](docs/adr/0007-release-supply-chain.md)) → **v0.1 release**
-- [ ] **M5**: stateful sessions with an encrypted Redis store ([ADR-0006](docs/adr/0006-encrypted-session-store.md)), tool calls, ONNX int8, Helm chart, TypeScript client, MCP server
+Built in measured vertical slices: each one works end to end and moves a benchmark number. Details, estimates and
+progress are in the [build plan](docs/design/06-build-plan.md).
+
+- [x] **M0**: repo skeleton, CI (ruff, pyright, pytest), core types, strict dataset loader
+- [ ] **S0**: go public, harden CI (SHA-pinned actions, pip-audit, CodeQL, Dependabot)
+- [x] **S1**: benchmark first: synthetic generator, dev split v0, leak and over-masking metrics, `nona bench`
+- [ ] **S2**: structured detection (email, phone, IBAN, RIB, card, IP, CIN) and `anonymize()` / `restore()`
+- [ ] **S3**: multi-turn entity linking ([ADR-0004](docs/adr/0004-causal-entity-linking.md)), gazetteer and context rules
+- [ ] **S4**: names with GLiNER, full dataset, frozen test split
+- [ ] **S5**: OpenAI-compatible proxy, instrumented from the start ([ADR-0005](docs/adr/0005-observability.md))
+- [ ] **S6**: streaming restoration
+- [ ] **S7**: Presidio and LLM Guard baselines, utility loss, k6 load test
+- [ ] **S8**: signed release ([ADR-0007](docs/adr/0007-release-supply-chain.md)) → **v0.1**
+- Later, if a number or a user asks for it: encrypted Redis sessions ([ADR-0006](docs/adr/0006-encrypted-session-store.md)), tool calls, ONNX int8, Helm chart, TypeScript client, MCP server
 
 ## Development
 
@@ -40,6 +48,14 @@ uv run pytest --cov          # tests (unit + property-based)
 uv run ruff format . && uv run ruff check .
 uv run pyright               # strict on src/nona/core
 uv run nona --version
+```
+
+Benchmark (all data synthetic, see [05](docs/design/05-dataset.md)):
+
+```bash
+uv run nona bench --systems identity --split dev     # table on stdout, JSON in results/
+uv run python -m nona.bench.dataset check bench/data/dev.jsonl
+uv run python -m nona.bench.generate --seed 20261120 --count 80 --prefix dev   # how dev.jsonl v0 was made
 ```
 
 CI runs the same checks on Python 3.11, 3.12 and 3.13. `nona.core` must stay free of network and process I/O,
