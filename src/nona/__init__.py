@@ -10,4 +10,6 @@ try:
 except PackageNotFoundError:  # running from a source tree without installation
     __version__ = "0.0.0+unknown"
 
-__all__ = ["__version__"]
+from nona.core import Nona
+
+__all__ = ["Nona", "__version__"]

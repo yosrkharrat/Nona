@@ -43,9 +43,9 @@ flowchart TB
 | **Payload walker** | Visits every user-controlled string in an OpenAI request (02 §1 table) and writes the replacements back | Pure function over pydantic models, so it is easy to test against OpenAI fixtures |
 | **Normalizer** | NFKC, folds case, Eastern Arabic digits to ASCII, strips Arabic tatweel and diacritics, and keeps an exact offset map back to the original text (`core/normalize.py`). The **Arabizi digit map** (`3→ع, 7→ح, 9→ق, 5→خ, 2→ء`) is a second view for name recognizers (S4): applied to the same view it would turn phone numbers into letters | Detection runs on the normalized view, replacement on the original text |
 | **Detection engine** | Runs recognizers and returns candidate `Span`s with scores | Plugin interface (`Recognizer` protocol). Union of recognizers, because recall comes first |
-| **Span resolver** | Resolves overlaps (longest span wins, then highest priority), applies thresholds and the allow/deny lists | Deterministic ordering, a requirement for ADR-0002 |
+| **Span resolver** | Resolves overlaps (longest span wins, then type priority, then score), applies the score threshold and the allow/deny lists (`core/resolver.py`). Denylist terms become `CUSTOM` spans | Deterministic: the result doesn't depend on recognizer order (property-tested), a requirement for ADR-0002 |
 | **Entity linker** | Groups mentions into entities (`Ahmed` ≈ `Ahmed Ben Salem` ≈ `ahmed.bs@…`) | Conservative: only merges when unambiguous (deep dive B) |
-| **Pseudonymizer** | Assigns `TYPE_n` in order of first appearance. Escapes pre-existing placeholder-like text | Format chosen in ADR-0001 |
+| **Pseudonymizer** | Assigns `TYPE_n` in order of first appearance and applies the per-type policy: `pseudonymize`, `redact` (`[CARD]`, irreversible) or `keep` (`core/pseudonymize.py`). Placeholder-like text already in the input (`PERSON_1`, `person 2`) keeps its number reserved, so it is never issued and restoring can't rewrite it | Format chosen in ADR-0001 |
 | **Upstream client** | Forwards the request and streams the response | Shared `httpx.AsyncClient` with connection pooling |
 | **Restorer** | Replaces issued placeholders in the output, both in full responses and token streams | Streaming finite-state machine (deep dive D) |
 

@@ -22,6 +22,7 @@ class EntityType(StrEnum):
     CARD = "CARD"  # payment card, Luhn-validated
     IP_ADDRESS = "IP_ADDRESS"
     NATIONAL_ID = "NATIONAL_ID"  # Tunisian CIN, only with a context word (deep dive A)
+    CUSTOM = "CUSTOM"  # denylist terms, and later custom recognizers from configuration (FR-4, FR-5)
 
 
 @dataclass(frozen=True, slots=True)
