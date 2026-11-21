@@ -4,7 +4,15 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nona.core.canonical import HONORIFICS, canonical_tokens, compatible, handle_matches, name_words
+from nona.core.canonical import (
+    HONORIFICS,
+    canonical_tokens,
+    compatible,
+    glued_parts,
+    handle_matches,
+    handle_names,
+    name_words,
+)
 
 
 def toks(*words: str) -> frozenset[str]:
@@ -137,10 +145,13 @@ def test_name_words_are_words_of_the_mention_inside_its_tokens(text: str) -> Non
         ("@strabelsi", "Sami Trabelsi"),  # a social handle
         ("Sami.Trabelsi", "Sami Trabelsi"),
         ("wassim.ferchichi", "Wassim"),  # says more than the known name: allowed, it covers every token
+        ("ahmed+devis", "Ahmed Ben Salem"),  # a plus tag is not part of the name
+        ("92sami", "Sami Trabelsi"),  # a leading number is not Arabizi
+        ("7amza.jlassi", "Hamza Jlassi"),  # a single leading Arabizi digit is a letter
     ],
 )
 def test_handle_matches(handle: str, name: str) -> None:
-    assert handle_matches(handle, canonical_tokens(name))
+    assert handle_matches(handle, canonical_tokens(name), glued_parts(name))
 
 
 @pytest.mark.parametrize(
@@ -156,10 +167,41 @@ def test_handle_matches(handle: str, name: str) -> None:
         ("", "Sami Trabelsi"),
         ("1990", "Sami Trabelsi"),
         ("sami", "Mme"),  # nothing to match: an honorific alone has no tokens
+        ("y.trabelsi", "Elyes Trabelsi"),  # `Elyes` only starts like the particle `el`: no `yes`, no `y`
+        ("kadida", "Chirine Boukadida"),  # `Boukadida` is not `bou` + `kadida`
+        ("jamin", "Benjamin Martin"),
     ],
 )
 def test_handle_does_not_match(handle: str, name: str) -> None:
-    assert not handle_matches(handle, canonical_tokens(name))
+    assert not handle_matches(handle, canonical_tokens(name), glued_parts(name))
+
+
+def test_glued_parts_are_only_the_glued_tokens() -> None:
+    assert glued_parts("Ahmed Ben Salem") == {"bensalem": ("ben", "salem")}
+    assert glued_parts("Elyes Boukadida") == {}
+    assert glued_parts("Ali el Abed") == {"elabed": ("el", "abed")}
+
+
+def test_superset_needs_the_option_and_few_pieces() -> None:
+    wassim = canonical_tokens("Wassim")
+    assert not handle_matches("wassim.ferchichi", wassim, superset=False)
+    assert handle_matches("wassim.ferchichi", wassim)
+    assert not handle_matches(".".join(["wassim", *"bcdefgh"]), wassim)  # 8 pieces: no subset search
+
+
+def test_a_long_handle_is_fast() -> None:
+    import time
+
+    start = time.perf_counter()
+    assert not handle_matches(".".join("a" * 40), canonical_tokens("Sami"))
+    assert not handle_matches("a" * 500, canonical_tokens("Amal Ben Ali"))
+    assert time.perf_counter() - start < 0.5
+
+
+def test_handle_names_finds_a_name_part_written_in_full() -> None:
+    ahmed = canonical_tokens("Ahmed Karoui")
+    assert handle_names("sami_ahmed", ahmed)
+    assert not handle_names("sami.a", ahmed)  # an initial isn't enough
 
 
 names = st.lists(

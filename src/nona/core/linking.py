@@ -27,9 +27,11 @@ first appearance, skipping numbers reserved because the user literally wrote tha
 
 **Owners** (deep dive B, step 6). An email whose local part spells exactly one person's tokens or
 initials (`ahmed.bs@…` for Ahmed Ben Salem) belongs to that person. It's metadata for the inspection API:
-the email keeps its own `EMAIL_n`. Since it never changes a placeholder, it is decided over the whole
-conversation, so an address given before the name still links. Two candidate people, or an ambiguous one:
-no owner.
+the email keeps its own `EMAIL_n`. Checked after each message while the email has no owner, so an address
+given before the name links once the name appears. Once given, an owner never changes. An exact spelling
+beats a superset (`wassim.ferchichi` for `Wassim`). Two candidate people, an ambiguous one, or a superset
+whose extra piece names someone else in the conversation (`sami_ahmed` with `Sami` and `Ahmed Karoui`): no
+owner.
 
 **Literal placeholders.** When the user writes `PHONE_1` after `PHONE_1` was issued, the number can't be
 renumbered, so the literal text becomes an entity of its own (spans from `LITERAL_DETECTOR`): it goes upstream
@@ -41,7 +43,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from nona.core.canonical import canonical_tokens, compatible, handle_matches
+from nona.core.canonical import (
+    Splits,
+    canonical_tokens,
+    compatible,
+    glued_parts,
+    handle_matches,
+    handle_names,
+)
 from nona.core.types import EntityType, Span
 
 LITERAL_DETECTOR = "literal-placeholder"  # a placeholder the user wrote, colliding with an issued one
@@ -96,12 +105,21 @@ class LinkedEntity:
             self.surfaces.append(surface)
 
 
+def _splits(person: LinkedEntity) -> Splits:
+    """Which of a person's tokens were glued from a particle and a word, from every form seen."""
+    out: Splits = {}
+    for surface in person.surfaces:
+        out.update(glued_parts(surface))
+    return out
+
+
 class Linker:
     def __init__(self) -> None:
         self._entities: list[LinkedEntity] = []
         self._by_key: dict[tuple[EntityType, str], LinkedEntity] = {}
         self._next: dict[EntityType, int] = {}
         self._reserved: dict[EntityType, set[int]] = {}
+        self._owners: dict[int, LinkedEntity] = {}  # id(email entity) → its person, frozen once set
 
     @property
     def entities(self) -> tuple[LinkedEntity, ...]:
@@ -150,22 +168,35 @@ class Linker:
             if entity is not None and entity in fresh and entity.number == 0:
                 entity.number = self._issue(entity.type)
                 self._entities.append(entity)
+        self._assign_owners()
         return [e for e in found if e is not None]
 
     def owner(self, entity: LinkedEntity) -> LinkedEntity | None:
-        """The one person an email belongs to, from everything linked so far, or `None`."""
-        if entity.type is not EntityType.EMAIL or entity.literal:
-            return None
-        local = entity.key.rsplit("@", 1)[0]
+        """The person an email belongs to, or `None` (see **Owners** above)."""
+        return self._owners.get(id(entity))
+
+    def _assign_owners(self) -> None:
         people = [
             e
             for e in self._entities
-            if e.type is EntityType.PERSON
-            and not e.ambiguous
-            and e.tokens
-            and handle_matches(local, e.tokens)
+            if e.type is EntityType.PERSON and e.tokens and not e.ambiguous and not e.literal
         ]
-        return people[0] if len(people) == 1 else None
+        splits = {id(p): _splits(p) for p in people}
+        for entity in self._entities:
+            if entity.type is not EntityType.EMAIL or entity.literal or id(entity) in self._owners:
+                continue
+            local = entity.key.rsplit("@", 1)[0]
+            exact = [p for p in people if handle_matches(local, p.tokens, splits[id(p)], superset=False)]
+            if exact:
+                if len(exact) == 1:
+                    self._owners[id(entity)] = exact[0]
+                continue
+            loose = [p for p in people if handle_matches(local, p.tokens, splits[id(p)])]
+            if len(loose) != 1:
+                continue
+            if any(handle_names(local, q.tokens, splits[id(q)]) for q in people if q is not loose[0]):
+                continue  # the extra piece names someone else in the conversation
+            self._owners[id(entity)] = loose[0]
 
     def issued(self, etype: EntityType, number: int) -> bool:
         return any(e.type is etype and e.number == number for e in self._entities)

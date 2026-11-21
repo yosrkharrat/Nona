@@ -99,7 +99,7 @@ Errors use the OpenAI error shape (`{"error": {"message", "type", "code"}}`) so 
 ```
 
 Each entity also carries `"owner"`: the placeholder of the person an email belongs to (`"PERSON_1"` for
-`ahmed.bs@gmail.com` next to Ahmed Ben Salem), or `null`. It's metadata only: the email keeps its own placeholder.
+`ahmed.bs@gmail.com` next to Ahmed Ben Salem), or `null`. It's metadata only: the email keeps its own placeholder. An owner may appear in a later request (the name came after the address), but once given it never changes.
 
 This endpoint returns original values. That is acceptable because it binds to localhost only, and it can be
 disabled (`inspection_api: false`).

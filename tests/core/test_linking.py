@@ -301,6 +301,27 @@ def test_an_ambiguous_person_owns_nothing() -> None:
     assert _owners(conv) == {"EMAIL_1": None}
 
 
+def test_an_owner_never_changes_once_given() -> None:
+    msgs = ["Ahmed Ben Salem : ahmed@example.com", "et Ahmed Karoui"]
+    n = nona()
+    assert _owners(n.anonymize_messages(msgs[:1])) == {"EMAIL_1": "PERSON_1"}
+    assert _owners(n.anonymize_messages(msgs)) == {"EMAIL_1": "PERSON_1"}  # a second Ahmed came too late
+
+
+def test_a_superset_naming_someone_else_has_no_owner() -> None:
+    conv = nona(names=["Sami", "Ahmed Karoui"]).anonymize_messages(
+        ["Sami et Ahmed Karoui : sami_ahmed@example.com"]
+    )
+    assert _owners(conv) == {"EMAIL_1": None}
+    conv = nona(names=["Wassim"]).anonymize_messages(["Wassim : wassim.ferchichi@example.com"])
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
+def test_a_surname_written_without_its_particle_links() -> None:
+    conv = nona().anonymize_messages(["Ahmed Ben Salem : ahmed.salem@example.com"])
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
 def test_an_unrelated_email_has_no_owner_and_other_types_never_do() -> None:
     conv = nona().anonymize_messages(["Sami Trabelsi : contact@example.com, 22 123 456"])
     assert _owners(conv) == {"EMAIL_1": None}

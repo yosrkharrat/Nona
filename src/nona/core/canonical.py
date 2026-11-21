@@ -135,18 +135,34 @@ def _words(surface: str) -> list[str]:
     return [w for w in out if w not in HONORIFICS and not w.isdigit()]
 
 
-def canonical_tokens(surface: str) -> frozenset[str]:
-    """The canonical token set of one PERSON mention."""
+def _glued(surface: str) -> list[tuple[str, str, str]]:
+    """`(token, particles, word)` per token of a mention: `ben salem` → `("bensalem", "ben", "salem")`."""
     words = [w for w in map(_de_arabizi, _words(surface)) if w and w not in HONORIFICS]
-    tokens: list[str] = []
+    out: list[tuple[str, str, str]] = []
     glue = ""
     for i, word in enumerate(words):
         if word in PARTICLES and i + 1 < len(words):
             glue += word
             continue
-        tokens.append(glue + word)
+        token = VARIANTS.get(glue + word, glue + word)
+        if token not in HONORIFICS:
+            out.append((token, glue, word))
         glue = ""
-    return frozenset(VARIANTS.get(t, t) for t in tokens) - HONORIFICS
+    return out
+
+
+def canonical_tokens(surface: str) -> frozenset[str]:
+    """The canonical token set of one PERSON mention."""
+    return frozenset(token for token, _, _ in _glued(surface))
+
+
+def glued_parts(surface: str) -> dict[str, tuple[str, str]]:
+    """Tokens glued from a particle and a word: `Ben Salem` → {"bensalem": ("ben", "salem")}.
+
+    Only these may be written without their particle in a handle (`ahmed.salem`). A name that merely starts
+    like a particle (`Elyes`, `Boukadida`, `Benjamin`) is not split.
+    """
+    return {token: (glue, word) for token, glue, word in _glued(surface) if glue}
 
 
 # A word as written: letters with their combining marks (NFD accents, Arabic harakat and tatweel), and
@@ -185,35 +201,48 @@ def compatible(a: frozenset[str], b: frozenset[str]) -> bool:
 
 # --------------------------------------------------------------------------- handles (deep dive B, step 6)
 
-_HANDLE_SEPARATORS = re.compile(r"[._+\-]+")
+_HANDLE_SEPARATORS = re.compile(r"[._\-]+")
 _MIN_FULL = 3  # a handle must spell out at least one name part this long, not only initials
+_MAX_PIECES = 6  # the superset search tries every subset of pieces: bounded, so no input can blow it up
+_MAX_LETTERS = 64
+_DIGITS = "0123456789"
+
+Splits = dict[str, tuple[str, str]]  # glued token → (particles, word), from `glued_parts`
 
 
 def _handle_pieces(handle: str) -> list[str]:
-    """Letters of each piece of a local part or handle: Arabizi digits read, other digits dropped."""
+    """Letters of each piece of a local part or handle.
+
+    A `+tag` is dropped (`ahmed+devis`). Runs of 2+ digits at either end are a year or a counter (`sami92`,
+    `92sami`), not Arabizi letters; a single leading digit is (`3ali`, `7amza`). Other digits are read as
+    Arabizi or dropped.
+    """
+    local = handle.lstrip("@").split("+", 1)[0]
     out: list[str] = []
-    for piece in _HANDLE_SEPARATORS.split(handle.lstrip("@")):
-        # Trailing digits are a year or a counter (`sami92`), not Arabizi letters (`9` would read as `k`).
-        letters = "".join(c for c in _de_arabizi(_fold(piece).rstrip("0123456789")) if c.isalpha())
+    for piece in _HANDLE_SEPARATORS.split(local):
+        folded = _fold(piece).rstrip(_DIGITS)
+        head = len(folded) - len(folded.lstrip(_DIGITS))
+        if head >= 2:
+            folded = folded[head:]
+        letters = "".join(c for c in _de_arabizi(folded) if c.isalpha())
         if letters:
             out.append(letters)
     return out
 
 
-def _units(token: str) -> tuple[frozenset[str], frozenset[str]]:
+def _units(token: str, split: tuple[str, str] | None) -> tuple[frozenset[str], frozenset[str]]:
     """How a handle may write one canonical token: in full, and as initials.
 
-    Full: the token, its spelling variants (`med` for `mohamed`) and, for a glued surname, the part after the
-    particle (`salem` for `bensalem`). Initials: the first letter, and for a glued surname the initials of its
-    parts (`bs`) or of the part after the particle (`s`).
+    Full: the token and its spelling variants (`med` for `mohamed`); for a glued surname, also the word after
+    the particle (`salem` for `bensalem`). Initials: the first letter; for a glued surname, also the initials
+    of its parts (`bs`) and of the word (`s`).
     """
     full = {token, *(variant for variant, canonical in VARIANTS.items() if canonical == token)}
     initials = {token[0]}
-    for particle in PARTICLES:
-        rest = token.removeprefix(particle)
-        if rest != token and len(rest) >= _MIN_FULL:
-            full.add(rest)
-            initials |= {particle[0] + rest[0], rest[0]}
+    if split is not None:
+        glue, word = split
+        full.add(word)
+        initials |= {glue[0] + word[0], word[0]}
     return frozenset(full), frozenset(initials)
 
 
@@ -242,28 +271,51 @@ def _spells(letters: str, units: list[tuple[frozenset[str], frozenset[str]]], ev
     return fits(0, 0, False)
 
 
-def handle_matches(handle: str, tokens: frozenset[str]) -> bool:
-    """Whether a handle spells a person's tokens or initials: `ahmed.bs`, `abensalem`, `a.bensalem` for
-    {ahmed, bensalem}.
-
-    The handle's letters must split entirely into units, each token used at most once, in any order, with at
-    least one name part written in full (3+ letters). Separators and digits that aren't Arabizi letters are
-    ignored (`sami92`).
-
-    A handle may also say more than the name known so far, as linking allows a superset: separated pieces
-    that aren't the person's can be left out, if the other pieces cover **every** token. So
-    `wassim.ferchichi` fits someone known as `Wassim`, while `sami.jlassi` doesn't fit `Sami Trabelsi`.
-    """
+def _prepare(
+    handle: str, tokens: frozenset[str], splits: Splits | None
+) -> tuple[list[str], list[tuple[frozenset[str], frozenset[str]]]] | None:
     pieces = _handle_pieces(handle)
     ordered = sorted(tokens)
-    if not pieces or not ordered or len(ordered) > 8:
+    if not pieces or not ordered or len(ordered) > 8 or sum(map(len, pieces)) > _MAX_LETTERS:
+        return None
+    return pieces, [_units(t, (splits or {}).get(t)) for t in ordered]
+
+
+def handle_matches(
+    handle: str, tokens: frozenset[str], splits: Splits | None = None, *, superset: bool = True
+) -> bool:
+    """Whether a handle spells a person's tokens or initials: `ahmed.bs`, `abensalem`, `a.bensalem` for
+    {ahmed, bensalem} (with `splits` from `glued_parts`, which say `bensalem` is `ben` + `salem`).
+
+    The handle's letters must split entirely into units, each token used at most once, in any order, with at
+    least one name part written in full (3+ letters). Separators, a `+tag` and digit runs that aren't Arabizi
+    letters are ignored (`sami92`).
+
+    With `superset`, a handle may also say more than the name known so far, as linking allows: separated
+    pieces that aren't the person's can be left out, if the other pieces cover **every** token. So
+    `wassim.ferchichi` fits someone known as `Wassim`, while `sami.jlassi` doesn't fit `Sami Trabelsi`. At
+    most 6 pieces are searched that way.
+    """
+    prepared = _prepare(handle, tokens, splits)
+    if prepared is None:
         return False
-    units = [_units(t) for t in ordered]
+    pieces, units = prepared
     if _spells("".join(pieces), units, every_token=False):
         return True
+    if not superset or len(pieces) > _MAX_PIECES:
+        return False
     for kept in itertools.product((True, False), repeat=len(pieces)):
         if any(kept) and not all(kept):
             letters = "".join(p for p, keep in zip(pieces, kept, strict=True) if keep)
             if _spells(letters, units, every_token=True):
                 return True
     return False
+
+
+def handle_names(handle: str, tokens: frozenset[str], splits: Splits | None = None) -> bool:
+    """Whether one separated piece of the handle is a name part of this person, written in full."""
+    prepared = _prepare(handle, tokens, splits)
+    if prepared is None:
+        return False
+    pieces, units = prepared
+    return any(piece in full and len(piece) >= _MIN_FULL for piece in pieces for full, _ in units)
