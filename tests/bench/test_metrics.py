@@ -156,6 +156,21 @@ def test_placeholders_pairs_adjacent_spans_token_by_token() -> None:
     ]
 
 
+def test_placeholders_ignores_a_rewritten_neighbour() -> None:
+    text = "Merci M. Sami"
+    assert placeholders(text, "Merci Monsieur PERSON_1", _spans(text, "Sami")) == ["PERSON_1"]
+    text = "Ahmed Ben Salem demain"
+    assert placeholders(text, "PERSON_1 DATE_1", _spans(text, "Ahmed Ben Salem")) == ["PERSON_1"]
+
+
+def test_placeholders_pairs_adjacent_spans_of_different_lengths() -> None:
+    text = "Merci Sami Ben Ali"
+    assert placeholders(text, "Merci PERSON_1 PERSON_2", _spans(text, "Sami", "Ben Ali")) == [
+        "PERSON_1",
+        "PERSON_2",
+    ]
+
+
 def test_placeholders_does_not_attribute_a_replacement_shared_by_two_spans() -> None:
     text = "Merci Sami Kais"
     assert placeholders(text, "Merci PERSON_1", _spans(text, "Sami", "Kais")) == [None, None]
@@ -201,6 +216,13 @@ def test_link_tells_ambiguity_from_borrowing_another_entity() -> None:
     assert result.ambiguity == Rate(0, 1)  # e1 took e2's placeholder: a merge, not an extra person
     assert result.wrong_merge == Rate(2, 2)
     assert result.wrong_split == Rate(1, 1)
+
+
+def test_link_does_not_call_a_placeholder_another_entity_uses_ambiguous() -> None:
+    # e1's second mention borrows PERSON_3, which e2 uses later on: a merge, not an extra person.
+    result = link([_m("e2", "PERSON_2"), _m("e1", "PERSON_1"), _m("e2", "PERSON_3"), _m("e1", "PERSON_3")])
+    assert result.ambiguity == Rate(0, 2)  # PERSON_3 is shared by both entities, so it's no one's extra
+    assert result.wrong_merge == Rate(2, 2)
 
 
 def test_link_skips_ambiguous_public_and_unplaced_mentions() -> None:

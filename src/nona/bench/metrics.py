@@ -8,6 +8,7 @@ measures what actually goes over the wire (FR-21).
 from __future__ import annotations
 
 import difflib
+import itertools
 import re
 import unicodedata
 from collections import defaultdict
@@ -171,45 +172,59 @@ def _overlaps(start: int, end: int, ranges: Iterable[tuple[int, int]]) -> bool:
 # --------------------------------------------------------------------------- placeholders
 
 
-def _replacements(original: str, payload: str) -> list[tuple[int, int, str]]:
-    """`(start, end, text)`: a stretch of `original` and the payload text that replaced it.
-
-    Same alignment as `changed_ranges`. When a replaced stretch has as many tokens on both sides, tokens are
-    paired one to one, so `Sami Kais` → `PERSON_1 PERSON_2` gives one piece per name. Otherwise the whole
-    stretch is one piece (`Ahmed Ben Salem` → `PERSON_1`). Deletions are not pieces: a removed value carries
-    no placeholder.
-    """
-    a = list(_TOKEN.finditer(original))
-    b = _TOKEN.findall(payload)
-    matcher = difflib.SequenceMatcher(None, [m.group() for m in a], b, autojunk=False)
-    pieces: list[tuple[int, int, str]] = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag != "replace":
-            continue
-        if i2 - i1 == j2 - j1:
-            pieces.extend((a[i1 + k].start(), a[i1 + k].end(), b[j1 + k]) for k in range(i2 - i1))
-        else:
-            pieces.append((a[i1].start(), a[i2 - 1].end(), " ".join(b[j1:j2])))
-    return pieces
-
-
 def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) -> list[str | None]:
     """What replaced each span of `original` in `payload`, read from the text alone (04 §F).
 
-    `None` when nothing replaced the span (it leaked, or was deleted), or when the replacing text also covers
-    another span, so it can't be attributed to one of them. A partly replaced span keeps the replaced part:
-    `Mme Trabelsi` → `Mme PERSON_1` gives `PERSON_1`.
+    Same token alignment as `changed_ranges`. Inside each replaced stretch:
+    - as many tokens on both sides: paired one to one (`Sami Kais` → `PERSON_1 PERSON_2`);
+    - otherwise the stretch is cut into runs (each span, and the words between them). One payload token per
+      run, or one per span, pairs them in order (`M. Sami` → `Monsieur PERSON_1`, `Sami Ben Ali` →
+      `PERSON_1 PERSON_2`). With a single span, the payload tokens left after one per neighbouring word go
+      to the span, at least one (`Ahmed Ben Salem` → `PERSON_1`).
+    - anything else covering two spans can't be attributed: both get `None`.
+
+    `None` also when nothing replaced the span (it leaked in full, or was deleted). A partly replaced span
+    keeps the replaced part, so a partial leak can still carry a placeholder: `Mme Trabelsi` →
+    `Mme PERSON_1` gives `PERSON_1`.
     """
-    pieces = _replacements(original, payload)
-    out: list[str | None] = []
-    for k, (start, end) in enumerate(spans):
-        hit = [p for p in pieces if p[0] < end and start < p[1]]
-        others = [s for i, s in enumerate(spans) if i != k]
-        if not hit or any(_overlaps(p[0], p[1], others) for p in hit):
-            out.append(None)
+    a = list(_TOKEN.finditer(original))
+    b = _TOKEN.findall(payload)
+    owner: list[int | None] = []
+    for tok in a:
+        hit = [k for k, (start, end) in enumerate(spans) if tok.start() < end and start < tok.end()]
+        owner.append(hit[0] if hit else None)
+    parts: list[list[str]] = [[] for _ in spans]
+    lost = [False] * len(spans)
+    matcher = difflib.SequenceMatcher(None, [m.group() for m in a], b, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace":
+            continue
+        replacement = b[j1:j2]
+        if i2 - i1 == j2 - j1:
+            for i, token in zip(range(i1, i2), replacement, strict=True):
+                if (k := owner[i]) is not None:
+                    parts[k].append(token)
+            continue
+        runs = [k for k, _ in itertools.groupby(owner[i1:i2])]
+        named = [k for k in runs if k is not None]
+        if len(replacement) == len(runs):
+            for k, token in zip(runs, replacement, strict=True):
+                if k is not None:
+                    parts[k].append(token)
+        elif len(replacement) == len(named):
+            for k, token in zip(named, replacement, strict=True):
+                parts[k].append(token)
+        elif len(named) == 1:
+            k = named[0]
+            inside = [i for i in range(i1, i2) if owner[i] == k]
+            before, after = inside[0] - i1, i2 - 1 - inside[-1]
+            width = max(1, len(replacement) - before - after)
+            first = min(before, len(replacement) - width)
+            parts[k].extend(replacement[first : first + width])
         else:
-            out.append(" ".join(p[2] for p in hit))
-    return out
+            for k in named:
+                lost[k] = True
+    return [None if lost[k] or not parts[k] else " ".join(parts[k]) for k in range(len(spans))]
 
 
 # --------------------------------------------------------------------------- results
@@ -280,10 +295,10 @@ def link(mentions: Sequence[MentionResult]) -> Linking:
       `Ahmed Karoui` both `PERSON_1`). Costs utility, leaks nothing.
     - **Wrong split:** an entity appears under two or more placeholders (`Ahmed` → `PERSON_1`, then
       `Ahmed Ben Salem` → `PERSON_2`).
-    - **Ambiguity:** a mention after the entity's first one gets a placeholder that is neither the entity's
-      first placeholder nor any other entity's: an extra "person" for the model. ADR-0004 gives an ambiguous
-      mention its own placeholder; gold-ambiguous mentions are skipped, so this counts the mentions a human
-      can resolve and the system couldn't. Every hit is also part of a wrong split.
+    - **Ambiguity:** a mention after the entity's first placed one gets a placeholder that is neither the
+      entity's first placeholder nor one any other entity uses: an extra "person" for the model. ADR-0004
+      gives an ambiguous mention its own placeholder; gold-ambiguous mentions are skipped, so this counts the
+      mentions a human can resolve and the system couldn't. Every hit is also part of a wrong split.
     """
     scoped = [m for m in mentions if not m.public and not m.ambiguous]
     by_entity: dict[str, list[str]] = defaultdict(list)
@@ -300,7 +315,7 @@ def link(mentions: Sequence[MentionResult]) -> Linking:
     split = sum(len(set(labels)) > 1 for labels in multi)
     later = Rate(0, 0)
     for e, labels in by_entity.items():
-        claimed = {label for o, label in first.items() if o != e}
+        claimed = {label for label, users in owners.items() if users - {e}}
         for label in labels[1:]:
             later += Rate(int(label != first[e] and label not in claimed), 1)
     placed = sum(len(labels) for labels in by_entity.values())

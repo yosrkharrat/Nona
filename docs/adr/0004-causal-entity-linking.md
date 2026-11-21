@@ -83,7 +83,7 @@ Details the decision left open, settled while implementing it in [`core/linking.
 
 ### Measured (S3, #42)
 
-`nona` system on `dev` (120 conversations, 292 turns; 40 of them multi-turn). The linking metrics are defined in [05 §6](../design/05-dataset.md#6-how-leaks-are-counted-input-to-the-leak-rate-script). They read placeholders from the payload alone and only count mentions that got one. A name that leaks is a detection failure, already counted by the leak rate.
+`nona` system on `dev` (120 conversations, 292 turns; 40 of them multi-turn). The linking metrics are defined in [05 §6](../design/05-dataset.md#6-how-leaks-are-counted-input-to-the-leak-rate-script). They read placeholders from the payload alone and only count mentions that got one. A name that leaks in full is a detection failure, already counted by the leak rate.
 
 | PERSON | all of `dev` | multi-turn part |
 |---|---|---|
