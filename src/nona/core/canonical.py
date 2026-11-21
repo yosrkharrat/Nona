@@ -147,6 +147,28 @@ def canonical_tokens(surface: str) -> frozenset[str]:
     return frozenset(VARIANTS.get(t, t) for t in tokens) - HONORIFICS
 
 
+_NAME_WORD = re.compile(r"\w+")
+
+
+def name_words(surface: str) -> list[str]:
+    """Words of a PERSON mention that name the same person on their own, as written (ADR-0004, look-ahead).
+
+    `Chirine` and `Boukadida` in `Mme Chirine Boukadida`. A word qualifies when its own token set is inside
+    the mention's, so honorifics, particles and the half of a glued surname (`Salem` in `Ben Salem` is not
+    `bensalem`) don't. Words shorter than 3 characters and all-lowercase Latin words are skipped: a lowercase
+    `amal` is as likely the word "hope".
+    """
+    whole = canonical_tokens(surface)
+    out: list[str] = []
+    for word in _NAME_WORD.findall(surface):
+        if len(word) < 3 or word.islower() or word == surface.strip():
+            continue
+        tokens = canonical_tokens(word)
+        if tokens and tokens <= whole and word not in out:
+            out.append(word)
+    return out
+
+
 def compatible(a: frozenset[str], b: frozenset[str]) -> bool:
     """Two non-empty token sets that one contains the other (ADR-0004, step 4)."""
     return bool(a) and bool(b) and (a <= b or b <= a)

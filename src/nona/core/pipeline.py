@@ -2,7 +2,8 @@
 
 `anonymize_messages` is the conversation-level path the proxy uses (ADR-0004): messages are processed in
 order, every surface form linked in an earlier message is searched for again (forward propagation), and
-placeholders issued for a message never change whatever comes after it.
+placeholders issued for a message never change whatever comes after it. Inside a message, the name words of
+each detected PERSON are searched for too (look-ahead), so `Chirine. Chirine Boukadida…` masks both.
 
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
@@ -13,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
+from nona.core.canonical import canonical_tokens, name_words
 from nona.core.normalize import normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
@@ -24,6 +26,7 @@ from nona.core.pseudonymize import (
     restore,
 )
 from nona.core.recognizers import Recognizer, default_recognizers
+from nona.core.recognizers.gazetteer import COMMON
 from nona.core.resolver import denylist_spans, known_spans, resolve
 from nona.core.types import EntityType, Span
 
@@ -72,6 +75,20 @@ class Nona:
                 candidates.extend(recognizer.detect(doc))
             except Exception as exc:
                 raise DetectorError(recognizer.name) from exc
+        spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+        # Look-ahead (ADR-0004, step 4): a bare first name before the full name in the same message.
+        # Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left to the
+        # gazetteer's context rules: `Mabrouk ! Mabrouk Jlassi a eu son bac` keeps its first `Mabrouk`.
+        words = [
+            (EntityType.PERSON, word)
+            for s in spans
+            if s.type is EntityType.PERSON
+            for word in name_words(s.text_in(text))
+            if not canonical_tokens(word) & COMMON
+        ]
+        if not words:
+            return spans
+        candidates.extend(known_spans(doc, words, detector="look-ahead"))
         return resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
 
     def anonymize(self, text: str) -> Anonymized:

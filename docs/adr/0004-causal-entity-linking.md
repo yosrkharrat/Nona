@@ -80,6 +80,7 @@ Details the decision left open, settled while implementing it in [`core/linking.
 - **Other types** link by value: letters and digits for numbers (`22 123 456` = `22.123.456`), folded text for the rest.
 - **A placeholder the user types after its number was issued** (`PHONE_1` in message 3, when `PHONE_1` was issued in message 1) can't be renumbered. It becomes an entity whose value is the literal text: it goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactly what the user wrote. Without this, restoring would silently turn the user's `PHONE_1` into the phone number. The conversation-level round-trip property test found this case.
 - `anonymize(text)` is the one-message conversation, so single texts get the same linking.
+- **Look-ahead propagation inside a message** (#48). Once a message's spans are resolved, the name words of each PERSON span are searched for in the same message, with the single-word rule of forward propagation (exact text, word boundaries), and the message is resolved again. So `Chirine. Chirine Boukadida…` masks both, when a detector finds the full name but misses the lone first name, as NER models often do. A word qualifies when its own token set is inside the mention's. So `Salem` alone doesn't qualify in `Ben Salem` (the token is `bensalem`), honorifics and particles never do, and words under 3 characters or all-lowercase Latin words are skipped. Names that are also ordinary words (`Mabrouk`, `Amal`: the gazetteer's common-word list) are left to the context rules: in `Mabrouk ! Mabrouk Jlassi`, the first is "congratulations" (#50). A word found this way is a surface form like any other, so it propagates to later messages. It only reads message *i*, so prefix stability holds.
 
 ### Measured (S3, #42)
 
@@ -98,7 +99,7 @@ Over all types: 0/170 merged, 0/51 split, 0/73 ambiguous. The 8 gold-`ambiguous`
 
 **Why Accepted:** the short→long pattern links (`Boukadida`, then `Chirine Boukadida` → one placeholder), two people sharing a first name stay apart, prefix stability and round trip are property-tested, and no issued placeholder leaks back. The rates are only as broad as detection: with half the PERSON mentions masked, they say linking makes no wrong decision on what it sees, not that every hard case is covered. They are re-measured on the frozen test set in S4.
 
-**Found while measuring:** a bare first name before the full name in the same message (`Chirine. Chirine Boukadida…`) leaks, because forward propagation only searches earlier messages (#48).
+**Found while measuring:** in `Chirine. Chirine Boukadida…` (4 dev conversations), both `Chirine` leak. The full name isn't detected: only `Boukadida` is masked, propagated from an earlier message. That's a detection gap, left to S4. #48 added the look-ahead that masks the lone first name once a detector does find the full name; it doesn't move the dev numbers yet.
 
 ## Consequences
 
