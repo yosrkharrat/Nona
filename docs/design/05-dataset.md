@@ -135,6 +135,15 @@ The `identity` system (sends everything unchanged) must score 100% leaked and 0%
 - About 50 hand-written hard cases, tagged.
 - Split: about 40% dev, 60% test, stratified by language and source.
 
+### Current `dev` (S3)
+
+| Part | Conversations | How it's made |
+|---|---|---|
+| v0 (`dev-0001`…`0080`) | 80, mostly single-turn | `generate --seed 1 --count 80` (S1). Committed before #34 changed phone formats, so today's generator gives slightly different values for it; the committed file is the source of truth |
+| multi-turn (`dev-0081`…`0120`) | 40, 4–5 turns each | `generate --set multi-turn --seed 2 --count 40 --start 81` (S3, #41) |
+
+The multi-turn set exists for linking (ADR-0004): a short name before the full one, two people sharing a first name with `ambiguous: true` references, honorifics, assistant turns that repeat restored names, lowercase Arabizi names, cities (LOCATION), name-like decoys (`amal`, `sana`, `3amel`, `3ali`), and no-PII controls. Most of its people come from the generator's `tn2` pool, which holds names that are **not** in the gazetteer (a test enforces it). That way the benchmark measures detection rather than list overlap: on v0 the gazetteer reaches 0% leaked because 76 of the generator's 98 v0 names are common enough to be listed, while on the multi-turn set 70% of names still leak.
+
 ## 8. Open questions for review
 
 | # | Question | Proposal |

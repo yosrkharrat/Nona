@@ -4,13 +4,22 @@ Templates are written by hand. The generator fills their slots with synthetic va
 the gold labels are exact by construction: the generator knows where it put every value. Output goes through
 `parse_conversation`, so a generated conversation is held to the same rules as a hand-written one.
 
-Usage:
+Usage (`bench/data/dev.jsonl` is the v0 set followed by the multi-turn set):
     python -m nona.bench.generate --seed 1 --count 80 --prefix dev > bench/data/dev.jsonl
+    python -m nona.bench.generate --set multi-turn --seed 2 --count 40 --prefix dev --start 81 \
+        >> bench/data/dev.jsonl
 
 Slot syntax inside a template turn: `{name}` or `{name.form}`. Each slot name is declared once per template
-with a kind (see `KINDS`). Person slots have the forms `first` and `last` besides the full name. A kind may
-name an owner, `phone:tn@p1`, which links the value to person `p1` (deep dive B, step 6). Kinds starting with
-`~` are distractors: they look like personal data but aren't, and they're recorded for over-masking analysis.
+with a kind (see `KINDS`). Person slots have the forms `first`, `last` and `lower` (the first name in lower
+case, as Arabizi writes it) besides the full name. A kind may name an owner, `phone:tn@p1`, which links the
+value to person `p1` (deep dive B, step 6). A person kind may share another person's first name,
+`person:tn2:m=p1`: two people called Ahmed. A mention written `{p1.first?}` is *ambiguous* (05 §3): even a
+human can't tell which of the two is meant, so linking metrics skip it. Kinds starting with `~` are
+distractors: they look like personal data but aren't, and they're recorded for over-masking analysis.
+
+The `tn2` pool holds Tunisian names that are deliberately **not** in the gazetteer
+(`nona.core.recognizers.gazetteer_data`), so the benchmark measures detection, not list overlap (a test keeps
+it that way).
 
 Determinism: the same seed and the same templates give the same output on the same Python minor version.
 `random.Random` methods other than `random()` may change between Python versions, so the committed files,
@@ -53,6 +62,13 @@ FIRST_NAMES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
         "m": ("James", "Daniel", "Ryan", "Ethan", "Oliver", "Samuel"),
         "f": ("Emily", "Olivia", "Grace", "Hannah", "Megan", "Lucy"),
     },
+    # Held out from the gazetteer (see the module docstring).
+    "tn2": {
+        "m": ("Ghaith", "Mootez", "Achraf", "Nidhal", "Rayen", "Chiheb", "Hazem", "Wael", "Bacem", "Zakaria",
+              "Oussema", "Montaser"),
+        "f": ("Chaima", "Khouloud", "Ranim", "Mayssa", "Chirine", "Islem", "Ahlem", "Rihem", "Nadhra",
+              "Molka", "Yasmine", "Asmahen"),
+    },
 }  # fmt: skip
 SURNAMES: Mapping[str, tuple[str, ...]] = {
     "tn": ("Ben Salem", "Trabelsi", "Gharbi", "Mejri", "Ayari", "Sassi", "Dridi", "Khelifi", "Chaabane",
@@ -61,7 +77,14 @@ SURNAMES: Mapping[str, tuple[str, ...]] = {
     "fr": ("Martin", "Bernard", "Dubois", "Moreau", "Laurent", "Lefèvre", "Garnier", "Rousseau", "Fontaine",
            "Chevalier", "Girard", "Mercier"),
     "en": ("Carter", "Hughes", "Bennett", "Foster", "Walsh", "Porter", "Reed", "Hayes", "Turner", "Collins"),
+    "tn2": ("Bouhlel", "Chtioui", "Zghal", "Ben Hmida", "Ghariani", "Drira", "Kammoun", "Haddar", "Belkhodja",
+            "Sellami", "Lahmar", "Mnif", "Ben Fraj", "Hachicha", "Jaouadi", "Ghorbel", "Boukadida"),
 }  # fmt: skip
+# Cities for LOCATION values, some of them outside the gazetteer's list.
+CITIES: tuple[str, ...] = (
+    "Sfax", "Sousse", "Bizerte", "Nabeul", "Monastir", "Kairouan", "La Marsa", "Menzel Temime", "El Jem",
+    "Teboulba", "Sbeitla", "Tinja", "Ksour Essef", "Bekalta",
+)  # fmt: skip
 PUBLIC_FIGURES = frozenset(
     {
         "Kais Saied", "Leila Trabelsi", "Nabil Karoui", "Hamma Hammami", "Ons Jabeur", "Mohamed Bouazizi",
@@ -258,14 +281,21 @@ _DISTRACTORS: Mapping[str, tuple[str, Callable[[random.Random], str]]] = {
     "~price": ("price", _price),
     "~ref": ("reference number", _ref),
     "~date": ("date", _date),
+    # Ordinary words that are also names (deep dive A): hope, light, high, year, doing.
+    "~word:amal": ("ordinary word that is also a name (hope)", lambda rng: "amal"),
+    "~word:nour": ("ordinary word that is also a name (light)", lambda rng: "nour"),
+    "~word:3ali": ("ordinary word that is also a name (high)", lambda rng: "3ali"),
+    "~word:sana": ("ordinary word that is also a name (year)", lambda rng: "sana"),
+    "~word:3amel": ("ordinary word that is also a name (doing)", lambda rng: "3amel"),
 }
-_PERSON = re.compile(r"person:(tn|fr|en)(?::([mf]))?")
+_PERSON = re.compile(r"person:(tn2|tn|fr|en)(?::([mf]))?(?:=(\w+))?")
 KINDS = (
     frozenset(_STRUCTURED)
     | frozenset(_DISTRACTORS)
-    | {"email"}
+    | {"email", "city"}
     | {f"person:{pool}{g}" for pool in FIRST_NAMES for g in ("", ":m", ":f")}
 )
+PERSON_FORMS = frozenset({"first", "last", "lower"})
 
 
 # --------------------------------------------------------------------------- templates
@@ -292,12 +322,19 @@ class Template:
         return tuple(dict.fromkeys(tags))
 
 
-_SLOT = re.compile(r"\{(\w+)(?:\.(\w+))?\}")
+_SLOT = re.compile(r"\{(\w+)(?:\.(\w+))?(\?)?\}")
 
 
 def _split_kind(kind: str) -> tuple[str, str | None]:
+    """`phone:tn@p1` → (`phone:tn`, `p1`). A person's `=p1` (shared first name) is removed from the base."""
     base, _, owner = kind.partition("@")
-    return base, owner or None
+    return base.partition("=")[0], owner or None
+
+
+def _shares(kind: str) -> str | None:
+    """`person:tn2:m=p1` → `p1`: the slot whose first name this person shares."""
+    match = _PERSON.fullmatch(kind)
+    return match.group(3) if match else None
 
 
 def check_template(t: Template) -> None:
@@ -312,12 +349,14 @@ def check_template(t: Template) -> None:
         if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError(f"{t.name}: bad role {role!r}")
         for m in _SLOT.finditer(text):
-            slot, form = m.group(1), m.group(2)
+            slot, form, ambiguous = m.group(1), m.group(2), m.group(3)
             if slot not in t.slots:
                 raise ValueError(f"{t.name}: slot {{{slot}}} is not declared")
             base, _ = _split_kind(t.slots[slot])
-            if form is not None and (not base.startswith("person:") or form not in {"first", "last"}):
+            if form is not None and (not base.startswith("person:") or form not in PERSON_FORMS):
                 raise ValueError(f"{t.name}: slot {{{slot}.{form}}}: unknown form for {base}")
+            if ambiguous and not base.startswith("person:"):
+                raise ValueError(f"{t.name}: slot {{{slot}?}}: only a person mention can be ambiguous")
             used.add(slot)
         if "{" in _SLOT.sub("", text) or "}" in _SLOT.sub("", text):
             raise ValueError(f"{t.name}: malformed slot in {text!r}")
@@ -332,6 +371,9 @@ def check_template(t: Template) -> None:
                 raise ValueError(f"{t.name}: slot {slot}: {base} can't have an owner")
             if not t.slots.get(owner, "").startswith("person:"):
                 raise ValueError(f"{t.name}: slot {slot}: owner {owner!r} is not a person slot")
+        shared = _shares(kind)
+        if shared is not None and (shared == slot or not t.slots.get(shared, "").startswith("person:")):
+            raise ValueError(f"{t.name}: slot {slot}: shares a first name with {shared!r}, not a person slot")
 
 
 def _tpl(
@@ -440,26 +482,103 @@ TEMPLATES: tuple[Template, ...] = (
 )  # fmt: skip
 
 
+# Multi-turn set (S3, ADR-0004): 4+ turns, for linking. Assistant turns hold real names, as a client re-sends
+# restored answers. Most people come from the held-out `tn2` pool.
+MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
+    _tpl("mt-fr-short-then-full", "fr", {"p1": "person:tn2:m", "ph": "phone:tn@p1"},
+         "Rappelle {p1.first} demain matin, c'est urgent.",
+         (A, "D'accord, je rappellerai {p1.first} demain matin. Vous avez son numéro ?"),
+         "Oui, c'est {p1}, au {ph}.",
+         (A, "C'est noté : {p1}, au {ph}."),
+         "Et dis à {p1.first} que la réunion est déplacée à 15h."),
+    _tpl("mt-fr-two-same-first-name", "fr",
+         {"p1": "person:tn2:m", "p2": "person:tn2:m=p1", "em": "email@p1"},
+         "{p1} et {p2} viennent tous les deux à la réunion de jeudi.",
+         (A, "Très bien, je préviens {p1} et {p2}."),
+         "{p1.first?} m'a dit qu'il serait en retard.",
+         (A, "Vous parlez de {p1} ou de {p2} ?"),
+         "De {p1}. Son mail, c'est {em}.",
+         tags="ambiguous-reference"),
+    _tpl("mt-en-doctor", "en", {"p1": "person:tn2", "ph": "phone:tn@p1"},
+         "Please book a meeting with Dr {p1.last} next week.",
+         (A, "Sure. Which day suits Dr {p1.last}?"),
+         "Tuesday. {p1.first} said mornings are better, the number is {ph}.",
+         (A, "Booked {p1} for Tuesday morning; I'll confirm on {ph}."),
+         tags="honorific"),
+    _tpl("mt-aeb-lowercase", "aeb-Latn",
+         {"p1": "person:tn2:m", "ph": "phone:tn@p1", "em": "email@p1", "w": "~word:amal"},
+         "kallem {p1.lower} 9bal el 3asr, 3andi {w} yji ghodwa.",
+         (A, "Behi. Chnowa nomrou {p1.first} ?"),
+         "{ph}, w ken ma jewbekch ab3ath l {em}.",
+         (A, "Ok, ab3athtlou 3al {em}."),
+         "y3aychek, {p1.lower} rajel behi.",
+         tags="common-word-name"),
+    _tpl("mt-fr-moved-city", "fr", {"p1": "person:tn2:m", "c1": "city", "rib": "rib@p1"},
+         "{p1} a déménagé à {c1}, il faut mettre à jour son dossier.",
+         (A, "D'accord. Quelle est la nouvelle adresse de {p1.first} à {c1} ?"),
+         "Rue de la République. Et voici son nouveau RIB : {rib}.",
+         (A, "Le dossier de {p1} est à jour, avec le RIB {rib}."),
+         "Merci. Préviens {p1.first} quand c'est fait."),
+    _tpl("mt-en-colleague", "en",
+         {"p1": "person:tn2", "p2": "person:tn2:f", "em": "email@p2", "ph": "phone:fr@p1"},
+         "Hi, I'm {p1}. I'm writing about my colleague {p2}.",
+         (A, "Hello {p1.first}, how can I help with {p2.first}'s account?"),
+         "{p2.first} can't log in. Her email is {em}.",
+         (A, "I've sent {p2.first} a reset link at {em}."),
+         "Thanks. If anything else comes up, call me on {ph}."),
+    _tpl("mt-mix-two-same-first-name", "aeb-Latn+fr",
+         {"p1": "person:tn:m", "p2": "person:tn:m=p1", "ph": "phone:tn@p1"},
+         "3andi rendez-vous m3a {p1} w {p2} lundi.",
+         (A, "D'accord, je note {p1} et {p2} pour lundi."),
+         "{p1.first?} 9alli bech yjib el contrat.",
+         (A, "Lequel, {p1} ou {p2} ?"),
+         "{p1}, nomrou {ph}.",
+         tags="ambiguous-reference"),
+    _tpl("mt-fr-honorific-surname", "fr", {"p1": "person:tn2:f", "ph": "phone:tn-fixed@p1", "c1": "city"},
+         "Mme {p1.last} attend une réponse pour son dossier.",
+         (A, "Je m'en occupe. Pouvez-vous me rappeler son prénom ?"),
+         "{p1.first}. {p1} travaille à notre agence de {c1}, ligne directe {ph}.",
+         (A, "Merci, j'appelle Mme {p1.last} au {ph}."),
+         tags="honorific"),
+    _tpl("mt-aeb-no-pii", "aeb-Latn", {"w1": "~word:amal", "w2": "~word:sana", "w3": "~word:3amel"},
+         "sbe7 el khir, 3andi {w1} kbir fel projet hedha.",
+         (A, "Behi, chnowa el moshkla ?"),
+         "el {w2} hedhi el as3ar tal3et barcha.",
+         (A, "Fhemtek. Nchoufou el budget m3a b3adhna ?"),
+         "ey, chnowa {w3} ena ghodwa ? nkamlou el khedma.",
+         tags="common-word-name"),
+    _tpl("mt-en-no-pii", "en", {},
+         "Hello World is the first program I wrote. Can you explain it?",
+         (A, "Sure. It prints a greeting, which shows the program runs."),
+         "Merci! And what does Main do in Java?",
+         (A, "It's the entry point: the method the runtime calls first."),
+         "Great, Thanks for the help."),
+)  # fmt: skip
+
+TEMPLATE_SETS: Mapping[str, tuple[Template, ...]] = {"v0": TEMPLATES, "multi-turn": MULTI_TURN_TEMPLATES}
+
+
 # --------------------------------------------------------------------------- generation
 
 
-def _person(rng: random.Random, kind: str, taken: set[str]) -> _Value:
+def _person(rng: random.Random, kind: str, taken: set[str], first_name: str | None = None) -> _Value:
+    """A synthetic person. `first_name` forces a shared first name (two people called Ahmed)."""
     match = _PERSON.fullmatch(kind)
     if match is None:
         raise ValueError(f"not a person kind: {kind!r}")
     pool, gender = match.group(1), match.group(2) or rng.choice("mf")
     while True:
-        first = rng.choice(FIRST_NAMES[pool][gender])
+        first = first_name or rng.choice(FIRST_NAMES[pool][gender])
         last = rng.choice(SURNAMES[pool])
         full = f"{first} {last}"
-        if full not in PUBLIC_FIGURES and first not in taken and last not in taken:
+        if full not in PUBLIC_FIGURES and (first_name or first not in taken) and last not in taken:
             taken.update((first, last))
-            return _Value(EntityType.PERSON, {"": full, "first": first, "last": last})
+            return _Value(EntityType.PERSON, {"": full, "first": first, "last": last, "lower": first.lower()})
 
 
 def _email(rng: random.Random, person: _Value | None) -> str:
     if person is None:
-        pool = rng.choice(tuple(FIRST_NAMES))
+        pool = rng.choice(("tn", "fr", "en"))  # the v0 pools: adding a pool must not change v0 output
         person = _person(rng, f"person:{pool}", set())
     f, last = _fold(person.forms["first"]), _fold(person.forms["last"])
     number = rng.randint(10, 99)
@@ -470,12 +589,18 @@ def _email(rng: random.Random, person: _Value | None) -> str:
 def _fill(t: Template, rng: random.Random) -> dict[str, _Value]:
     values: dict[str, _Value] = {}
     taken: set[str] = set()
-    # People first, so owned values (emails) can be derived from them; then the rest in declaration order.
-    order = sorted(t.slots, key=lambda s: not t.slots[s].startswith("person:"))
+    # People first (those sharing a first name after the one they share it with), so owned values (emails)
+    # can be derived from them; then the rest in declaration order.
+    order = sorted(
+        t.slots, key=lambda s: (not t.slots[s].startswith("person:"), _shares(t.slots[s]) is not None)
+    )
     for slot in order:
         base, owner = _split_kind(t.slots[slot])
         if base.startswith("person:"):
-            values[slot] = _person(rng, base, taken)
+            shared = _shares(t.slots[slot])
+            values[slot] = _person(rng, base, taken, values[shared].forms["first"] if shared else None)
+        elif base == "city":
+            values[slot] = _Value(EntityType.LOCATION, {"": rng.choice(CITIES)})
         elif base == "email":
             values[slot] = _Value(EntityType.EMAIL, {"": _email(rng, values.get(owner or ""))}, owner)
         elif base in _STRUCTURED:
@@ -507,12 +632,15 @@ def render(t: Template, rng: random.Random, conv_id: str) -> Conversation:
             slot, form = m.group(1), m.group(2) or ""
             value = values[slot]
             surface = value.forms[form]
-            span = {"text": surface, "start": length, "end": length + len(surface)}
+            span: dict[str, Any] = {"text": surface, "start": length, "end": length + len(surface)}
             if value.type is None:
                 distractors.append({**span, "note": value.note})
             else:
                 entity_ids.setdefault(slot, f"e{len(entity_ids) + 1}")
-                mentions.append({**span, "entity": entity_ids[slot]})
+                mention = {**span, "entity": entity_ids[slot]}
+                if m.group(3):
+                    mention["ambiguous"] = True
+                mentions.append(mention)
                 if len(surface) > len(longest.get(slot, "")):
                     longest[slot] = surface
             parts.append(surface)
@@ -547,9 +675,9 @@ def render(t: Template, rng: random.Random, conv_id: str) -> Conversation:
 
 
 def generate(
-    count: int, seed: int, prefix: str, templates: Sequence[Template] = TEMPLATES
+    count: int, seed: int, prefix: str, templates: Sequence[Template] = TEMPLATES, start: int = 1
 ) -> list[Conversation]:
-    """`count` conversations. Every template is used once per round, in a shuffled order."""
+    """`count` conversations, numbered from `start`. Every template is used once per round, shuffled."""
     if count < 0:
         raise ValueError("count must be >= 0")
     if not templates:
@@ -562,7 +690,7 @@ def generate(
     for i in range(count):
         if i % len(order) == 0:
             rng.shuffle(order)
-        out.append(render(order[i % len(order)], rng, f"{prefix}-{i + 1:04d}"))
+        out.append(render(order[i % len(order)], rng, f"{prefix}-{start + i:04d}"))
     return out
 
 
@@ -573,8 +701,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--prefix", required=True, help="conversation id prefix, e.g. 'dev' → dev-0001")
+    parser.add_argument("--start", type=int, default=1, help="number of the first conversation")
+    parser.add_argument("--set", choices=sorted(TEMPLATE_SETS), default="v0", help="which templates to use")
     args = parser.parse_args(argv)
-    sys.stdout.write(dumps_jsonl(generate(args.count, args.seed, args.prefix)))
+    templates = TEMPLATE_SETS[args.set]
+    sys.stdout.write(dumps_jsonl(generate(args.count, args.seed, args.prefix, templates, args.start)))
     return 0
 
 
