@@ -46,7 +46,7 @@ English-trained NER models see `m3a` and `3andi` as noise and mis-tag names next
 **Goal:** `Ahmed Ben Salem`, `Ahmed`, `M. Ben Salem`, `ahmed.bs@gmail.com` → one entity, `PERSON_1` (and `EMAIL_1` linked to it, for display).
 
 **Algorithm (deterministic, conservative):**
-1. Canonicalize each PERSON mention: strip honorifics, normalize case, diacritics and Arabizi, and map known spelling variants (`Mohamed≈Mohammed≈Med`). Produce a token set.
+1. Canonicalize each PERSON mention: strip honorifics, normalize case, diacritics and Arabizi, and map known spelling variants (`Mohamed≈Mohammed≈Med`). Produce a token set. Name particles are glued to the next word (`Ben Salem`, `Ben-Salem`, `Bensalem` → `bensalem`), and common Arabic-script names map to their Latin form (`سامي` → `sami`). Implemented in [`core/canonical.py`](../../src/nona/core/canonical.py).
 2. Process messages **causally** ([ADR-0004](../adr/0004-causal-entity-linking.md)): message *i* is linked using only itself and earlier messages, and earlier entities are frozen (never merged, split or renumbered).
 3. Before linking, **propagate forward**: mask every occurrence in message *i* of a surface form already linked to an earlier entity. This re-catches names in restored assistant turns that the client sends back.
 4. A mention is *compatible* with an entity if their token sets are a **subset or superset** of each other. Exactly one compatible entity → join it, absorbing any new tokens (`Ahmed` then `Ahmed Ben Salem` → both `PERSON_1`). None → new entity.
