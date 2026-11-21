@@ -1,4 +1,4 @@
-"""Leak and over-masking metrics (docs/design/05-dataset.md, section 6; 04 §F).
+"""Leak, over-masking and linking metrics (docs/design/05-dataset.md, section 6; 04 §F; ADR-0004).
 
 Everything here compares a turn's gold labels with the text that system sent upstream for that turn. It
 never looks inside a system, so baselines and Nona are measured the same way, and in S5 the same code
@@ -8,8 +8,10 @@ measures what actually goes over the wire (FR-21).
 from __future__ import annotations
 
 import difflib
+import itertools
 import re
 import unicodedata
+from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -167,6 +169,64 @@ def _overlaps(start: int, end: int, ranges: Iterable[tuple[int, int]]) -> bool:
     return any(start < r_end and r_start < end for r_start, r_end in ranges)
 
 
+# --------------------------------------------------------------------------- placeholders
+
+
+def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) -> list[str | None]:
+    """What replaced each span of `original` in `payload`, read from the text alone (04 §F).
+
+    Same token alignment as `changed_ranges`. Inside each replaced stretch:
+    - as many tokens on both sides: paired one to one (`Sami Kais` → `PERSON_1 PERSON_2`);
+    - otherwise the stretch is cut into runs (each span, and the words between them). One payload token per
+      run, or one per span, pairs them in order (`M. Sami` → `Monsieur PERSON_1`, `Sami Ben Ali` →
+      `PERSON_1 PERSON_2`). With a single span, the payload tokens left after one per neighbouring word go
+      to the span, at least one (`Ahmed Ben Salem` → `PERSON_1`).
+    - anything else covering two spans can't be attributed: both get `None`.
+
+    `None` also when nothing replaced the span (it leaked in full, or was deleted). A partly replaced span
+    keeps the replaced part, so a partial leak can still carry a placeholder: `Mme Trabelsi` →
+    `Mme PERSON_1` gives `PERSON_1`.
+    """
+    a = list(_TOKEN.finditer(original))
+    b = _TOKEN.findall(payload)
+    owner: list[int | None] = []
+    for tok in a:
+        hit = [k for k, (start, end) in enumerate(spans) if tok.start() < end and start < tok.end()]
+        owner.append(hit[0] if hit else None)
+    parts: list[list[str]] = [[] for _ in spans]
+    lost = [False] * len(spans)
+    matcher = difflib.SequenceMatcher(None, [m.group() for m in a], b, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace":
+            continue
+        replacement = b[j1:j2]
+        if i2 - i1 == j2 - j1:
+            for i, token in zip(range(i1, i2), replacement, strict=True):
+                if (k := owner[i]) is not None:
+                    parts[k].append(token)
+            continue
+        runs = [k for k, _ in itertools.groupby(owner[i1:i2])]
+        named = [k for k in runs if k is not None]
+        if len(replacement) == len(runs):
+            for k, token in zip(runs, replacement, strict=True):
+                if k is not None:
+                    parts[k].append(token)
+        elif len(replacement) == len(named):
+            for k, token in zip(named, replacement, strict=True):
+                parts[k].append(token)
+        elif len(named) == 1:
+            k = named[0]
+            inside = [i for i in range(i1, i2) if owner[i] == k]
+            before, after = inside[0] - i1, i2 - 1 - inside[-1]
+            width = max(1, len(replacement) - before - after)
+            first = min(before, len(replacement) - width)
+            parts[k].extend(replacement[first : first + width])
+        else:
+            for k in named:
+                lost[k] = True
+    return [None if lost[k] or not parts[k] else " ".join(parts[k]) for k in range(len(spans))]
+
+
 # --------------------------------------------------------------------------- results
 
 
@@ -197,6 +257,69 @@ class MentionResult:
     public: bool
     text: str
     outcome: Outcome
+    entity: str = ""
+    ambiguous: bool = False
+    placeholder: str | None = None  # what replaced the mention in the payload, if anything (`placeholders`)
+
+
+@dataclass(frozen=True, slots=True)
+class Linking:
+    """How consistently a system's placeholders follow the gold entities of each conversation (ADR-0004).
+
+    Over non-public mentions, skipping `ambiguous: true` ones (05 §3). Only mentions that carry a placeholder
+    take part: a leaked mention is a detection failure, counted by the leak rate. Entities are compared within
+    one conversation and one type.
+    """
+
+    placed: Rate  # in-scope mentions that carry a placeholder
+    wrong_merge: Rate  # entities sharing a placeholder with another entity / entities with a placeholder
+    wrong_split: Rate  # entities under 2+ placeholders / entities with 2+ placed mentions
+    ambiguity: Rate  # later mentions under a placeholder of their own / later placed mentions
+
+    def __add__(self, other: Linking) -> Linking:
+        return Linking(
+            self.placed + other.placed,
+            self.wrong_merge + other.wrong_merge,
+            self.wrong_split + other.wrong_split,
+            self.ambiguity + other.ambiguity,
+        )
+
+
+NO_LINKING = Linking(Rate(0, 0), Rate(0, 0), Rate(0, 0), Rate(0, 0))
+
+
+def link(mentions: Sequence[MentionResult]) -> Linking:
+    """Linking rates for the mentions of one conversation and one type, given in reading order.
+
+    - **Wrong merge:** an entity shares a placeholder with another gold entity (`Ahmed Ben Salem` and
+      `Ahmed Karoui` both `PERSON_1`). Costs utility, leaks nothing.
+    - **Wrong split:** an entity appears under two or more placeholders (`Ahmed` → `PERSON_1`, then
+      `Ahmed Ben Salem` → `PERSON_2`).
+    - **Ambiguity:** a mention after the entity's first placed one gets a placeholder that is neither the
+      entity's first placeholder nor one any other entity uses: an extra "person" for the model. ADR-0004
+      gives an ambiguous mention its own placeholder; gold-ambiguous mentions are skipped, so this counts the
+      mentions a human can resolve and the system couldn't. Every hit is also part of a wrong split.
+    """
+    scoped = [m for m in mentions if not m.public and not m.ambiguous]
+    by_entity: dict[str, list[str]] = defaultdict(list)
+    for m in scoped:
+        if m.placeholder is not None:
+            by_entity[m.entity].append(m.placeholder)
+    first = {e: labels[0] for e, labels in by_entity.items()}
+    owners: dict[str, set[str]] = defaultdict(set)
+    for e, labels in by_entity.items():
+        for label in labels:
+            owners[label].add(e)
+    merged = sum(any(len(owners[label]) > 1 for label in labels) for labels in by_entity.values())
+    multi = [labels for labels in by_entity.values() if len(labels) > 1]
+    split = sum(len(set(labels)) > 1 for labels in multi)
+    later = Rate(0, 0)
+    for e, labels in by_entity.items():
+        claimed = {label for label, users in owners.items() if users - {e}}
+        for label in labels[1:]:
+            later += Rate(int(label != first[e] and label not in claimed), 1)
+    placed = sum(len(labels) for labels in by_entity.values())
+    return Linking(Rate(placed, len(scoped)), Rate(merged, len(by_entity)), Rate(split, len(multi)), later)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,14 +339,16 @@ def evaluate(conversation: Conversation, payloads: Sequence[str]) -> Conversatio
     tokens = Rate(0, 0)
     distractors = Rate(0, 0)
     for i, (turn, payload) in enumerate(zip(conversation.turns, payloads, strict=True)):
-        for m in turn.mentions:
+        labels = placeholders(turn.text, payload, [(m.start, m.end) for m in turn.mentions])
+        for m, label in zip(turn.mentions, labels, strict=True):
             entity = conversation.entity(m.entity)
             outcome = classify(m.text, entity.type, payload)
             mentions.append(
                 MentionResult(
-                    conversation.id, i, turn.role, language, entity.type, entity.public, m.text, outcome
+                    conversation.id, i, turn.role, language, entity.type, entity.public, m.text, outcome,
+                    m.entity, m.ambiguous, label,
                 )
-            )
+            )  # fmt: skip
         changed = changed_ranges(turn.text, payload)
         gold = [(m.start, m.end) for m in turn.mentions]
         for w in _WORD.finditer(turn.text):
@@ -292,6 +417,18 @@ class Report:
     @property
     def location_organization(self) -> Rate:
         return self.rate(self.select(types=(EntityType.LOCATION, EntityType.ORGANIZATION)))
+
+    def linking(self, types: Iterable[EntityType] | None = None) -> Linking:
+        """Linking rates over every role, per conversation and type, then pooled. All types by default."""
+        wanted = frozenset(EntityType if types is None else types)
+        groups: dict[tuple[str, EntityType], list[MentionResult]] = defaultdict(list)
+        for m in self.mentions:
+            if m.type in wanted:
+                groups[m.conversation, m.type].append(m)
+        total = NO_LINKING
+        for group in groups.values():
+            total += link(group)
+        return total
 
     @property
     def languages(self) -> list[str]:

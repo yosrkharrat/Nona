@@ -7,8 +7,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from nona.bench.dataset import Conversation, parse_conversation
-from nona.bench.generate import TEMPLATES, generate
+from nona.bench.generate import MULTI_TURN_TEMPLATES, TEMPLATES, generate
 from nona.bench.metrics import (
+    Linking,
+    MentionResult,
     Outcome,
     Rate,
     Report,
@@ -18,7 +20,9 @@ from nona.bench.metrics import (
     contains_word,
     evaluate,
     identifying_tokens,
+    link,
     normalize,
+    placeholders,
 )
 from nona.bench.systems import IdentitySystem
 from nona.core import EntityType
@@ -114,6 +118,135 @@ def test_changed_ranges_finds_deletions() -> None:
     assert [original[s:e] for s, e in changed_ranges(original, "Envoie le fichier ce soir")] == ["à Sami"]
 
 
+# --------------------------------------------------------------------------- placeholders
+
+
+def _spans(text: str, *parts: str) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for part in parts:
+        start = text.index(part)
+        out.append((start, start + len(part)))
+    return out
+
+
+def test_placeholders_reads_what_replaced_each_span() -> None:
+    text = "Ahmed Ben Salem a appelé Sami au 22 123 456."
+    payload = "PERSON_1 a appelé PERSON_2 au PHONE_1."
+    spans = _spans(text, "Ahmed Ben Salem", "Sami", "22 123 456")
+    assert placeholders(text, payload, spans) == ["PERSON_1", "PERSON_2", "PHONE_1"]
+
+
+def test_placeholders_of_an_unchanged_or_deleted_span_is_none() -> None:
+    text = "Rappelle Sami demain."
+    spans = _spans(text, "Sami")
+    assert placeholders(text, text, spans) == [None]
+    assert placeholders(text, "Rappelle demain.", spans) == [None]
+
+
+def test_placeholders_keeps_the_replaced_part_of_a_span() -> None:
+    text = "Mme Trabelsi est là."
+    assert placeholders(text, "Mme PERSON_1 est là.", _spans(text, "Mme Trabelsi")) == ["PERSON_1"]
+
+
+def test_placeholders_pairs_adjacent_spans_token_by_token() -> None:
+    text = "Merci Sami Kais"
+    assert placeholders(text, "Merci PERSON_1 PERSON_2", _spans(text, "Sami", "Kais")) == [
+        "PERSON_1",
+        "PERSON_2",
+    ]
+
+
+def test_placeholders_ignores_a_rewritten_neighbour() -> None:
+    text = "Merci M. Sami"
+    assert placeholders(text, "Merci Monsieur PERSON_1", _spans(text, "Sami")) == ["PERSON_1"]
+    text = "Ahmed Ben Salem demain"
+    assert placeholders(text, "PERSON_1 DATE_1", _spans(text, "Ahmed Ben Salem")) == ["PERSON_1"]
+
+
+def test_placeholders_pairs_adjacent_spans_of_different_lengths() -> None:
+    text = "Merci Sami Ben Ali"
+    assert placeholders(text, "Merci PERSON_1 PERSON_2", _spans(text, "Sami", "Ben Ali")) == [
+        "PERSON_1",
+        "PERSON_2",
+    ]
+
+
+def test_placeholders_does_not_attribute_a_replacement_shared_by_two_spans() -> None:
+    text = "Merci Sami Kais"
+    assert placeholders(text, "Merci PERSON_1", _spans(text, "Sami", "Kais")) == [None, None]
+
+
+def test_placeholders_keeps_bracketed_redactions() -> None:
+    text = "Carte 4111 1111 1111 1111 ok"
+    assert placeholders(text, "Carte [CARD] ok", _spans(text, "4111 1111 1111 1111")) == ["[ CARD ]"]
+
+
+# --------------------------------------------------------------------------- linking
+
+
+def _m(
+    entity: str, placeholder: str | None, *, ambiguous: bool = False, public: bool = False
+) -> MentionResult:
+    return MentionResult(
+        "c", 0, "user", "fr", P, public, entity, Outcome.PROTECTED, entity, ambiguous, placeholder
+    )
+
+
+def test_link_of_consistent_placeholders_is_clean() -> None:
+    result = link([_m("e1", "PERSON_1"), _m("e2", "PERSON_2"), _m("e1", "PERSON_1")])
+    assert result == Linking(Rate(3, 3), Rate(0, 2), Rate(0, 1), Rate(0, 1))
+
+
+def test_link_counts_a_wrong_merge_for_every_entity_involved() -> None:
+    result = link([_m("e1", "PERSON_1"), _m("e2", "PERSON_1"), _m("e3", "PERSON_2")])
+    assert result.wrong_merge == Rate(2, 3)
+    assert result.wrong_split == Rate(0, 0)
+
+
+def test_link_counts_a_wrong_split() -> None:
+    # `Ahmed` → PERSON_1, then `Ahmed Ben Salem` → PERSON_2: option A of ADR-0004.
+    result = link([_m("e1", "PERSON_1"), _m("e1", "PERSON_2"), _m("e2", "PERSON_3")])
+    assert result.wrong_split == Rate(1, 1)
+    assert result.ambiguity == Rate(1, 1)  # PERSON_2 belongs to no other entity: an extra person
+    assert result.wrong_merge == Rate(0, 2)
+
+
+def test_link_tells_ambiguity_from_borrowing_another_entity() -> None:
+    result = link([_m("e1", "PERSON_1"), _m("e2", "PERSON_2"), _m("e1", "PERSON_2")])
+    assert result.ambiguity == Rate(0, 1)  # e1 took e2's placeholder: a merge, not an extra person
+    assert result.wrong_merge == Rate(2, 2)
+    assert result.wrong_split == Rate(1, 1)
+
+
+def test_link_does_not_call_a_placeholder_another_entity_uses_ambiguous() -> None:
+    # e1's second mention borrows PERSON_3, which e2 uses later on: a merge, not an extra person.
+    result = link([_m("e2", "PERSON_2"), _m("e1", "PERSON_1"), _m("e2", "PERSON_3"), _m("e1", "PERSON_3")])
+    assert result.ambiguity == Rate(0, 2)  # PERSON_3 is shared by both entities, so it's no one's extra
+    assert result.wrong_merge == Rate(2, 2)
+
+
+def test_link_skips_ambiguous_public_and_unplaced_mentions() -> None:
+    result = link(
+        [
+            _m("e1", "PERSON_1"),
+            _m("e1", "PERSON_3", ambiguous=True),
+            _m("e2", "PERSON_1", public=True),
+            _m("e1", None),
+        ]
+    )
+    assert result == Linking(Rate(1, 2), Rate(0, 1), Rate(0, 0), Rate(0, 0))
+
+
+def test_report_links_within_a_conversation_and_a_type() -> None:
+    other = MentionResult("d", 0, "user", "fr", P, False, "x", Outcome.PROTECTED, "e1", False, "PERSON_1")
+    phone = MentionResult(
+        "c", 0, "user", "fr", EntityType.PHONE, False, "x", Outcome.PROTECTED, "e9", False, "PERSON_1"
+    )
+    report = Report((_m("e1", "PERSON_1"), other, phone), Rate(0, 0), Rate(0, 0))
+    assert report.linking().wrong_merge == Rate(0, 3)
+    assert report.linking((P,)).wrong_merge == Rate(0, 2)
+
+
 # --------------------------------------------------------------------------- evaluate
 
 
@@ -171,6 +304,20 @@ def test_scores_a_partially_good_system() -> None:
     assert non_pii.hits == 1  # `48213377`; the public figure's tokens are mentions, so not counted
     # Rappelle au commande 48213377 / C est fait a été rappelé parle ce soir
     assert non_pii.total == 13
+
+
+def test_evaluate_records_each_mentions_placeholder() -> None:
+    conv = _conv()
+    payloads = [
+        "Rappelle PERSON_1 au PHONE_1, commande 48213377.",
+        "C'est fait, PERSON_2 a été rappelé. Kais Saied parle ce soir.",
+    ]
+    report = Report.from_results([evaluate(conv, payloads)])
+    assert [m.placeholder for m in report.mentions] == ["PERSON_1", "PHONE_1", "PERSON_2", None]
+    linking = report.linking()
+    assert linking.placed == Rate(3, 3)  # the public figure is out of scope
+    assert linking.wrong_split == Rate(1, 1)
+    assert linking.ambiguity == Rate(1, 1)
 
 
 def test_wrong_number_of_payloads_is_an_error() -> None:
@@ -235,3 +382,71 @@ def test_masking_everything_over_masks_everything(seed: int) -> None:
     assert report.headline.hits == 0
     assert report.masked_tokens.value == 1.0
     assert report.masked_distractors.value == 1.0
+
+
+ALL_TEMPLATES = (*TEMPLATES, *MULTI_TURN_TEMPLATES)
+
+
+def _generated(seed: int) -> list[Conversation]:
+    return generate(len(ALL_TEMPLATES), seed=seed, prefix="g", templates=ALL_TEMPLATES)
+
+
+@settings(max_examples=30, deadline=None)
+@given(seed=seeds)
+def test_a_perfect_system_links_perfectly(seed: int) -> None:
+    report = Report.from_results(evaluate(c, _perfect(c)) for c in _generated(seed))
+    linking = report.linking()
+    assert linking.placed.value == 1.0
+    assert linking.wrong_merge.hits == linking.wrong_split.hits == linking.ambiguity.hits == 0
+    assert linking.wrong_split.total > 0
+
+
+@settings(max_examples=30, deadline=None)
+@given(seed=seeds)
+def test_a_fresh_placeholder_per_mention_splits_every_entity(seed: int) -> None:
+    def fresh(conv: Conversation) -> Sequence[str]:
+        out: list[str] = []
+        for i, turn in enumerate(conv.turns):
+            text = turn.text
+            for k, m in enumerate(sorted(turn.mentions, key=lambda m: m.start, reverse=True)):
+                text = f"{text[: m.start]}X_{i}_{k}{text[m.end :]}"
+            out.append(text)
+        return out
+
+    linking = Report.from_results(evaluate(c, fresh(c)) for c in _generated(seed)).linking()
+    assert linking.wrong_split.value == 1.0
+    assert linking.ambiguity.value == 1.0
+    assert linking.wrong_merge.hits == 0
+
+
+@settings(max_examples=30, deadline=None)
+@given(seed=seeds)
+def test_one_placeholder_for_everything_merges_every_entity_with_company(seed: int) -> None:
+    def redact(conv: Conversation) -> Sequence[str]:
+        out: list[str] = []
+        for turn in conv.turns:
+            text = turn.text
+            for m in sorted(turn.mentions, key=lambda m: m.start, reverse=True):
+                text = f"{text[: m.start]}REDACTED{text[m.end :]}"
+            out.append(text)
+        return out
+
+    convs = _generated(seed)
+    report = Report.from_results(evaluate(c, redact(c)) for c in convs)
+    linking = report.linking()
+    assert linking.wrong_split.hits == 0
+    # Every entity is merged, except one that is alone of its type in its conversation.
+    alone = sum(
+        1
+        for c in convs
+        for t in {e.type for e in c.entities}
+        if len(
+            {
+                m.entity
+                for m in report.mentions
+                if m.conversation == c.id and m.type is t and not m.public and not m.ambiguous
+            }
+        )
+        == 1
+    )
+    assert linking.wrong_merge.total - linking.wrong_merge.hits == alone
