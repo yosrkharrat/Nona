@@ -16,6 +16,7 @@ from typing import Protocol
 
 from nona.bench.dataset import Conversation
 from nona.bench.systems.identity import IdentitySystem
+from nona.bench.systems.nona import NonaSystem
 
 
 class System(Protocol):
@@ -29,6 +30,7 @@ class System(Protocol):
 
 SYSTEMS: Mapping[str, Callable[[], System]] = {
     "identity": IdentitySystem,
+    "nona": NonaSystem,
 }
 
-__all__ = ["SYSTEMS", "IdentitySystem", "System"]
+__all__ = ["SYSTEMS", "IdentitySystem", "NonaSystem", "System"]

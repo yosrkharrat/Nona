@@ -161,4 +161,5 @@ a number or a user need justifies it.
 |---|---|---|
 | S0 | done, except #6 (PyPI publisher) and #7 (old draft), which need the owner | — |
 | S1 | done (#2; dev regenerated in #26 with valid phone numbers only) | identity system: 100% leak (110/110 direct-identifier mentions), 0% over-masking, on dev v0 (80 conversations) |
-| S2 to S8 | not started | — |
+| S2 | done (#25, #27–#32) | structured types (email, phone, IBAN, RIB, card, IP, CIN): **0% leaked** on dev, down from 100%. Over-masking 0.2% of tokens, 2/19 distractors (8-digit order numbers that are valid TN mobiles). Headline 39.1% because names are still undetected (S3, S4) |
+| S3 to S8 | not started | — |
