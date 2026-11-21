@@ -72,11 +72,21 @@ def test_entries_expire_after_the_ttl() -> None:
     assert len(cache) == 0  # an expired entry is dropped, not kept
 
 
+def test_expired_entries_are_swept_out_on_any_access() -> None:
+    clock = Clock()
+    cache = DetectionCache(ttl=8, clock=clock)
+    cache.put("old", [_span()])
+    clock.now = 9
+    assert cache.get("other") is None
+    assert len(cache) == 0  # `old` is gone though nobody asked for it
+
+
 def test_maxsize_zero_disables_it() -> None:
     cache = DetectionCache(maxsize=0)
     cache.put("k", [_span()])
     assert cache.get("k") is None
     assert len(cache) == 0
+    assert cache.misses == 0  # a disabled cache reports no activity
 
 
 @pytest.mark.parametrize(("kwargs", "message"), [({"maxsize": -1}, "maxsize"), ({"ttl": 0}, "ttl")])
@@ -126,9 +136,26 @@ def test_a_configuration_change_changes_the_fingerprint() -> None:
 
 
 def test_a_recognizer_without_a_fingerprint_shares_with_no_one() -> None:
-    a, b = Counting(), Counting()
-    assert recognizer_fingerprint(a) == recognizer_fingerprint(a)
-    assert recognizer_fingerprint(a) != recognizer_fingerprint(b)
+    a = Counting()
+    assert recognizer_fingerprint(a) != recognizer_fingerprint(a)  # not even with itself, in another Nona
+    shared = DetectionCache()
+    Nona([a], cache=shared).anonymize("Sami")
+    Nona([a], cache=shared).anonymize("Sami")
+    assert shared.hits == 0
+    n = Nona([a], cache=shared)
+    n.anonymize("Sami")
+    n.anonymize("Sami")
+    assert shared.hits == 1  # one Nona still reuses its own entries
+
+
+def test_a_subclass_does_not_inherit_its_parents_fingerprint() -> None:
+    class Configured(PhoneRecognizer):
+        def __init__(self, extra: str) -> None:
+            super().__init__()
+            self.extra = extra
+
+    assert recognizer_fingerprint(Configured("a")) != recognizer_fingerprint(Configured("a"))
+    assert recognizer_fingerprint(PhoneRecognizer()) == recognizer_fingerprint(PhoneRecognizer())
 
 
 # --------------------------------------------------------------------------- in the pipeline

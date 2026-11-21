@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 
@@ -27,16 +28,21 @@ from nona.core.types import Span
 
 
 def recognizer_fingerprint(recognizer: object) -> str:
-    """What identifies a recognizer's behaviour: its `fingerprint` if it has one, else this very object.
+    """What identifies a recognizer's behaviour: its `fingerprint`, or a token unique to this call.
 
-    Built-in recognizers define `fingerprint` from their configuration. A recognizer without one never shares
-    cache entries with another object, which is always safe.
+    Built-in recognizers define `fingerprint` from their configuration. It is trusted only when the
+    recognizer's own class defines it: a subclass may add settings its parent's fingerprint doesn't cover.
+    Otherwise the result is a fresh random token, so the recognizer never shares cache entries with anything
+    else (`Nona` computes its fingerprint once, so it still reuses its own entries). Not `id()`: CPython
+    reuses the address of a collected object.
     """
-    own = getattr(recognizer, "fingerprint", None)
-    kind = f"{type(recognizer).__module__}.{type(recognizer).__qualname__}"
-    if isinstance(own, str):
-        return f"{kind}:{own}"
-    return f"{kind}:id={id(recognizer)}"
+    kind = type(recognizer)
+    own = kind.__dict__.get("fingerprint")
+    value = own.__get__(recognizer, kind) if isinstance(own, property) else own
+    name = f"{kind.__module__}.{kind.__qualname__}"
+    if isinstance(value, str):
+        return f"{name}:{value}"
+    return f"{name}:unique={uuid.uuid4().hex}"
 
 
 def fingerprint(recognizers: Iterable[object]) -> str:
@@ -52,7 +58,9 @@ def cache_key(config: str, text: str) -> str:
 class DetectionCache:
     """A bounded, expiring, thread-safe map from `cache_key` to the spans of one message.
 
-    `maxsize=0` disables it. The proxy runs detection in a thread pool, hence the lock.
+    `maxsize=0` disables it. The proxy runs detection in a thread pool, hence the lock. Expired entries are
+    swept out on any access at most every quarter of the TTL, not only when their own key is looked up, so a
+    hash doesn't outlive its TTL by much while the process is in use.
     """
 
     def __init__(
@@ -69,6 +77,7 @@ class DetectionCache:
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
+        self._next_sweep = clock() + ttl / 4
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -76,8 +85,19 @@ class DetectionCache:
     def __repr__(self) -> str:
         return f"<DetectionCache {len(self)}/{self._maxsize} entries, {self.hits} hits, {self.misses} misses>"
 
+    def _sweep(self, now: float) -> None:
+        """Drop every expired entry, at most every quarter of the TTL. Called with the lock held."""
+        if now < self._next_sweep:
+            return
+        self._next_sweep = now + self._ttl / 4
+        for key in [k for k, (expires, _) in self._entries.items() if now >= expires]:
+            del self._entries[key]
+
     def get(self, key: str) -> tuple[Span, ...] | None:
+        if not self._maxsize:
+            return None
         with self._lock:
+            self._sweep(self._clock())
             entry = self._entries.get(key)
             if entry is None or self._clock() >= entry[0]:
                 if entry is not None:
@@ -92,7 +112,9 @@ class DetectionCache:
         if not self._maxsize:
             return
         with self._lock:
-            self._entries[key] = (self._clock() + self._ttl, tuple(spans))
+            now = self._clock()
+            self._sweep(now)
+            self._entries[key] = (now + self._ttl, tuple(spans))
             self._entries.move_to_end(key)
             while len(self._entries) > self._maxsize:
                 self._entries.popitem(last=False)
