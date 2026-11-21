@@ -131,7 +131,7 @@ class Pseudonymizer:
 
     def known_surfaces(self) -> list[tuple[EntityType, str]]:
         """Every surface form of every pseudonymized entity so far, for forward propagation."""
-        return [(e.type, s) for e in self._linker.entities if not e.literal for s in e.surfaces]
+        return [(e.type, s) for e in self._linker.entities if e.propagates for s in e.surfaces]
 
     def add(self, original: str, spans: Iterable[Span]) -> str:
         """Pseudonymize the next message from its resolved (non-overlapping) spans; return its text."""
@@ -179,7 +179,10 @@ class Pseudonymizer:
     def _result(message: _Message, mapping: Mapping) -> Anonymized:
         mentions: dict[LinkedEntity, list[Span]] = {}
         for span, entity in message.linked:
-            mentions.setdefault(entity, []).append(span)
+            if (
+                not entity.literal
+            ):  # a placeholder the user wrote is in the mapping, but it isn't personal data
+                mentions.setdefault(entity, []).append(span)
         entities = tuple(
             Entity(id=e.number, type=e.type, mentions=tuple(spans), canonical=e.canonical)
             for e, spans in sorted(mentions.items(), key=lambda item: (item[0].type.value, item[0].number))

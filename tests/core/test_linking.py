@@ -107,9 +107,27 @@ def test_honorific_and_particle_forms_link() -> None:
     assert conv.texts == ("PERSON_1 a appelé.", "Rappelle PERSON_1.")
 
 
-def test_honorific_alone_is_its_own_entity() -> None:
+def test_honorific_alone_is_its_own_entity_and_is_not_propagated() -> None:
     conv = nona().anonymize_messages(["Mme a appelé, Sami aussi.", "Mme encore."])
     assert conv.texts == ("PERSON_1 a appelé, PERSON_2 aussi.", "PERSON_1 encore.")
+    # Not propagated: `Mme` in front of two different surnames must not make them one person.
+    later = nona(names=["Mme"], blind_to=["Trabelsi"]).anonymize_messages(
+        ["Mme a appelé.", "Mme Trabelsi et Mme X"]
+    )
+    assert later.texts[1] == "Mme Trabelsi et Mme X"
+
+
+@pytest.mark.parametrize("second", ["Ahmed Karoui et Ahmed Ben Salem", "Ahmed Ben Salem et Ahmed Karoui"])
+def test_an_earlier_name_two_mentions_fit_is_absorbed_by_neither(second: str) -> None:
+    conv = nona().anonymize_messages(["Rappelle Ahmed.", second, "Ahmed ?"])
+    assert conv.texts[1] == "PERSON_2 et PERSON_3"  # whatever the word order
+    assert conv.mapping.value("PERSON_1") == "Ahmed"
+    assert conv.texts[2] == "PERSON_4 ?"  # three Ahmeds now: ambiguous
+
+
+def test_canonical_is_the_first_longest_form_with_spacing_collapsed() -> None:
+    conv = nona(blind_to=["relance"]).anonymize_messages(["Sami Trabelsi", "relance SAMI  TRABELSI"])
+    assert conv.mapping.value("PERSON_1") == "Sami Trabelsi"
 
 
 def test_values_are_linked_whatever_their_formatting() -> None:
@@ -129,6 +147,7 @@ def test_a_literal_placeholder_after_its_number_was_issued_round_trips() -> None
     assert conv.texts == ("Tél PHONE_1", "j'ai écrit PHONE_2 et PHONE_3", "PHONE_2 encore")
     restored = [n.restore(t, conv.mapping) for t in conv.texts[1:]]
     assert restored == ["j'ai écrit PHONE_1 et phone 1", "PHONE_1 encore"]
+    assert conv.messages[1].entities == ()  # in the mapping, but not personal data
 
 
 # --------------------------------------------------------------------------- forward propagation

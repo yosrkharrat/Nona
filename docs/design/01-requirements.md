@@ -54,7 +54,7 @@ Priority: **M** = must (v0.1), **S** = should (v0.2), **C** = could (later).
 |---|---|---|---|
 | FR-6 | Replace each detected entity with a typed placeholder (`PERSON_1`, `PHONE_2`, …) | M | — |
 | FR-7 | **Consistency**: the same real-world entity gets the same placeholder across all messages of a conversation, including variants (`Ahmed Ben Salem`, `Ahmed`, `M. Ben Salem`, `ahmed.bs@gmail.com` → linked) | M | Linking tests (deep dive B), plus a prefix-stability property test: `anonymize(msgs[:k]) == anonymize(msgs)[:k]` (ADR-0004) |
-| FR-8 | **Restoration**: placeholders in the LLM output are replaced with the original values before the client sees them | M | Property test: `restore(anonymize(x)) == x` for all generated `x` |
+| FR-8 | **Restoration**: placeholders in the LLM output are replaced with the original values before the client sees them | M | Property test: `restore(anonymize(x)) == x` for all generated `x`, up to linking: a mention comes back as its entity's canonical (longest) form, so `x` itself comes back when no entity has two forms (ADR-0004) |
 | FR-9 | Per-type policy: `pseudonymize` (reversible), `redact` (irreversible, e.g. card numbers), or `keep` | S | — |
 
 ### Proxy

@@ -14,6 +14,7 @@ appearance, so any instability would renumber them).
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable, Sequence
 
@@ -64,19 +65,29 @@ def known_spans(doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]]) -> 
     """
     spans: list[Span] = []
     for etype, surface in dict.fromkeys(known):
-        words = normalize(surface).text.split()
-        if len(words) > 1:
-            pattern = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)")
+        pattern, on_normalized = _known_pattern(surface)
+        if on_normalized:
             spans.extend(
                 to_span(doc, m.start(), m.end(), etype, 1.0, "propagation")
                 for m in pattern.finditer(doc.text)
             )
-        elif words:
-            pattern = re.compile(r"(?<!\w)" + re.escape(surface.strip()) + r"(?!\w)")
+        else:
             spans.extend(
                 Span(m.start(), m.end(), etype, 1.0, "propagation") for m in pattern.finditer(doc.original)
             )
     return spans
+
+
+@functools.lru_cache(maxsize=4096)
+def _known_pattern(surface: str) -> tuple[re.Pattern[str], bool]:
+    """The pattern for one known form, and whether it runs on the normalized view. Cached, because the proxy
+    re-runs the whole conversation on every request."""
+    words = normalize(surface).text.split()
+    if len(words) > 1:
+        return re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)"), True
+    if not words:
+        return re.compile(r"(?!)"), False  # matches nothing
+    return re.compile(r"(?<!\w)" + re.escape(surface.strip()) + r"(?!\w)"), False
 
 
 def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:

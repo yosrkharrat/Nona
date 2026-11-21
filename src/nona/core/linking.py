@@ -14,9 +14,12 @@ resolved span, which entity the span is a mention of:
 - **Other types** join the entity with the same value: compared on letters and digits for numbers
   (`22 123 456` = `22.123.456`), and on folded text for the rest.
 
-Inside one message the linker may look ahead, as a message never changes once sent: PERSON mentions are linked
-longest first, so `Ahmed … Ahmed Karoui … Ahmed Ben Salem` makes the bare `Ahmed` ambiguous instead of
-letting it absorb whichever full name came next.
+Inside one message the linker may look ahead, as a message never changes once sent:
+- PERSON mentions are linked longest first, so `Ahmed … Ahmed Karoui … Ahmed Ben Salem` makes the bare
+  `Ahmed` ambiguous instead of letting it absorb whichever full name came next.
+- An earlier entity is **contested** when two mentions of the message fit it but not each other (`Ahmed`
+  earlier, then `Ahmed Karoui et Ahmed Ben Salem`). Neither absorbs it, since which one would depend on word
+  order: both become new entities, and a later bare `Ahmed` is ambiguous.
 
 **Freeze.** Entities are never merged, split or renumbered, so placeholders issued for a message stay the same
 whatever comes after it: `link(msgs[:k])` is a prefix of `link(msgs)`. New entities are numbered per type by
@@ -68,13 +71,19 @@ class LinkedEntity:
 
     @property
     def canonical(self) -> str:
-        """The longest surface form seen so far (the first one among equals): what restoring writes back."""
-        return max(self.surfaces, key=len)
+        """What restoring writes back: the longest surface form, spacing collapsed, the first among equals."""
+        return max(self.surfaces, key=lambda s: len(" ".join(s.split())))
 
     @property
     def literal(self) -> bool:
         """A placeholder the user wrote, not personal data: restored as is, never propagated."""
         return self.key.startswith("\0")
+
+    @property
+    def propagates(self) -> bool:
+        """Whether forward propagation searches for this entity's forms. Not for literals, and not for a
+        PERSON known only by an honorific: a later `Mme` is as likely someone else."""
+        return not self.literal and not (self.type is EntityType.PERSON and not self.tokens)
 
     def add_surface(self, surface: str) -> None:
         if surface not in self.surfaces:
@@ -116,13 +125,14 @@ class Linker:
             if s.type is EntityType.PERSON and s.detector != LITERAL_DETECTOR
         }
         person_order = sorted(tokens, key=lambda i: (-len(tokens[i]), spans[i].start))
+        contested = self._contested({t for t in tokens.values() if t})
         other = [i for i in range(len(spans)) if i not in tokens]
         for i in [*person_order, *other]:
             span = spans[i]
             if span.detector == LITERAL_DETECTOR:
                 entity = self._link_value(span.type, "\0" + surfaces[i], fresh)
             elif span.type is EntityType.PERSON and tokens[i]:
-                entity = self._link_person(tokens[i], fresh)
+                entity = self._link_person(tokens[i], fresh, contested)
             else:
                 entity = self._link_value(span.type, value_key(span.type, surfaces[i]), fresh)
             entity.add_surface(surfaces[i])
@@ -139,12 +149,27 @@ class Linker:
     def issued(self, etype: EntityType, number: int) -> bool:
         return any(e.type is etype and e.number == number for e in self._entities)
 
-    def _link_person(self, tokens: frozenset[str], fresh: list[LinkedEntity]) -> LinkedEntity:
+    def _contested(self, mentions: set[frozenset[str]]) -> set[int]:
+        """Ids of earlier PERSON entities that two of this message's token sets fit, but not each other."""
+        out: set[int] = set()
+        for entity in self._entities:
+            if entity.type is not EntityType.PERSON or entity.ambiguous or not entity.tokens:
+                continue
+            fits = [t for t in mentions if compatible(entity.tokens, t)]
+            if any(not compatible(a, b) for a in fits for b in fits):
+                out.add(id(entity))
+        return out
+
+    def _link_person(
+        self, tokens: frozenset[str], fresh: list[LinkedEntity], contested: set[int]
+    ) -> LinkedEntity:
         people = [e for e in [*self._entities, *fresh] if e.type is EntityType.PERSON and e.tokens]
         for entity in people:
             if entity.ambiguous and entity.tokens == tokens:
                 return entity
-        candidates = [e for e in people if not e.ambiguous and compatible(e.tokens, tokens)]
+        candidates = [
+            e for e in people if not e.ambiguous and id(e) not in contested and compatible(e.tokens, tokens)
+        ]
         if len(candidates) == 1:
             entity = candidates[0]
             entity.tokens = entity.tokens | tokens
