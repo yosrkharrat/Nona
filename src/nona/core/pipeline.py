@@ -14,8 +14,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
+from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, name_words
-from nona.core.normalize import normalize
+from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
     Anonymized,
@@ -54,7 +55,10 @@ class Nona:
         allowlist: Sequence[str] = (),
         denylist: Sequence[str] = (),
         min_score: float = 0.5,
+        cache: DetectionCache | None = None,
     ) -> None:
+        """`cache` holds recognizer spans per message (`core/cache.py`). Each `Nona` gets its own unless one
+        is passed; several instances may share one, as the key covers their recognizers' configuration."""
         if not 0.0 <= min_score <= 1.0:
             raise ValueError("min_score must be in [0, 1]")
         folded_allow = {" ".join(t.casefold().split()) for t in allowlist}
@@ -66,6 +70,8 @@ class Nona:
         self._allowlist = tuple(allowlist)
         self._denylist = tuple(denylist)
         self._min_score = min_score
+        self._cache = DetectionCache() if cache is None else cache
+        self._fingerprint = fingerprint(self._recognizers)
 
     def detect(self, text: str) -> list[Span]:
         """Resolved spans over `text`, before any policy is applied."""
@@ -74,11 +80,7 @@ class Nona:
     def _detect(self, text: str, known: Iterable[tuple[EntityType, str]]) -> list[Span]:
         doc = normalize(text)
         candidates: list[Span] = denylist_spans(doc, self._denylist) + known_spans(doc, known)
-        for recognizer in self._recognizers:
-            try:
-                candidates.extend(recognizer.detect(doc))
-            except Exception as exc:
-                raise DetectorError(recognizer.name) from exc
+        candidates.extend(self._recognize(doc, text))
         spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
         # Look-ahead (ADR-0004, step 4): a bare first name before the full name in the same message.
         # Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left to the
@@ -97,6 +99,28 @@ class Nona:
         if not extra:
             return spans
         return resolve([*spans, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
+
+    def _recognize(self, doc: NormalizedDoc, text: str) -> tuple[Span, ...]:
+        """Every recognizer's spans for one message, from the cache when this text was seen with this config.
+
+        Fail closed: if a recognizer raises, nothing is cached and `DetectorError` propagates.
+        """
+        key = cache_key(self._fingerprint, text)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        found: list[Span] = []
+        for recognizer in self._recognizers:
+            try:
+                found.extend(recognizer.detect(doc))
+            except Exception as exc:
+                raise DetectorError(recognizer.name) from exc
+        self._cache.put(key, found)
+        return tuple(found)
+
+    @property
+    def cache(self) -> DetectionCache:
+        return self._cache
 
     def anonymize(self, text: str) -> Anonymized:
         return self.anonymize_messages([text]).messages[0]

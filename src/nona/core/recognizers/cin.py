@@ -39,6 +39,11 @@ def _window(text: str, start: int, end: int, tokens: list[tuple[int, int]]) -> s
 
 class CinRecognizer:
     @property
+    def fingerprint(self) -> str:
+        """No configuration: every instance detects the same (detection cache, `core/cache.py`)."""
+        return "default"
+
+    @property
     def name(self) -> str:
         return "context:cin"
 
