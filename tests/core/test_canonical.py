@@ -97,6 +97,11 @@ def test_case_and_honorific_prefix_dont_change_tokens(text: str) -> None:
         ("Mohamed Ali", ["Mohamed", "Ali"]),
         ("Ali Ali", ["Ali"]),
         ("سامي الطرابلسي", ["سامي", "الطرابلسي"]),  # no case in Arabic script
+        ("Che\u0301rine Boukadida", ["Che\u0301rine", "Boukadida"]),  # NFD accent, as macOS may send it
+        ("مُحَمَّد الطرابلسي", ["مُحَمَّد", "الطرابلسي"]),  # harakat
+        ("Sami O'Brien", ["Sami", "O'Brien"]),  # an elision stays whole: no bare `Brien`
+        ("Jean-Pierre Dupont", ["Jean", "Pierre", "Dupont"]),
+        ("PERSON_1 Trabelsi", ["Trabelsi"]),  # a typed placeholder is not a name word
     ],
 )
 def test_name_words(surface: str, expected: list[str]) -> None:

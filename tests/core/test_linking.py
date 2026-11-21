@@ -235,6 +235,34 @@ def test_look_ahead_leaves_names_that_are_ordinary_words_to_context() -> None:
     assert conv.texts == ("Mabrouk ! PERSON_1 a eu son bac.",)
 
 
+def test_look_ahead_ignores_weak_person_spans() -> None:
+    class Weak:
+        name = "weak"
+        supported_types = frozenset({EntityType.PERSON})
+
+        def detect(self, doc: NormalizedDoc) -> list[Span]:
+            i = doc.original.find("Bonne Route")
+            return [Span(i, i + 11, EntityType.PERSON, 0.55, self.name)] if i >= 0 else []
+
+    conv = Nona([Weak()]).anonymize_messages(["Bonne Route ! Route barrée.", "Route libre."])
+    assert conv.texts == ("PERSON_1 ! Route barrée.", "Route libre.")
+
+
+def test_look_ahead_does_not_retype_a_detected_span() -> None:
+    class Place:
+        name = "place"
+        supported_types = frozenset({EntityType.LOCATION})
+
+        def detect(self, doc: NormalizedDoc) -> list[Span]:
+            return [
+                Span(m.start(), m.end(), EntityType.LOCATION, 0.8, self.name)
+                for m in re.finditer("Gabes", doc.original)
+            ]
+
+    n = Nona([Place(), Names(["Sami Gabes"])], policies=ALL_REVERSIBLE)
+    assert n.anonymize("Sami Gabes habite Gabes.").text == "PERSON_1 habite LOCATION_1."
+
+
 def test_allowlist_beats_look_ahead() -> None:
     conv = nona(names=["Chirine Boukadida"], allowlist=["Chirine"]).anonymize_messages(
         ["Chirine. Chirine Boukadida."]
