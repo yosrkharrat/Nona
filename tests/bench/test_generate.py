@@ -110,7 +110,12 @@ def test_synthetic_values_follow_the_rules(seed: int) -> None:
             if e.type is EntityType.EMAIL:
                 assert v.rsplit("@", 1)[1] in EMAIL_DOMAINS
             elif e.type is EntityType.PHONE:
-                assert any(phonenumbers.is_valid_number(phonenumbers.parse(v, r)) for r in ("TN", "FR")), v
+                number = v.replace(
+                    "(0)", ""
+                )  # the "(0)" habit is written on purpose; the number must be valid
+                assert any(
+                    phonenumbers.is_valid_number(phonenumbers.parse(number, r)) for r in ("TN", "FR")
+                ), v
             elif e.type is EntityType.IBAN:
                 assert iban_valid(v)
             elif e.type is EntityType.RIB:
@@ -167,3 +172,47 @@ def test_cli_writes_canonical_jsonl(tmp_path: Path, capsys: pytest.CaptureFixtur
     path = tmp_path / "t.jsonl"
     path.write_text(out, encoding="utf-8")
     assert dumps_jsonl(load_jsonl(path)) == out
+
+
+# --------------------------------------------------------------------------- Tunisian numbering plan (#33)
+
+
+def _parse_tn(value: str) -> phonenumbers.PhoneNumber:
+    return phonenumbers.parse(value.replace("(0)", ""), "TN")
+
+
+def _tn_type(value: str) -> int:
+    return phonenumbers.number_type(_parse_tn(value))
+
+
+def test_tunisian_numbers_cover_mobile_and_fixed_lines() -> None:
+    convs = generate(len(TEMPLATES) * 6, seed=4, prefix="g")
+    numbers = [_parse_tn(e.value) for c in convs for e in c.entities if e.type is EntityType.PHONE]
+    tn = [n for n in numbers if n.country_code == 216]
+    types = {phonenumbers.number_type(n) for n in tn}
+    assert {phonenumbers.PhoneNumberType.MOBILE, phonenumbers.PhoneNumberType.FIXED_LINE} <= types
+    assert {str(n.national_number)[0] for n in tn} >= {"2", "5", "7", "9"}
+
+
+def test_service_number_distractors_are_service_numbers() -> None:
+    service = {
+        phonenumbers.PhoneNumberType.TOLL_FREE,
+        phonenumbers.PhoneNumberType.SHARED_COST,
+        phonenumbers.PhoneNumberType.PREMIUM_RATE,
+    }
+    distractors = [
+        d.text
+        for c in generate(len(TEMPLATES) * 6, seed=5, prefix="g")
+        for t in c.turns
+        for d in t.distractors
+        if d.note.startswith("business service number")
+    ]
+    assert distractors
+    assert all(_tn_type(d) in service for d in distractors)
+
+
+def test_fax_numbers_are_labelled_as_phones() -> None:
+    template = next(t for t in TEMPLATES if t.name == "fr-signature")
+    conv = render(template, random.Random(0), "c")  # noqa: S311
+    assert "Fax : " in conv.turns[0].text
+    assert [conv.entity(m.entity).type for m in conv.turns[0].mentions].count(EntityType.PHONE) == 2

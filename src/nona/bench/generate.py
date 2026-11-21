@@ -121,17 +121,58 @@ def _valid_phone(national: str, region: str) -> bool:
         return False
 
 
-def _phone_tn(rng: random.Random) -> str:
+# Tunisian numbering plan, as libphonenumber encodes it (deep dive A): 8 digits, no trunk 0.
+# Mobile: 2x, 5x, 9x, 40-48 and a few 3x ranges. Fixed: 7x and 30-32. Fax lines are ordinary fixed lines.
+_TN_TYPES = {phonenumbers.PhoneNumberType.MOBILE: "mobile", phonenumbers.PhoneNumberType.FIXED_LINE: "fixed"}
+_TN_FIRST_DIGITS = {"mobile": "2222555599994443", "fixed": "77777773"}
+
+
+def _tn_national(rng: random.Random, kind: str) -> str:
+    """A valid 8-digit Tunisian number of the given kind, drawn from the whole numbering plan."""
     while True:
-        if rng.random() < 0.8:
-            national = rng.choice("2459") + _digits(rng, 7)  # mobile
-        else:
-            national = "7" + rng.choice("12345") + _digits(rng, 6)  # landline
-        if _valid_phone(national, "TN"):
-            break
+        national = rng.choice(_TN_FIRST_DIGITS[kind]) + _digits(rng, 7)
+        try:
+            number = phonenumbers.parse(national, "TN")
+        except phonenumbers.NumberParseException:  # pragma: no cover - 8 digits always parse
+            continue
+        if phonenumbers.is_valid_number(number) and _TN_TYPES.get(phonenumbers.number_type(number)) == kind:
+            return national
+
+
+def _format_tn(rng: random.Random, national: str) -> str:
+    """The ways Tunisian numbers are actually written, the official `XX XXX XXX` included."""
     spaced = _group(national, (2, 3, 3), " ")
-    dotted = _group(national, (2, 3, 3), ".")
-    return rng.choice((spaced, dotted, national, f"+216 {spaced}", f"00216 {spaced}", f"+216{national}"))
+    return rng.choice(
+        (
+            spaced,
+            _group(national, (2, 3, 3), "."),
+            _group(national, (2, 3, 3), "-"),
+            _group(national, (2, 2, 2, 2), " "),  # in pairs
+            national,
+            f"+216 {spaced}",
+            f"(+216) {spaced}",
+            f"00216 {spaced}",
+            f"00 216 {spaced}",
+            f"216 {spaced}",
+            f"+216{national}",
+            f"+216 (0){spaced}",  # the French "(0)" habit: wrong for Tunisia, but written
+        )
+    )
+
+
+def _phone_tn(rng: random.Random) -> str:
+    return _format_tn(rng, _tn_national(rng, "mobile" if rng.random() < 0.75 else "fixed"))
+
+
+def _phone_tn_fixed(rng: random.Random) -> str:
+    """Office lines and fax numbers (a fax is a fixed line)."""
+    return _format_tn(rng, _tn_national(rng, "fixed"))
+
+
+def _service_tn(rng: random.Random) -> str:
+    """Business service numbers: toll-free 8010, shared cost 8110/8210, premium 88. Not personal data."""
+    national = rng.choice(("8010", "8110", "8210", "88" + _digits(rng, 2))) + _digits(rng, 4)
+    return _group(national, (2, 3, 3), " ")
 
 
 def _phone_fr(rng: random.Random) -> str:
@@ -202,6 +243,7 @@ def _date(rng: random.Random) -> str:
 
 _STRUCTURED: Mapping[str, tuple[EntityType, Callable[[random.Random], str]]] = {
     "phone:tn": (EntityType.PHONE, _phone_tn),
+    "phone:tn-fixed": (EntityType.PHONE, _phone_tn_fixed),
     "phone:fr": (EntityType.PHONE, _phone_fr),
     "iban:tn": (EntityType.IBAN, _iban_tn),
     "iban:fr": (EntityType.IBAN, _iban_fr),
@@ -212,6 +254,7 @@ _STRUCTURED: Mapping[str, tuple[EntityType, Callable[[random.Random], str]]] = {
 }
 _DISTRACTORS: Mapping[str, tuple[str, Callable[[random.Random], str]]] = {
     "~order": ("order number, not an ID", _order),
+    "~service": ("business service number (toll-free, shared cost or premium), not personal", _service_tn),
     "~price": ("price", _price),
     "~ref": ("reference number", _ref),
     "~date": ("date", _date),
@@ -335,6 +378,10 @@ TEMPLATES: tuple[Template, ...] = (
          "Oui, envoie-le à {em}, et si besoin son portable c'est le {ph}."),
     _tpl("fr-order-late", "fr", {"o": "~order", "pr": "~price"},
          "Ma commande n° {o} n'est toujours pas arrivée, elle coûtait {pr} DT."),
+    _tpl("fr-signature", "fr", {"p1": "person:tn", "tel": "phone:tn-fixed@p1", "fax": "phone:tn-fixed@p1"},
+         "Cordialement,\n{p1}\nTél : {tel}\nFax : {fax}"),
+    _tpl("fr-service", "fr", {"sv": "~service"},
+         "Pour toute réclamation, appelez le service client au {sv}, du lundi au samedi."),
     _tpl("fr-summary", "fr", {},
          "Peux-tu résumer ce texte en trois points et proposer un titre accrocheur ?"),
     # ---- English
@@ -354,6 +401,8 @@ TEMPLATES: tuple[Template, ...] = (
          "It's {em}. My phone number is {ph} if that helps.",
          (A, "Thanks {p1.first}, I've sent a reset link to {em}."),
          "Got it, thanks!"),
+    _tpl("en-office", "en", {"p1": "person:tn", "tel": "phone:tn-fixed@p1", "fax": "phone:tn-fixed@p1"},
+         "You can reach {p1.first} at the office on {tel}, or send the forms by fax to {fax}."),
     _tpl("en-decline", "en", {},
          "Write a short, polite reply declining the meeting invitation for Friday."),
     _tpl("en-invoice", "en", {"pr": "~price", "r": "~ref"},
@@ -375,6 +424,8 @@ TEMPLATES: tuple[Template, ...] = (
          "El CIN mte3i {cin}, 7achti bih bech nkammel el inscription."),
     _tpl("aeb-beach", "aeb-Latn", {},
          "Ya5i chnowa l a5bar? Ghodwa n7ebou nemchiw lel b7ar ken el ta9s mezyen."),
+    _tpl("aeb-service", "aeb-Latn", {"sv": "~service"},
+         "Kallem el service client 3al {sv}, ykhdmou 24/24."),
     _tpl("aeb-price", "aeb-Latn", {"pr": "~price"},
          "Soum el kilo wsel {pr} dinar, ghali barcha!"),
     # ---- Arabizi mixed with French
