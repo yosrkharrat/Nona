@@ -155,6 +155,7 @@ def test_spans_are_valid_on_any_text(text: str) -> None:
         ("السيد كمال الزغلامي وصل", [("كمال الزغلامي", P)]),  # an Arabic family name of the الـ…ي kind
         ("اتصل بيا محمد الطرابلسي اليوم", [("محمد الطرابلسي", P)]),
         ("محمد اليوم مريض", [("محمد", P)]),  # `اليوم` (today) is not a family name
+        ("رقم محمد الثاني", [("محمد", P)]),  # an adjective shaped like one (`الثاني`, the second)
         ("السيدة سعاد وصلت", [("سعاد", P)]),  # no capitals in Arabic: a cue doesn't take the verb
         ("J'ai vu M'barek hier", [("M'barek", P)]),
         ("J'ai vu Abdel Kader Trabelsi", [("Abdel Kader Trabelsi", P)]),

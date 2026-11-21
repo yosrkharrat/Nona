@@ -27,13 +27,18 @@ from nona.core.pseudonymize import (
     restore,
 )
 from nona.core.recognizers import Recognizer, default_recognizers
-from nona.core.recognizers.gazetteer import COMMON
+from nona.core.recognizers.gazetteer import COMMON, NAMES
 from nona.core.resolver import denylist_spans, known_spans, resolve
 from nona.core.types import EntityType, Span
 
 # Look-ahead only takes the words of a confident PERSON span, so one weak false positive can't spread its
 # words over the rest of the conversation (they become known forms).
 LOOK_AHEAD_MIN_SCORE = 0.8
+
+
+def _cased(word: str) -> bool:
+    """Whether the word's script has capitals (Latin, Cyrillic…), as opposed to Arabic."""
+    return any(c.lower() != c.upper() for c in word)
 
 
 class DetectorError(RuntimeError):
@@ -94,11 +99,13 @@ class Nona:
         # Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left to the
         # gazetteer's context rules, which decide on them alone.
         names = [s for s in spans if s.type is EntityType.PERSON and s.score >= LOOK_AHEAD_MIN_SCORE]
+        # In a script without capitals (Arabic), a word has no capital to vouch for it, so only listed names
+        # spread: `محمد الثاني` must not make every `الثاني` ("the second") a name.
         words = [
             (EntityType.PERSON, word)
             for s in names
             for word in [s.text_in(text), *name_words(s.text_in(text))]
-            if not canonical_tokens(word) & COMMON
+            if not canonical_tokens(word) & COMMON and (_cased(word) or canonical_tokens(word) <= NAMES)
         ]
         # It fills gaps only, never retyping a detection, except a span kept as is (an ORGANIZATION): that
         # one gives way, so `… de la Clinique Ahmed Ben Salem` doesn't send a name found in this message.

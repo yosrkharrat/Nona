@@ -232,3 +232,9 @@ def test_m_elision_and_abdel_glue_into_one_name() -> None:
     )
     assert canonical_tokens("M. Ben Salem") == {"bensalem"}  # `M.` with a dot is still the honorific
     assert canonical_tokens("d'Ahmed") == {"d", "ahmed"}
+
+
+def test_abdel_alone_is_a_first_name() -> None:
+    assert canonical_tokens("Abdel Trabelsi") == {"abdel", "trabelsi"}
+    assert compatible(canonical_tokens("Abdel Ben Salem"), canonical_tokens("M. Ben Salem"))
+    assert canonical_tokens("Abdou Rahman") == {"abdourahman"}

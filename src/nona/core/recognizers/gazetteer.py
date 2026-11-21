@@ -36,7 +36,8 @@ The cue itself is never part of the span, and a cue doesn't reach across a line 
 
 **Arabic.** Prepositions such as `على` ("on", which folds to the same letters as `علي`, Ali) are never names.
 A word that misses the lists is tried again without up to two leading clitics `و ف ب ل ك` (`لسامي`, `ولسامي`;
-`للطرابلسي` is ل + ال), and the span leaves the clitics out.
+`للطرابلسي` is ل + ال), and the span leaves the clitics out. In the ل + ال case, the span keeps the
+second ل (`لطرابلسي`), so it doesn't link to `الطرابلسي`: linking it would make restore write `لالطرابلسي`.
 
 **Places.** Cities from the lists are LOCATION spans (0.8) when they start with a capital letter (Latin
 script). Latin spellings match with or without accents (`Gabès` = `Gabes`), and Arabic ones after up to two
@@ -54,7 +55,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from nona.core.canonical import HONORIFICS, PARTICLES, canonical_tokens
+from nona.core.canonical import ABD_PREFIXES, HONORIFICS, PARTICLES, canonical_tokens
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers import gazetteer_data as data
 from nona.core.recognizers.span import to_span
@@ -103,6 +104,7 @@ STOPWORDS = frozenset(
     }
 )  # fmt: skip
 _CLITICS = "وفبلك"
+_RUN_PARTICLES = PARTICLES | ABD_PREFIXES  # a run may start with `Abdel` even where it isn't glued
 _GAP = re.compile(r"[ \t]+|-")
 _HONORIFIC_GAP = re.compile(r"\.?[ \t]+|\.")  # `M. Ben Salem`, `Dr Gharbi`, `Mme.Ksouri`
 _WORD = re.compile(r"(?<![^\W_])[Mm]['\u2019][^\W_]+|[^\W_]+")  # `M'barek` stays one word
@@ -235,7 +237,7 @@ def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
     cued = cue == "strong" and (first.cap or first.cap is None) and len(first.text) > 1
     if not (first.name or _particle(doc, words, i) or cued):
         return i, ""
-    unlisted = 0 if first.name or first.text in PARTICLES else 1  # `Abdel Kader …`: a particle is no name
+    unlisted = 0 if first.name or first.text in _RUN_PARTICLES else 1  # `Abdel Kader …`: no name yet
     max_unlisted = 2 if cue == "strong" else 1
     j = i + 1
     while j < len(words) and j - i < MAX_RUN and _GAP.fullmatch(doc.text[words[j - 1].end : words[j].start]):
@@ -252,19 +254,37 @@ def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
             j += 1
         else:
             break
-    if j - i > 1 and words[j - 1].text in PARTICLES:  # a trailing `Ben` with nothing after it
+    if j - i > 1 and words[j - 1].text in _RUN_PARTICLES:  # a trailing `Ben` with nothing after it
         j -= 1
     return j, cue
 
 
+# Adjectives shaped like a family name (`الثاني`, "the second"): never taken as one.
+NISBA_ADJECTIVES = frozenset(
+    {
+        "الثاني", "الثالث", "الشخصي", "الماضي", "الحالي", "العربي", "التالي", "الرسمي", "الوطني", "الدولي",
+        "الجامعي", "الصحي", "المالي", "الاداري", "الإداري", "التجاري", "الاساسي", "الأساسي", "الحقيقي",
+        "النهائي", "الدراسي", "الشهري", "السنوي", "اليومي", "الاسبوعي", "الأسبوعي", "المحلي", "الجهوي",
+        "الفني", "التقني", "الطبي", "القانوني", "الاجتماعي", "الاقتصادي", "السياسي", "الامني", "الأمني",
+        "الماضى", "الثانوي", "الابتدائي", "الإبتدائي", "العادي", "الضروري", "الكافي", "الباقي", "الجاي",
+    }
+)  # fmt: skip
+
+
 def _nisba(text: str) -> bool:
     """An Arabic family name of the `الزغلامي`, `الطرابلسي` kind: the article, then 3+ letters ending in ي."""
-    return text.startswith("ال") and text.endswith("ي") and len(text) >= 6 and text not in ARABIC_STOP
+    return (
+        text.startswith("ال")
+        and text.endswith("ي")
+        and len(text) >= 6
+        and text not in ARABIC_STOP
+        and text not in NISBA_ADJECTIVES
+    )
 
 
 def _particle(doc: NormalizedDoc, words: list[_Word], i: int) -> bool:
     """A name particle (`ben`, `el`, `بن`) followed by a name or a capitalized word."""
-    if words[i].text not in PARTICLES or i + 1 >= len(words):
+    if words[i].text not in _RUN_PARTICLES or i + 1 >= len(words):
         return False
     nxt = words[i + 1]
     adjacent = _GAP.fullmatch(doc.text[words[i].end : nxt.start]) is not None

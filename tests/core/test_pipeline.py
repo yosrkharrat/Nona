@@ -139,3 +139,8 @@ def test_a_structured_value_glued_to_a_letter_round_trips() -> None:
         result = n.anonymize(text)
         assert result.text != text
         assert n.restore(result.text, result.mapping) == text
+
+
+def test_arabic_look_ahead_spreads_listed_names_only() -> None:
+    """No capitals in Arabic: an unlisted word of a name (`الثاني`, the second) must not spread."""
+    assert Nona().anonymize("رقم محمد الثاني. الطابق الثاني").text == "رقم PERSON_1 الثاني. الطابق الثاني"
