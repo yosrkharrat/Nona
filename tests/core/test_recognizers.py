@@ -173,6 +173,7 @@ def test_default_recognizers_cover_their_types() -> None:
         "checksum:rib",
         "checksum:card",
         "context:cin",
+        "gazetteer",
     ]
     covered = frozenset().union(*(r.supported_types for r in recognizers))
     assert covered == TYPES
@@ -185,6 +186,8 @@ def test_spans_carry_type_score_and_detector() -> None:
         (EntityType.PHONE, "phonenumbers", 1.0),
         (EntityType.EMAIL, "regex:email", 1.0),
         (EntityType.IP_ADDRESS, "regex:ip", 1.0),
+        (EntityType.PERSON, "gazetteer", 0.85),  # `Sami`
+        (EntityType.PERSON, "gazetteer", 0.6),  # `sami` inside the email; the resolver keeps the email
     }
 
 
@@ -196,6 +199,8 @@ TYPES = {
     EntityType.RIB,
     EntityType.CARD,
     EntityType.NATIONAL_ID,
+    EntityType.PERSON,
+    EntityType.LOCATION,
 }
 
 

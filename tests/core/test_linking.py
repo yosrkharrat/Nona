@@ -44,8 +44,13 @@ class Names:
 NAMES = ["Ahmed", "Ahmed Ben Salem", "Ahmed Karoui", "M. Ben Salem", "Sami", "Sami Trabelsi", "Amal", "Mme"]
 
 
+# The structured recognizers, without the gazetteer: these tests are about linking, and the `Names` stub
+# decides exactly which names are detected.
+STRUCTURED = [r for r in default_recognizers() if r.name != "gazetteer"]
+
+
 def nona(*, blind_to: Sequence[str] = (), names: Sequence[str] = NAMES, **kwargs: object) -> Nona:
-    return Nona([*default_recognizers(), Names(names, blind_to)], **kwargs)  # type: ignore[arg-type]
+    return Nona([*STRUCTURED, Names(names, blind_to)], **kwargs)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- the ADR-0004 worked example
