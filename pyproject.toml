@@ -23,7 +23,9 @@ classifiers = [
 ]
 # Runtime dependencies are added in the milestone that needs them (see README roadmap):
 # M1 detection (phonenumbers, gliner), M3 proxy (fastapi, uvicorn, httpx).
-dependencies = []
+dependencies = [
+    "phonenumbers>=8.13",
+]
 
 [project.scripts]
 nona = "nona.cli:main"
