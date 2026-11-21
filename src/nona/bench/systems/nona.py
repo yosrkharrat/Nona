@@ -1,7 +1,8 @@
 """The `nona` system: Nona's own pipeline, as a library call, with its default configuration.
 
-In S2 each turn is anonymized on its own. From S3, the whole conversation is anonymized with one shared
-mapping (ADR-0004), and from S5 the benchmark goes through the proxy and measures what leaves it (FR-21).
+The whole conversation is anonymized with one shared mapping, causally (ADR-0004), so turn `i`'s payload is
+what every later request sends for it. From S5 the benchmark goes through the proxy and measures what leaves
+it (FR-21).
 """
 
 from __future__ import annotations
@@ -21,4 +22,4 @@ class NonaSystem:
         return "nona"
 
     def payloads(self, conversation: Conversation) -> Sequence[str]:
-        return [self._nona.anonymize(turn.text).text for turn in conversation.turns]
+        return list(self._nona.anonymize_messages([turn.text for turn in conversation.turns]).texts)

@@ -4,7 +4,8 @@ Recognizers report a union of candidates, overlaps included (the RIB inside a Tu
 CIN on the same 8 digits). The resolver:
 
 1. drops spans below `min_score`, and spans whose text is on the allowlist (FR-5);
-2. adds every denylist term as a `CUSTOM` span (FR-5);
+2. adds every denylist term as a `CUSTOM` span (FR-5), and every known surface form from earlier messages of
+   the conversation (forward propagation, ADR-0004);
 3. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
@@ -13,10 +14,11 @@ appearance, so any instability would renumber them).
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.normalize import NormalizedDoc
+from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
 
@@ -53,6 +55,39 @@ def denylist_spans(doc: NormalizedDoc, terms: Iterable[str]) -> list[Span]:
         for m in pattern.finditer(doc.text):
             spans.append(to_span(doc, m.start(), m.end(), EntityType.CUSTOM, 1.0, "denylist"))
     return spans
+
+
+def known_spans(doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]]) -> list[Span]:
+    """Forward propagation (ADR-0004, step 2): each occurrence of a surface form linked in an earlier message.
+
+    Multi-word forms match on the normalized view (case, spacing and digits don't matter). Single-word forms
+    match the original text exactly, at word boundaries, so a known `Amal` doesn't mask *amal* ("hope").
+    """
+    spans: list[Span] = []
+    for etype, surface in dict.fromkeys(known):
+        pattern, on_normalized = _known_pattern(surface)
+        if on_normalized:
+            spans.extend(
+                to_span(doc, m.start(), m.end(), etype, 1.0, "propagation")
+                for m in pattern.finditer(doc.text)
+            )
+        else:
+            spans.extend(
+                Span(m.start(), m.end(), etype, 1.0, "propagation") for m in pattern.finditer(doc.original)
+            )
+    return spans
+
+
+@functools.lru_cache(maxsize=4096)
+def _known_pattern(surface: str) -> tuple[re.Pattern[str], bool]:
+    """The pattern for one known form, and whether it runs on the normalized view. Cached, because the proxy
+    re-runs the whole conversation on every request."""
+    words = normalize(surface).text.split()
+    if len(words) > 1:
+        return re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)"), True
+    if not words:
+        return re.compile(r"(?!)"), False  # matches nothing
+    return re.compile(r"(?<!\w)" + re.escape(surface.strip()) + r"(?!\w)"), False
 
 
 def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:

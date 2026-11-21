@@ -6,7 +6,7 @@ from hypothesis import strategies as st
 
 from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
-from nona.core import DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
+from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -83,17 +83,33 @@ PIECES = [
     "é",
     "ﬁ",
     "22 123 456",
+    "22.123.456",
     "@example.com",
 ]
 texts = st.lists(st.sampled_from(PIECES), max_size=40).map("".join)
 
 
+def canonical_form(text: str, result: Anonymized) -> str:
+    """`text` with every pseudonymized mention written as its entity's canonical form."""
+    parts, pos = [], 0
+    for span, entity in sorted(
+        ((m, e) for e in result.entities for m in e.mentions), key=lambda me: me[0].start
+    ):
+        parts += [text[pos : span.start], entity.canonical]
+        pos = span.end
+    return "".join([*parts, text[pos:]])
+
+
 @given(texts)
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
-    """FR-8: restore(anonymize(x)) == x when every type is reversible."""
+    """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
+    so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone)."""
     nona = Nona(policies=ALL_REVERSIBLE)
     result = nona.anonymize(text)
-    assert nona.restore(result.text, result.mapping) == text
+    restored = nona.restore(result.text, result.mapping)
+    assert restored == canonical_form(text, result)
+    if all(len({m.text_in(text) for m in e.mentions}) == 1 for e in result.entities):
+        assert restored == text
 
 
 @given(texts)
@@ -110,7 +126,7 @@ def test_round_trip_and_no_structured_value_left_on_generated_data(seed: int) ->
     for conv in generate(len(TEMPLATES), seed=seed, prefix="g"):
         for turn in conv.turns:
             result = nona.anonymize(turn.text)
-            assert nona.restore(result.text, result.mapping) == turn.text
+            assert nona.restore(result.text, result.mapping) == canonical_form(turn.text, result)
             for m in turn.mentions:
                 if conv.entity(m.entity).type in structured:
                     assert m.text not in result.text, f"{m.text!r} left in {result.text!r}"

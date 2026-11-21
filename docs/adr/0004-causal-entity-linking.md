@@ -67,6 +67,20 @@ m4  user       Ahmed a confirmé ?
 
 The causal reading of m1 matches what the user could have meant when they wrote it: at that point only one Ahmed existed in the conversation.
 
+### Implementation notes (S3, #38)
+
+Details the decision left open, settled while implementing it in [`core/linking.py`](../../src/nona/core/linking.py):
+
+- **Look-ahead inside a message** means PERSON mentions are linked longest first. In `Ahmed, Ahmed Karoui et Ahmed Ben Salem`, linking in reading order would let the bare `Ahmed` absorb `Karoui`; longest first makes it ambiguous, which is what it is. New entities are still numbered by first appearance.
+- **Contested entities.** When two mentions in one message fit an earlier entity but not each other (`Ahmed` in m1, then `Ahmed Karoui et Ahmed Ben Salem`), neither absorbs it, because which one did would depend on word order. Both become new entities, and a later bare `Ahmed` is ambiguous.
+- **An entity known only by an honorific** (`Mme`) isn't propagated: a later `Mme` is as likely someone else, and `Mme Trabelsi et Mme Karoui` must not become one person.
+- **Restoration** writes the longest form with spacing collapsed, the first seen among equals, so a later `SAMI  TRABELSI` doesn't replace `Sami Trabelsi`.
+- **FR-8** becomes "round trip up to linking": a mention is restored to its entity's canonical form, so the input comes back exactly only when no entity has two forms. That was already implied by "restoration uses the longest surface form"; the acceptance criterion in 01 now says so.
+- **Ambiguous entities match only an identical token set.** They never take part in subset/superset checks, so an ambiguous `Ahmed` can't make a later `Ahmed Ben Salem` ambiguous too.
+- **Other types** link by value: letters and digits for numbers (`22 123 456` = `22.123.456`), folded text for the rest.
+- **A placeholder the user types after its number was issued** (`PHONE_1` in message 3, when `PHONE_1` was issued in message 1) can't be renumbered. It becomes an entity whose value is the literal text: it goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactly what the user wrote. Without this, restoring would silently turn the user's `PHONE_1` into the phone number. The conversation-level round-trip property test found this case.
+- `anonymize(text)` is the one-message conversation, so single texts get the same linking.
+
 ## Consequences
 
 - ➕ **Prefix stability is a property that can be tested.** For any conversation `msgs` and any `k`, `anonymize(msgs[:k]) == anonymize(msgs)[:k]`. This becomes a Hypothesis property test next to the round-trip test of FR-8.

@@ -1,18 +1,30 @@
 """`Nona`: the library entry point (02 §3, FR-17). Normalize → detect → resolve → pseudonymize; restore.
 
+`anonymize_messages` is the conversation-level path the proxy uses (ADR-0004): messages are processed in
+order, every surface form linked in an earlier message is searched for again (forward propagation), and
+placeholders issued for a message never change whatever comes after it.
+
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
-from collections.abc import Sequence
 
 from nona.core.normalize import normalize
-from nona.core.pseudonymize import DEFAULT_POLICIES, Anonymized, Mapping, Policy, pseudonymize, restore
+from nona.core.pseudonymize import (
+    DEFAULT_POLICIES,
+    Anonymized,
+    AnonymizedConversation,
+    Mapping,
+    Policy,
+    Pseudonymizer,
+    restore,
+)
 from nona.core.recognizers import Recognizer, default_recognizers
-from nona.core.resolver import denylist_spans, resolve
+from nona.core.resolver import denylist_spans, known_spans, resolve
 from nona.core.types import EntityType, Span
 
 
@@ -50,8 +62,11 @@ class Nona:
 
     def detect(self, text: str) -> list[Span]:
         """Resolved spans over `text`, before any policy is applied."""
+        return self._detect(text, ())
+
+    def _detect(self, text: str, known: Iterable[tuple[EntityType, str]]) -> list[Span]:
         doc = normalize(text)
-        candidates: list[Span] = denylist_spans(doc, self._denylist)
+        candidates: list[Span] = denylist_spans(doc, self._denylist) + known_spans(doc, known)
         for recognizer in self._recognizers:
             try:
                 candidates.extend(recognizer.detect(doc))
@@ -60,7 +75,14 @@ class Nona:
         return resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
 
     def anonymize(self, text: str) -> Anonymized:
-        return pseudonymize(text, self.detect(text), self._policies)
+        return self.anonymize_messages([text]).messages[0]
+
+    def anonymize_messages(self, messages: Sequence[str]) -> AnonymizedConversation:
+        """Anonymize a conversation with one shared mapping. Causal: message `i` depends only on `0..i`."""
+        pseudonymizer = Pseudonymizer(self._policies)
+        for text in messages:
+            pseudonymizer.add(text, self._detect(text, pseudonymizer.known_surfaces()))
+        return pseudonymizer.result()
 
     @staticmethod
     def restore(text: str, mapping: Mapping) -> str:
