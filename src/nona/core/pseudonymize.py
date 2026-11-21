@@ -52,7 +52,14 @@ def placeholder_regex(types: Iterable[EntityType]) -> re.Pattern[str]:
     return re.compile(LEFT + "(" + "|".join(names) + r")[ _]?(\d+)" + RIGHT, re.IGNORECASE)
 
 
-_ANY_PLACEHOLDER = placeholder_regex(EntityType)
+# Spotting placeholders the user typed (to reserve their numbers, or to treat one as a literal) keeps the
+# looser boundaries: `عندPERSON_2` or `PERSON_2s` still reserves number 2. Only restoring needs strict ones.
+_ANY_PLACEHOLDER = re.compile(
+    r"(?<![A-Za-z0-9])("
+    + "|".join(sorted({_type_pattern(t) for t in EntityType}, key=len, reverse=True))
+    + r")[ _]?(\d+)(?!\d)",
+    re.IGNORECASE,
+)
 
 
 def _canonical_type(raw: str) -> EntityType:

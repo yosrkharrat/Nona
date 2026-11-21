@@ -89,23 +89,30 @@ class Nona:
             if self._policies.get(s.type) is not Policy.KEEP or not any(s.overlaps(p) for p in propagated)
         )
         spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
-        # Look-ahead (ADR-0004, step 4): a bare first name before the full name in the same message.
+        # Look-ahead (ADR-0004, step 4): the message's own confident names, searched for in the message.
+        # Their full forms, and their name words: a bare first name before the full name is caught too.
         # Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left to the
-        # gazetteer's context rules: `Mabrouk ! Mabrouk Jlassi a eu son bac` keeps its first `Mabrouk`.
-        # It only fills gaps: a word already covered by any span (a place, an organization) is left alone.
+        # gazetteer's context rules, which decide on them alone.
+        names = [s for s in spans if s.type is EntityType.PERSON and s.score >= LOOK_AHEAD_MIN_SCORE]
         words = [
             (EntityType.PERSON, word)
-            for s in spans
-            if s.type is EntityType.PERSON and s.score >= LOOK_AHEAD_MIN_SCORE
-            for word in name_words(s.text_in(text))
+            for s in names
+            for word in [s.text_in(text), *name_words(s.text_in(text))]
             if not canonical_tokens(word) & COMMON
         ]
+        # It fills gaps only, never retyping a detection, except a span kept as is (an ORGANIZATION): that
+        # one gives way, so `… de la Clinique Ahmed Ben Salem` doesn't send a name found in this message.
+        keep = {s for s in spans if self._policies.get(s.type) is Policy.KEEP}
         extra = [
-            c for c in known_spans(doc, words, detector="look-ahead") if not any(c.overlaps(s) for s in spans)
+            c
+            for c in known_spans(doc, words, detector="look-ahead")
+            if not any(c.overlaps(s) for s in spans if s not in keep)
         ]
         if not extra:
             return spans
-        return resolve([*spans, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
+        hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
+        kept = [s for s in spans if s not in hiding]
+        return resolve([*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
 
     def _recognize(self, doc: NormalizedDoc, text: str) -> tuple[Span, ...]:
         """Every recognizer's spans for one message, from the cache when this text was seen with this config.

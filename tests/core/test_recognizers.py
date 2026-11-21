@@ -303,6 +303,7 @@ def test_order_cue_lowers_the_score(text: str, number: str) -> None:
         "Pour le suivi : 22123456",  # `suivi`, `colis`, `dossier`, `ticket` introduce contacts too
         "le livreur du colis: 22123456",
         "commande\n22123456",  # a cue doesn't reach across a line break
+        "Merci pour la commande. 22123456 est mon whatsapp",  # a full stop is not a connector
     ],
 )
 def test_phone_without_adjacent_order_cue_keeps_full_score(text: str) -> None:

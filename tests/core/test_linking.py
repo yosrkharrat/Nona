@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections.abc import Sequence
 
@@ -213,17 +214,28 @@ def test_a_kept_organization_does_not_hide_a_known_name() -> None:
     n = Nona([*STRUCTURED, Names(["Ahmed Ben Salem"], blind_to=["Clinique"]), Clinic()])
     conv = n.anonymize_messages(["Ahmed Ben Salem a appelé.", "Rendez-vous à la Clinique Ahmed Ben Salem."])
     assert conv.texts[1] == "Rendez-vous à la Clinique PERSON_1."
+    # the same in one message: the name found there wins over the organization
+    seeing = Nona([*STRUCTURED, Names(["Ahmed Ben Salem"]), Clinic()])
+    one = seeing.anonymize_messages(["Ahmed Ben Salem a appelé de la Clinique Ahmed Ben Salem."])
+    assert one.texts == ("PERSON_1 a appelé de la Clinique PERSON_1.",)
+
+
+def test_a_typed_placeholder_glued_to_a_word_still_reserves_its_number() -> None:
+    conv = nona(names=["Sami"]).anonymize_messages(["عندPERSON_1 خبر", "Sami a appelé"])
+    assert conv.texts == ("عندPERSON_1 خبر", "PERSON_2 a appelé")
 
 
 AFFIXES = ["", "ل", "و", "وب", "_", "'", "-", "(", "«"]
 SUFFIXES = ["", "_2024", "'s", ".", ")", "»", "-"]
 
 
-@settings(max_examples=150, deadline=None)
-@given(
-    st.sampled_from(["Kenza Boukadida", "كنزة", "Sami", "22 123 456", "a@example.com"]),
-    st.sampled_from(AFFIXES),
-    st.sampled_from(SUFFIXES),
+@pytest.mark.parametrize(
+    ("value", "prefix", "suffix"),
+    list(
+        itertools.product(
+            ["Kenza Boukadida", "كنزة", "Sami", "22 123 456", "a@example.com"], AFFIXES, SUFFIXES
+        )
+    ),
 )
 def test_a_restored_value_never_leaks_back(value: str, prefix: str, suffix: str) -> None:
     """ADR-0004: whatever the model glues to a placeholder, the restored text is masked again when re-sent."""

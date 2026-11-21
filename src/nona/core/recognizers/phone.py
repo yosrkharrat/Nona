@@ -16,8 +16,9 @@ Fax numbers need no rule: a fax line is an ordinary fixed line, and it is masked
 One context rule (deep dive A, layer 4): **an order cue lowers the score.** Eight-digit order numbers are
 often valid Tunisian mobiles (`Ma commande n° 24176705`). When an unbroken run of digits in national format
 comes right after an order cue (`commande`, `réf`, `order`, `facture`…), with at most connectors such as `n°`,
-`numéro`, `#`, `:` or `.` in between on the same line, the span is reported with `CUE_SCORE`, below the
-resolver's default threshold.
+`numéro`, `#` or `:` in between on the same line, the span is reported with `CUE_SCORE`, below the resolver's
+default threshold. A dot counts only glued to an abbreviation (`réf.`, `cmd.`): a full stop ends the
+sentence, and in `…la commande. 22123456 est mon whatsapp` the number is a phone.
 
 Every limit is on purpose, as a leak costs more than over-masking:
 - the cue must be adjacent: `envoie la facture au 22 123 456` is a phone number;
@@ -52,9 +53,9 @@ CUE_SCORE = 0.3  # below the resolver's default `min_score` of 0.5, so the span 
 # `[ \t]`, not `\s`, and `\Z`, not `$`: a cue never reaches across a line break. `colis`, `suivi`, `dossier`
 # and `ticket` are left out: they introduce a contact number as often as a reference (`Pour le suivi : …`).
 _ORDER_CUE = re.compile(
-    r"(?<!\w)(?:commande|cmd|r[ée]f|r[ée]f[ée]rence|facture"
+    r"(?<!\w)(?:commande|cmd\.?|r[ée]f\.?|r[ée]f[ée]rence|facture"
     r"|order|invoice|tracking|booking|طلبية|الطلبية|فاتورة|الفاتورة)"
-    r"(?:[ \t]*(?:n°|n\.|no\.?|nº|num[ée]ro|num\.?|number|nr\.?|#|:|-|\.|رقم))*[ \t]*\Z"
+    r"(?:[ \t]*(?:n°|n\.|no\.?|nº|num[ée]ro|num\.?|number|nr\.?|#|:|-|رقم))*[ \t]*\Z"
 )
 _INTERNATIONAL = re.compile(r"\s*(?:\+|00)")
 
