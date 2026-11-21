@@ -20,41 +20,13 @@ from nona.bench.generate import (
     Template,
     check_template,
     generate,
-    iban_valid,
-    luhn_valid,
     main,
     render,
-    tn_rib_valid,
 )
 from nona.core import EntityType
+from nona.core.checksums import iban_valid, tn_rib_valid
 
 seeds = st.integers(min_value=0, max_value=2**32 - 1)
-
-
-# --------------------------------------------------------------------------- checksums
-
-
-@pytest.mark.parametrize("number", TEST_CARDS)
-def test_every_test_card_is_luhn_valid(number: str) -> None:
-    assert luhn_valid(number)
-
-
-@pytest.mark.parametrize("number", ["4242424242424241", "1234567812345678", "42"])
-def test_luhn_rejects_bad_numbers(number: str) -> None:
-    assert not luhn_valid(number)
-
-
-@pytest.mark.parametrize(
-    "iban",
-    ["FR14 2004 1010 0505 0001 3M02 606", "GB82 WEST 1234 5698 7654 32", "DE89370400440532013000"],
-)
-def test_iban_validator_accepts_published_examples(iban: str) -> None:
-    assert iban_valid(iban)
-
-
-@pytest.mark.parametrize("iban", ["FR15 2004 1010 0505 0001 3M02 606", "GB82", "DE89 3704 0044 0532 0130 0!"])
-def test_iban_validator_rejects_bad_ibans(iban: str) -> None:
-    assert not iban_valid(iban)
 
 
 # --------------------------------------------------------------------------- templates

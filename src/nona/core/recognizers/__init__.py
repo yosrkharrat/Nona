@@ -11,6 +11,7 @@ from typing import Protocol
 
 from nona.core.normalize import NormalizedDoc
 from nona.core.recognizers.email import EmailRecognizer
+from nona.core.recognizers.financial import CardRecognizer, IbanRecognizer, RibRecognizer
 from nona.core.recognizers.ip import IpRecognizer
 from nona.core.recognizers.phone import PhoneRecognizer
 from nona.core.recognizers.span import to_span
@@ -29,14 +30,24 @@ class Recognizer(Protocol):
 
 def default_recognizers() -> list[Recognizer]:
     """The structured recognizers of FR-1, in a fixed order (determinism, ADR-0002)."""
-    return [EmailRecognizer(), PhoneRecognizer(), IpRecognizer()]
+    return [
+        EmailRecognizer(),
+        PhoneRecognizer(),
+        IpRecognizer(),
+        IbanRecognizer(),
+        RibRecognizer(),
+        CardRecognizer(),
+    ]
 
 
 __all__ = [
+    "CardRecognizer",
     "EmailRecognizer",
+    "IbanRecognizer",
     "IpRecognizer",
     "PhoneRecognizer",
     "Recognizer",
+    "RibRecognizer",
     "default_recognizers",
     "to_span",
 ]
