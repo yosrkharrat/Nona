@@ -2,11 +2,12 @@
 
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.pipeline import DetectorError, Nona
-from nona.core.pseudonymize import Anonymized, Mapping, Policy, restore
+from nona.core.pseudonymize import Anonymized, AnonymizedConversation, Mapping, Policy, restore
 from nona.core.types import Entity, EntityType, Span
 
 __all__ = [
     "Anonymized",
+    "AnonymizedConversation",
     "DetectorError",
     "Entity",
     "EntityType",

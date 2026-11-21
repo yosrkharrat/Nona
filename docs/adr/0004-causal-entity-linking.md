@@ -67,6 +67,16 @@ m4  user       Ahmed a confirmé ?
 
 The causal reading of m1 matches what the user could have meant when they wrote it: at that point only one Ahmed existed in the conversation.
 
+### Implementation notes (S3, #38)
+
+Details the decision left open, settled while implementing it in [`core/linking.py`](../../src/nona/core/linking.py):
+
+- **Look-ahead inside a message** means PERSON mentions are linked longest first. In `Ahmed, Ahmed Karoui et Ahmed Ben Salem`, linking in reading order would let the bare `Ahmed` absorb `Karoui`; longest first makes it ambiguous, which is what it is. New entities are still numbered by first appearance.
+- **Ambiguous entities match only an identical token set.** They never take part in subset/superset checks, so an ambiguous `Ahmed` can't make a later `Ahmed Ben Salem` ambiguous too.
+- **Other types** link by value: letters and digits for numbers (`22 123 456` = `22.123.456`), folded text for the rest.
+- **A placeholder the user types after its number was issued** (`PHONE_1` in message 3, when `PHONE_1` was issued in message 1) can't be renumbered. It becomes an entity whose value is the literal text: it goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactly what the user wrote. Without this, restoring would silently turn the user's `PHONE_1` into the phone number. The conversation-level round-trip property test found this case.
+- `anonymize(text)` is the one-message conversation, so single texts get the same linking.
+
 ## Consequences
 
 - ➕ **Prefix stability is a property that can be tested.** For any conversation `msgs` and any `k`, `anonymize(msgs[:k]) == anonymize(msgs)[:k]`. This becomes a Hypothesis property test next to the round-trip test of FR-8.
