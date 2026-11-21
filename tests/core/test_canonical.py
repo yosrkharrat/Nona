@@ -221,3 +221,14 @@ def test_a_handle_written_from_a_persons_tokens_matches_them(tokens: list[str], 
     separator = data.draw(st.sampled_from(["", ".", "_", "-"]))
     handle = separator.join(parts[i] for i in order)
     assert handle_matches(handle, frozenset(tokens))
+
+
+def test_m_elision_and_abdel_glue_into_one_name() -> None:
+    assert canonical_tokens("M'hamed") == {"mhamed"}  # not the honorific `M` + `hamed`
+    assert canonical_tokens("M'barek") == canonical_tokens("Mbarek")
+    assert not compatible(canonical_tokens("M'hamed"), canonical_tokens("Hamed"))
+    assert (
+        canonical_tokens("Abdel Kader") == canonical_tokens("Abd El Kader") == canonical_tokens("Abdelkader")
+    )
+    assert canonical_tokens("M. Ben Salem") == {"bensalem"}  # `M.` with a dot is still the honorific
+    assert canonical_tokens("d'Ahmed") == {"d", "ahmed"}

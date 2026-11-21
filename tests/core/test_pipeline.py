@@ -130,3 +130,12 @@ def test_round_trip_and_no_structured_value_left_on_generated_data(seed: int) ->
             for m in turn.mentions:
                 if conv.entity(m.entity).type in structured:
                     assert m.text not in result.text, f"{m.text!r} left in {result.text!r}"
+
+
+def test_a_structured_value_glued_to_a_letter_round_trips() -> None:
+    """A value found glued to an Arabic letter is restored too (loose boundaries for structured types)."""
+    n = Nona()
+    for text in ["a@example.comـ", "رقمي22123456"]:
+        result = n.anonymize(text)
+        assert result.text != text
+        assert n.restore(result.text, result.mapping) == text

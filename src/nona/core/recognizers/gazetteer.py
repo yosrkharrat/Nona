@@ -4,7 +4,10 @@
 covers its spellings: `Mohamed`/`Mohammed`/`Med`, Arabizi `mo7amed`, Arabic `محمد`. Names from the lists
 (`gazetteer_data.py`) start a *name run*: the following words joined by a space or a bare hyphen (`Ben-Salem`;
 a spaced ` - ` separates items, not name parts), as long as they are names too, a particle with a name after
-it (`Ben Salem`), or one capitalized word that isn't in the lists (`Ahmed Karoui`).
+it (`Ben Salem`, `Abdel Kader`), or one capitalized word that isn't in the lists (`Ahmed Karoui`). A run may
+start with a particle without that counting as the unlisted word. In Arabic script, which has no capitals, the
+unlisted word must look like a family name: the article, then a word ending in ي (`محمد الزغلامي`), so
+`السيدة سعاد وصلت` doesn't take the verb. `M'barek` is one word.
 
 **Layer 4, context cues.** A cue right before a word lifts the score of a run:
 - *strong*: honorifics and kinship words (`M.`, `Mme`, `Dr`, `sidi`, `khalti`, `3amm`, `السيد`, `السيدة`) and
@@ -32,12 +35,13 @@ The cue itself is never part of the span, and a cue doesn't reach across a line 
 | anything else: a lowercase common word (`3amel`, doing), a lowercase surname alone, ... | 0.3 |
 
 **Arabic.** Prepositions such as `على` ("on", which folds to the same letters as `علي`, Ali) are never names.
-A word that misses the lists is tried again without a leading clitic `و ف ب ل ك`: `لسامي` → `سامي`, and the
-span covers the name only.
+A word that misses the lists is tried again without up to two leading clitics `و ف ب ل ك` (`لسامي`, `ولسامي`;
+`للطرابلسي` is ل + ال), and the span leaves the clitics out.
 
 **Places.** Cities from the lists are LOCATION spans (0.8) when they start with a capital letter (Latin
-script). Cities that are also ordinary words (`Nice`) aren't matched at the start of a sentence. A person run
-never takes a word that is part of a city, so `Sidi Bouzid` stays a place.
+script). Latin spellings match with or without accents (`Gabès` = `Gabes`), and Arabic ones after up to two
+clitics (`لصفاقس`, `للمنستير`). Cities that are also ordinary words (`Nice`) aren't matched at the start of
+a sentence. A person run never takes a word that is part of a city, so `Sidi Bouzid` stays a place.
 
 Linear in the text length: the proxy re-runs whole conversations, so nothing here looks back further than a
 few characters.
@@ -47,6 +51,7 @@ from __future__ import annotations
 
 import functools
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from nona.core.canonical import HONORIFICS, PARTICLES, canonical_tokens
@@ -100,7 +105,7 @@ STOPWORDS = frozenset(
 _CLITICS = "وفبلك"
 _GAP = re.compile(r"[ \t]+|-")
 _HONORIFIC_GAP = re.compile(r"\.?[ \t]+|\.")  # `M. Ben Salem`, `Dr Gharbi`, `Mme.Ksouri`
-_WORD = re.compile(r"[^\W_]+")
+_WORD = re.compile(r"(?<![^\W_])[Mm]['\u2019][^\W_]+|[^\W_]+")  # `M'barek` stays one word
 _SENTENCE_END = frozenset('.!?:\n"«“')
 
 
@@ -144,6 +149,21 @@ class _Word:
 ARABIC_STOP = frozenset({"على", "الى", "إلى", "في", "من", "عن", "مع", "هذا", "هذه", "هو", "هي"})
 
 
+def _strip_clitics(text: str, key: str | None) -> tuple[str | None, int]:
+    """A listed name behind up to two Arabic clitics: `لسامي`, `ولسامي`, `للطرابلسي` (ل + ال). Returns the
+    name's key and how many letters to leave out of the span, or the word unchanged."""
+    for n in (1, 2):
+        if len(text) - n < 2 or any(c not in _CLITICS for c in text[:n]):
+            break
+        rest = text[n:]
+        alef = "\u0627"
+        for candidate in (rest, alef + rest) if rest.startswith("ل") else (rest,):  # لل → ل + ال
+            stripped = _key(candidate)
+            if stripped in NAMES:
+                return stripped, n
+    return key, 0
+
+
 def _words(doc: NormalizedDoc) -> list[_Word]:
     out: list[_Word] = []
     for m in _WORD.finditer(doc.text):
@@ -157,10 +177,8 @@ def _words(doc: NormalizedDoc) -> list[_Word]:
         key = _key(surface)
         honorific = not canonical_tokens(surface) and not text.isdigit()  # canonical folding: `السيدة` too
         clitic = 0
-        if key not in NAMES and cap is None and len(text) > 2 and text[0] in _CLITICS:
-            stripped = _key(text[1:])
-            if stripped in NAMES:
-                key, clitic = stripped, 1
+        if key not in NAMES and cap is None:
+            key, clitic = _strip_clitics(text, key)
         out.append(
             _Word(
                 m.start(),
@@ -217,7 +235,7 @@ def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
     cued = cue == "strong" and (first.cap or first.cap is None) and len(first.text) > 1
     if not (first.name or _particle(doc, words, i) or cued):
         return i, ""
-    unlisted = 0 if first.name else 1
+    unlisted = 0 if first.name or first.text in PARTICLES else 1  # `Abdel Kader …`: a particle is no name
     max_unlisted = 2 if cue == "strong" else 1
     j = i + 1
     while j < len(words) and j - i < MAX_RUN and _GAP.fullmatch(doc.text[words[j - 1].end : words[j].start]):
@@ -226,7 +244,10 @@ def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
             break
         if nxt.name or _particle(doc, words, j):
             j += 1
-        elif nxt.cap and words[j - 1].cap and unlisted < max_unlisted:
+        elif unlisted < max_unlisted and (
+            (nxt.cap and words[j - 1].cap)
+            or (nxt.cap is None and words[j - 1].cap is None and _nisba(nxt.text))
+        ):
             unlisted += 1
             j += 1
         else:
@@ -234,6 +255,11 @@ def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
     if j - i > 1 and words[j - 1].text in PARTICLES:  # a trailing `Ben` with nothing after it
         j -= 1
     return j, cue
+
+
+def _nisba(text: str) -> bool:
+    """An Arabic family name of the `الزغلامي`, `الطرابلسي` kind: the article, then 3+ letters ending in ي."""
+    return text.startswith("ال") and text.endswith("ي") and len(text) >= 6 and text not in ARABIC_STOP
 
 
 def _particle(doc: NormalizedDoc, words: list[_Word], i: int) -> bool:
@@ -286,15 +312,38 @@ def _score(run: list[_Word], cue: str) -> float:
     return 0.6 if any(w.key in FIRST for w in listed) else 0.3
 
 
+# Latin letters and their accented forms: `Gabès`, `Gabes` and `GABES` are one city.
+_ACCENTS = {"a": "aàâäá", "e": "eéèêë", "i": "iîïí", "o": "oôöó", "u": "uùûüú", "c": "cç", "y": "yÿ"}
+_ARABIC_LEFT = "(?:(?<![^\\W_])|(?<=(?<![^\\W_])[وفبلك])|(?<=(?<![^\\W_])[وفبلك]{2}))"
+
+
+def _letter(c: str) -> str:
+    base = unicodedata.normalize("NFD", c)[0]
+    return f"[{_ACCENTS[base]}]" if base in _ACCENTS else re.escape(c)
+
+
 @functools.lru_cache(maxsize=1)
 def _city_patterns() -> list[tuple[re.Pattern[str], bool]]:
-    common = {normalize(c).text for c in data.COMMON_CITIES}
+    common = {_unaccent(normalize(c).text) for c in data.COMMON_CITIES}
     out: list[tuple[re.Pattern[str], bool]] = []
     for city in sorted(set(data.CITIES), key=len, reverse=True):
         words = normalize(city).text.split()
-        pattern = re.compile(r"(?<!\w)" + r"[ \t-]+".join(map(re.escape, words)) + r"(?!\w)")
-        out.append((pattern, " ".join(words) in common))
+        body = r"[ \t-]+".join("".join(map(_letter, w)) for w in words)
+        is_common = _unaccent(" ".join(words)) in common
+        if any("\u0600" <= c <= "\u06ff" for c in city):
+            # Arabic: up to two clitics in front (`لصفاقس`), and `للمنستير` = ل + المنستير
+            out.append((re.compile(_ARABIC_LEFT + body + r"(?!\w)"), is_common))
+            if words[0].startswith("ال"):
+                rest = r"[ \t-]+".join([re.escape(words[0][1:]), *map(re.escape, words[1:])])
+                after_lam = r"(?:(?<=(?<![^\W_])ل)|(?<=(?<![^\W_])[وف]ل))"
+                out.append((re.compile(after_lam + rest + r"(?!\w)"), is_common))
+        else:
+            out.append((re.compile(r"(?<!\w)" + body + r"(?!\w)"), is_common))
     return out
+
+
+def _unaccent(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c))
 
 
 def _cities(doc: NormalizedDoc) -> list[tuple[int, int, float]]:

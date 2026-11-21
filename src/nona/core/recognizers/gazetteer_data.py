@@ -89,7 +89,7 @@ CITIES: tuple[str, ...] = (
     "Tozeur", "Manouba", "Siliana", "Zaghouan", "Kébili", "La Marsa", "Carthage", "Hammamet", "Djerba",
     "Zarzis", "Houmt Souk", "La Goulette", "Sidi Bou Said", "El Menzah", "Ennasr", "Lac 2", "Raoued",
     "Mégrine", "Rades", "Hammam Lif", "Hammam Sousse", "Msaken", "Moknine", "Ksar Hellal", "Menzel Bourguiba",
-    "Kelibia", "Korba", "Tabarka", "Douz", "Nefta", "Metlaoui",
+    "El Kef", "Kelibia", "Korba", "Tabarka", "Douz", "Nefta", "Metlaoui",
     "Alger", "Oran", "Constantine", "Casablanca", "Rabat", "Marrakech", "Tripoli",
     "Paris", "Lyon", "Marseille", "Toulouse", "Nice", "Bordeaux", "Lille", "Nantes", "Strasbourg",
     "London", "Manchester",

@@ -10,6 +10,8 @@ set of canonical tokens:
    say how someone is addressed, not who they are.
 3. **Glue name particles to the next word**: `ben salem` → `bensalem`, `el abed` → `elabed`, and the same
    for `بن`. A particle is part of the surname, and people write it attached, spaced or hyphenated.
+   `Abdel` and `Abd` glue too: `Abdel Kader`, `Abd El Kader` and `Abdelkader` are all `abdelkader`. A
+   word-initial `M'` is part of the name, not the honorific: `M'hamed` → `mhamed`.
 4. **Arabizi digits** inside a word stand for Arabic letters: `3` (ع) and `2` (ء) are dropped, `7` → `h`,
    `9` → `k`, `5` → `kh`. So `3ali` → `ali` and `m7ammed` → `mhammed`.
 5. **Spelling variants** map to one form, from a small table: `Mohammed`, `Muhammad`, `Med` → `mohamed`, and
@@ -46,6 +48,8 @@ HONORIFICS: frozenset[str] = frozenset(
 
 PARTICLES: frozenset[str] = frozenset(
     {
+        "abdel",
+        "abd",
         "ben",
         "bin",
         "ibn",
@@ -125,10 +129,17 @@ def _de_arabizi(word: str) -> str:
     return "".join(_ARABIZI.get(c, c) for c in word if not (c.isdigit() and c not in _ARABIZI))
 
 
+_M_ELISION = re.compile(rf"(?<![\w{_APOSTROPHES}])m[{_APOSTROPHES}](?=\w)")  # `M'hamed`, `M'barek`
+
+
 def _words(surface: str) -> list[str]:
-    """Folded words, split on spaces, hyphens and apostrophes, honorifics and bare numbers removed."""
+    """Folded words, split on spaces, hyphens and apostrophes, honorifics and bare numbers removed.
+
+    A word-initial `M'` is part of the name, not the honorific `M`: `M'hamed` → `mhamed`, `M'barek` →
+    `mbarek`.
+    """
     out: list[str] = []
-    for raw in _WORD.findall(_fold(surface)):
+    for raw in _WORD.findall(_M_ELISION.sub("m", _fold(surface))):
         if raw.strip("-" + _APOSTROPHES) in HONORIFICS:
             continue
         out.extend(p for p in re.split(rf"[-{_APOSTROPHES}]", raw) if p)

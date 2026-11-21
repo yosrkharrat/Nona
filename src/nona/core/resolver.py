@@ -18,7 +18,7 @@ import functools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.boundaries import LEFT, RIGHT
+from nona.core.boundaries import LEFT, LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, RIGHT
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -70,7 +70,7 @@ def known_spans(
     """
     spans: list[Span] = []
     for etype, surface in dict.fromkeys(known):
-        pattern, on_normalized = _known_pattern(surface)
+        pattern, on_normalized = _known_pattern(surface, etype in NAME_TYPES)
         if on_normalized:
             spans.extend(
                 to_span(doc, m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.text)
@@ -83,15 +83,17 @@ def known_spans(
 
 
 @functools.lru_cache(maxsize=4096)
-def _known_pattern(surface: str) -> tuple[re.Pattern[str], bool]:
-    """The pattern for one known form, and whether it runs on the normalized view. Cached, because the proxy
-    re-runs the whole conversation on every request."""
+def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
+    """The pattern for one known form, and whether it runs on the normalized view. Names use the strict
+    boundaries, structured values the loose ones (`core/boundaries.py`). Cached, because the proxy re-runs the
+    whole conversation on every request."""
+    left, right = (LEFT, RIGHT) if name else (LOOSE_LEFT, LOOSE_RIGHT)
     words = normalize(surface).text.split()
     if len(words) > 1:
-        return re.compile(LEFT + r"\s+".join(map(re.escape, words)) + RIGHT), True
+        return re.compile(left + r"\s+".join(map(re.escape, words)) + right), True
     if not words:
         return re.compile(r"(?!)"), False  # matches nothing
-    return re.compile(LEFT + re.escape(surface.strip()) + RIGHT), False
+    return re.compile(left + re.escape(surface.strip()) + right), False
 
 
 def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:
