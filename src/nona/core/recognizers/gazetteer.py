@@ -178,6 +178,11 @@ def _words(doc: NormalizedDoc) -> list[_Word]:
 
 class GazetteerRecognizer:
     @property
+    def fingerprint(self) -> str:
+        """No configuration: every instance detects the same (detection cache, `core/cache.py`)."""
+        return "default"
+
+    @property
     def name(self) -> str:
         return "gazetteer"
 

@@ -93,7 +93,11 @@ whole history on every request and keeps nothing between requests (ADR-0002).
   This is what stops restored assistant answers, which the client sends back, from leaking on the next turn.
 - **Cost**: re-running NER on the whole history. Mitigation: an in-process LRU cache of *detection results* keyed by
   `sha256(model revision + detection config + message text)`, so a model or config change never serves stale spans (ADR-0004). It holds spans and offsets only. The hash of PII is still sensitive, so the cache lives in
-  memory only and has a TTL.
+  memory only and has a TTL. Implemented in #40 ([`core/cache.py`](../../src/nona/core/cache.py)): it caches what the
+  recognizers find in each message. Forward propagation, the denylist, the resolver and look-ahead depend on the
+  conversation and run on every request. The fingerprint covers each recognizer's type and configuration (a
+  recognizer without one shares with no other object). LRU of 4,096 messages, one-hour TTL. Replaying `dev` the way
+  the proxy sees it (every prefix of every conversation), detection runs drop from 698 to 245.
 - **Stateful mode** (v0.2, `X-Nona-Session`) is for clients that truncate history or use server-side conversation state.
   A `SessionStore` holds the mapping: in memory for one process, or Redis/Valkey for several replicas, encrypted per
   session with AES-GCM and a TTL ([ADR-0006](../adr/0006-encrypted-session-store.md)).

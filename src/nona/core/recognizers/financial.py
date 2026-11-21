@@ -81,6 +81,11 @@ def _card(candidate: str) -> bool:
 
 class IbanRecognizer:
     @property
+    def fingerprint(self) -> str:
+        """No configuration: every instance detects the same (detection cache, `core/cache.py`)."""
+        return "default"
+
+    @property
     def name(self) -> str:
         return "checksum:iban"
 
@@ -96,6 +101,11 @@ class RibRecognizer:
     """Tunisian RIB: 20 digits (bank 2, branch 3, account 13, key 2), divisible by 97."""
 
     @property
+    def fingerprint(self) -> str:
+        """No configuration: every instance detects the same (detection cache, `core/cache.py`)."""
+        return "default"
+
+    @property
     def name(self) -> str:
         return "checksum:rib"
 
@@ -108,6 +118,11 @@ class RibRecognizer:
 
 
 class CardRecognizer:
+    @property
+    def fingerprint(self) -> str:
+        """No configuration: every instance detects the same (detection cache, `core/cache.py`)."""
+        return "default"
+
     @property
     def name(self) -> str:
         return "checksum:card"

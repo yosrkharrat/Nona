@@ -131,12 +131,14 @@ for chunk in upstream_stream:
 yield restorer.flush()
 ```
 
-Implemented in S2 (`nona.core`): `Nona(recognizers=None, *, policies=None, allowlist=(), denylist=(), min_score=0.5)`,
+Implemented in S2 (`nona.core`): `Nona(recognizers=None, *, policies=None, allowlist=(), denylist=(), min_score=0.5, cache=None)`,
 `anonymize(text) -> Anonymized(text, entities, redacted, mapping)` and `restore(text, mapping)`. `Mapping` is opaque
 and its `repr` never shows values. A failing recognizer raises `DetectorError` and nothing is returned (ADR-0003).
 Since S3, `anonymize_messages(messages) -> AnonymizedConversation(messages, mapping)` anonymizes a
 conversation causally with one mapping (ADR-0004); `.texts` gives the anonymized messages, and `anonymize(text)`
 is the one-message case. `Nona.from_config` and the stream restorer come with S5 and S6.
+Each `Nona` keeps a `DetectionCache` of recognizer spans per message (`nona.core.cache`, #40); pass `cache=` to share
+one between instances, or `DetectionCache(maxsize=0)` to turn it off.
 
 Core types (sketch):
 

@@ -64,6 +64,11 @@ class PhoneRecognizer:
         self._skip: frozenset[int] = frozenset() if include_service_numbers else SERVICE_TYPES
 
     @property
+    def fingerprint(self) -> str:
+        """Its configuration, for the detection cache (`core/cache.py`)."""
+        return f"regions={','.join(self._regions)};skip={','.join(map(str, sorted(self._skip)))}"
+
+    @property
     def name(self) -> str:
         return "phonenumbers"
 

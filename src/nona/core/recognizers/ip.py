@@ -24,6 +24,11 @@ def _valid(candidate: str) -> bool:
 
 class IpRecognizer:
     @property
+    def fingerprint(self) -> str:
+        """No configuration: every instance detects the same (detection cache, `core/cache.py`)."""
+        return "default"
+
+    @property
     def name(self) -> str:
         return "regex:ip"
 
