@@ -173,10 +173,13 @@ class Pseudonymizer:
 
     def result(self) -> AnonymizedConversation:
         mapping = self.mapping()
-        return AnonymizedConversation(tuple(self._result(m, mapping) for m in self._messages), mapping)
+        owners = {e: o.placeholder for e in self._linker.entities if (o := self._linker.owner(e))}
+        return AnonymizedConversation(
+            tuple(self._result(m, mapping, owners) for m in self._messages), mapping
+        )
 
     @staticmethod
-    def _result(message: _Message, mapping: Mapping) -> Anonymized:
+    def _result(message: _Message, mapping: Mapping, owners: dict[LinkedEntity, str]) -> Anonymized:
         mentions: dict[LinkedEntity, list[Span]] = {}
         for span, entity in message.linked:
             if (
@@ -184,7 +187,7 @@ class Pseudonymizer:
             ):  # a placeholder the user wrote is in the mapping, but it isn't personal data
                 mentions.setdefault(entity, []).append(span)
         entities = tuple(
-            Entity(id=e.number, type=e.type, mentions=tuple(spans), canonical=e.canonical)
+            Entity(e.number, e.type, tuple(spans), e.canonical, owners.get(e))
             for e, spans in sorted(mentions.items(), key=lambda item: (item[0].type.value, item[0].number))
         )
         return Anonymized(message.text, entities, message.redacted, mapping)

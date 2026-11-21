@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nona.core.canonical import HONORIFICS, canonical_tokens, compatible, name_words
+from nona.core.canonical import HONORIFICS, canonical_tokens, compatible, handle_matches, name_words
 
 
 def toks(*words: str) -> frozenset[str]:
@@ -115,3 +115,67 @@ def test_name_words_are_words_of_the_mention_inside_its_tokens(text: str) -> Non
         assert word in text
         assert canonical_tokens(word) <= whole
         assert len(word) >= 3
+
+
+# --------------------------------------------------------------------------- handles (deep dive B, step 6)
+
+
+@pytest.mark.parametrize(
+    ("handle", "name"),
+    [
+        ("ahmed.bs", "Ahmed Ben Salem"),
+        ("abensalem", "Ahmed Ben Salem"),
+        ("a.bensalem", "Ahmed Ben Salem"),
+        ("bensalem.ahmed", "Ahmed Ben Salem"),  # any order
+        ("ahmed.salem", "Ahmed Ben Salem"),  # the surname without its particle
+        ("ahmed_ben_salem", "Ahmed Ben Salem"),
+        ("ahmed", "Ahmed Ben Salem"),  # one name part in full is enough
+        ("med.bs", "Mohamed Ben Salem"),  # spelling variant
+        ("sami.trabelsi.1990", "Sami Trabelsi"),  # a year is not a name part
+        ("sami92", "Sami Trabelsi"),  # trailing digits aren't Arabizi letters
+        ("3ali.t", "Ali Trabelsi"),  # Arabizi `3` before a letter is read
+        ("@strabelsi", "Sami Trabelsi"),  # a social handle
+        ("Sami.Trabelsi", "Sami Trabelsi"),
+        ("wassim.ferchichi", "Wassim"),  # says more than the known name: allowed, it covers every token
+    ],
+)
+def test_handle_matches(handle: str, name: str) -> None:
+    assert handle_matches(handle, canonical_tokens(name))
+
+
+@pytest.mark.parametrize(
+    ("handle", "name"),
+    [
+        ("ab", "Ahmed Ben Salem"),  # initials only
+        ("o.ayari", "Olfa"),  # only an initial of the known name
+        ("contact", "Sami Trabelsi"),
+        ("ahmedkaroui", "Ahmed Ben Salem"),  # `karoui` contradicts nothing known, but it's unseparated
+        ("sami.jlassi", "Sami Trabelsi"),  # contradicts the known surname
+        ("ahmed.ahmed", "Ahmed Ben Salem"),  # a token is used once
+        ("samir", "Sami Trabelsi"),  # not `sami` + `r`: `r` is no one's initial here
+        ("", "Sami Trabelsi"),
+        ("1990", "Sami Trabelsi"),
+        ("sami", "Mme"),  # nothing to match: an honorific alone has no tokens
+    ],
+)
+def test_handle_does_not_match(handle: str, name: str) -> None:
+    assert not handle_matches(handle, canonical_tokens(name))
+
+
+names = st.lists(
+    st.sampled_from(["sami", "trabelsi", "ahmed", "bensalem", "nour", "jlassi", "karoui"]),
+    min_size=1,
+    max_size=3,
+    unique=True,
+)
+
+
+@given(names, st.data())
+def test_a_handle_written_from_a_persons_tokens_matches_them(tokens: list[str], data: st.DataObject) -> None:
+    parts = [data.draw(st.sampled_from([t, t[0]])) for t in tokens]
+    full = data.draw(st.integers(0, len(tokens) - 1))
+    parts[full] = tokens[full]  # at least one part in full
+    order = data.draw(st.permutations(range(len(parts))))
+    separator = data.draw(st.sampled_from(["", ".", "_", "-"]))
+    handle = separator.join(parts[i] for i in order)
+    assert handle_matches(handle, frozenset(tokens))

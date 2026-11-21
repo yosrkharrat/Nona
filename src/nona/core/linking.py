@@ -25,6 +25,12 @@ Inside one message the linker may look ahead, as a message never changes once se
 whatever comes after it: `link(msgs[:k])` is a prefix of `link(msgs)`. New entities are numbered per type by
 first appearance, skipping numbers reserved because the user literally wrote that placeholder.
 
+**Owners** (deep dive B, step 6). An email whose local part spells exactly one person's tokens or
+initials (`ahmed.bs@…` for Ahmed Ben Salem) belongs to that person. It's metadata for the inspection API:
+the email keeps its own `EMAIL_n`. Since it never changes a placeholder, it is decided over the whole
+conversation, so an address given before the name still links. Two candidate people, or an ambiguous one:
+no owner.
+
 **Literal placeholders.** When the user writes `PHONE_1` after `PHONE_1` was issued, the number can't be
 renumbered, so the literal text becomes an entity of its own (spans from `LITERAL_DETECTOR`): it goes upstream
 as a fresh placeholder and is restored to exactly what the user wrote. Such entities are never propagated.
@@ -35,7 +41,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from nona.core.canonical import canonical_tokens, compatible
+from nona.core.canonical import canonical_tokens, compatible, handle_matches
 from nona.core.types import EntityType, Span
 
 LITERAL_DETECTOR = "literal-placeholder"  # a placeholder the user wrote, colliding with an issued one
@@ -145,6 +151,21 @@ class Linker:
                 entity.number = self._issue(entity.type)
                 self._entities.append(entity)
         return [e for e in found if e is not None]
+
+    def owner(self, entity: LinkedEntity) -> LinkedEntity | None:
+        """The one person an email belongs to, from everything linked so far, or `None`."""
+        if entity.type is not EntityType.EMAIL or entity.literal:
+            return None
+        local = entity.key.rsplit("@", 1)[0]
+        people = [
+            e
+            for e in self._entities
+            if e.type is EntityType.PERSON
+            and not e.ambiguous
+            and e.tokens
+            and handle_matches(local, e.tokens)
+        ]
+        return people[0] if len(people) == 1 else None
 
     def issued(self, etype: EntityType, number: int) -> bool:
         return any(e.type is etype and e.number == number for e in self._entities)

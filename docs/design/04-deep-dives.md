@@ -54,7 +54,11 @@ Layers 3 and 4 are implemented in [`core/recognizers/gazetteer.py`](../../src/no
 3. Before linking, **propagate forward**: mask every occurrence in message *i* of a surface form already linked to an earlier entity. This re-catches names in restored assistant turns that the client sends back.
 4. A mention is *compatible* with an entity if their token sets are a **subset or superset** of each other. Exactly one compatible entity → join it, absorbing any new tokens (`Ahmed` then `Ahmed Ben Salem` → both `PERSON_1`). None → new entity.
 5. Two or more compatible (`Ahmed` when both `Ahmed Ben Salem` and `Ahmed Karoui` exist) → **ambiguous**: give it its own placeholder rather than guess, and reuse it for the same ambiguous form later.
-6. Emails and handles link to a person when the local part decomposes into that person's tokens or initials (`ahmed.bs`, `abensalem`, `a.bensalem`).
+6. Emails and handles link to a person when the local part decomposes into that person's tokens or initials (`ahmed.bs`, `abensalem`, `a.bensalem`). Implemented in #39 (`canonical.handle_matches`, `Linker.owner`):
+   - a part may be a token, a spelling variant (`med`), a surname without its particle (`salem`), or an initial (`a`, `bs`), each token used at most once and in any order. At least one part must be written in full. Trailing digits (`sami92`) and separators are ignored;
+   - the address may say more than the known name, as linking allows a superset. Separated pieces that aren't the person's are allowed if the rest covers every token: `wassim.ferchichi` fits someone known as `Wassim`, but `sami.jlassi` doesn't fit `Sami Trabelsi`;
+   - exactly one candidate person, never an ambiguous one, or no owner. It's metadata (`Entity.owner`), decided over the whole conversation since it never changes a placeholder;
+   - on `dev`, against the gold `owner`: 8 correct, 0 wrong, 2 missed by design (`o.ayari` is only an initial of `Olfa`, and `bilelbenromdhane` says more than `Bilel` with no separator). A test keeps it at zero wrong. Handles have no recognizer yet; the matcher takes any handle.
 7. Cross-script: `سامي` ↔ `Sami` through a small transliteration table plus the gazetteer's paired spellings.
 
 **Why conservative:** a wrong *merge* tells the LLM that two people are one person, which corrupts the answer. A wrong *split* only costs some utility. Neither leaks PII, so we optimize for utility without risking the privacy goal.

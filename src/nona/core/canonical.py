@@ -21,6 +21,8 @@ mention has nothing to link on (an honorific alone); the linker treats it as its
 
 from __future__ import annotations
 
+import functools
+import itertools
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -179,3 +181,89 @@ def name_words(surface: str) -> list[str]:
 def compatible(a: frozenset[str], b: frozenset[str]) -> bool:
     """Two non-empty token sets that one contains the other (ADR-0004, step 4)."""
     return bool(a) and bool(b) and (a <= b or b <= a)
+
+
+# --------------------------------------------------------------------------- handles (deep dive B, step 6)
+
+_HANDLE_SEPARATORS = re.compile(r"[._+\-]+")
+_MIN_FULL = 3  # a handle must spell out at least one name part this long, not only initials
+
+
+def _handle_pieces(handle: str) -> list[str]:
+    """Letters of each piece of a local part or handle: Arabizi digits read, other digits dropped."""
+    out: list[str] = []
+    for piece in _HANDLE_SEPARATORS.split(handle.lstrip("@")):
+        # Trailing digits are a year or a counter (`sami92`), not Arabizi letters (`9` would read as `k`).
+        letters = "".join(c for c in _de_arabizi(_fold(piece).rstrip("0123456789")) if c.isalpha())
+        if letters:
+            out.append(letters)
+    return out
+
+
+def _units(token: str) -> tuple[frozenset[str], frozenset[str]]:
+    """How a handle may write one canonical token: in full, and as initials.
+
+    Full: the token, its spelling variants (`med` for `mohamed`) and, for a glued surname, the part after the
+    particle (`salem` for `bensalem`). Initials: the first letter, and for a glued surname the initials of its
+    parts (`bs`) or of the part after the particle (`s`).
+    """
+    full = {token, *(variant for variant, canonical in VARIANTS.items() if canonical == token)}
+    initials = {token[0]}
+    for particle in PARTICLES:
+        rest = token.removeprefix(particle)
+        if rest != token and len(rest) >= _MIN_FULL:
+            full.add(rest)
+            initials |= {particle[0] + rest[0], rest[0]}
+    return frozenset(full), frozenset(initials)
+
+
+def _spells(letters: str, units: list[tuple[frozenset[str], frozenset[str]]], every_token: bool) -> bool:
+    """`letters` split entirely into units, each token at most once (all of them if `every_token`), with at
+    least one name part written in full."""
+    everything = (1 << len(units)) - 1
+
+    @functools.cache
+    def fits(pos: int, used: int, spelled: bool) -> bool:
+        if pos == len(letters):
+            return spelled and (used == everything or not every_token)
+        for i, (full, initials) in enumerate(units):
+            if used & (1 << i):
+                continue
+            for unit in full:
+                if letters.startswith(unit, pos) and fits(
+                    pos + len(unit), used | (1 << i), spelled or len(unit) >= _MIN_FULL
+                ):
+                    return True
+            for unit in initials:
+                if letters.startswith(unit, pos) and fits(pos + len(unit), used | (1 << i), spelled):
+                    return True
+        return False
+
+    return fits(0, 0, False)
+
+
+def handle_matches(handle: str, tokens: frozenset[str]) -> bool:
+    """Whether a handle spells a person's tokens or initials: `ahmed.bs`, `abensalem`, `a.bensalem` for
+    {ahmed, bensalem}.
+
+    The handle's letters must split entirely into units, each token used at most once, in any order, with at
+    least one name part written in full (3+ letters). Separators and digits that aren't Arabizi letters are
+    ignored (`sami92`).
+
+    A handle may also say more than the name known so far, as linking allows a superset: separated pieces
+    that aren't the person's can be left out, if the other pieces cover **every** token. So
+    `wassim.ferchichi` fits someone known as `Wassim`, while `sami.jlassi` doesn't fit `Sami Trabelsi`.
+    """
+    pieces = _handle_pieces(handle)
+    ordered = sorted(tokens)
+    if not pieces or not ordered or len(ordered) > 8:
+        return False
+    units = [_units(t) for t in ordered]
+    if _spells("".join(pieces), units, every_token=False):
+        return True
+    for kept in itertools.product((True, False), repeat=len(pieces)):
+        if any(kept) and not all(kept):
+            letters = "".join(p for p, keep in zip(pieces, kept, strict=True) if keep)
+            if _spells(letters, units, every_token=True):
+                return True
+    return False

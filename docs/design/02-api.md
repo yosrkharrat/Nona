@@ -98,6 +98,9 @@ Errors use the OpenAI error shape (`{"error": {"message", "type", "code"}}`) so 
   "timing_ms": { "normalize": 1, "detect": 38, "link": 2 } }
 ```
 
+Each entity also carries `"owner"`: the placeholder of the person an email belongs to (`"PERSON_1"` for
+`ahmed.bs@gmail.com` next to Ahmed Ben Salem), or `null`. It's metadata only: the email keeps its own placeholder.
+
 This endpoint returns original values. That is acceptable because it binds to localhost only, and it can be
 disabled (`inspection_api: false`).
 
@@ -142,6 +145,7 @@ Core types (sketch):
 class Span:      start: int; end: int; type: EntityType; score: float; detector: str
 @dataclass(frozen=True)
 class Entity:    id: int; type: EntityType; mentions: tuple[Span, ...]; canonical: str
+                 owner: str | None = None  # an email's person, e.g. "PERSON_1" (deep dive B, step 6)
 class Recognizer(Protocol):
     name: str; supported_types: frozenset[EntityType]
     def detect(self, doc: NormalizedDoc) -> list[Span]: ...
