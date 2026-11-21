@@ -12,6 +12,15 @@ Two rules on top of libphonenumber:
   `include_service_numbers=True` to mask them anyway.
 
 Fax numbers need no rule: a fax line is an ordinary fixed line, and it is masked like any phone.
+
+One context rule (deep dive A, layer 4): **an order cue lowers the score.** Eight-digit order numbers are
+often valid Tunisian mobiles (`Ma commande n° 24176705`). When a number written in national format comes right
+after an order cue (`commande`, `réf`, `order`, `facture`…), with at most connectors such as `n°`, `numéro`,
+`#` or `:` in between, the span is reported with `CUE_SCORE`, below the resolver's default threshold.
+
+The cue must be adjacent on purpose: `envoie la facture au 22 123 456` is a phone number, and a leak costs
+more than over-masking. A number in international format (`+216…`, `00216…`) is never lowered, since nobody
+writes an order number that way.
 """
 
 from __future__ import annotations
@@ -33,6 +42,15 @@ SERVICE_TYPES: frozenset[int] = frozenset(
     }
 )
 # `+216 (0)71 234 567`, `00216 (0) 71 234 567`, `+33 (0)6 12 34 56 78`: country code, `(0)`, national number.
+CUE_SCORE = 0.3  # below the resolver's default `min_score` of 0.5, so the span is kept only if asked for
+# Matched on the normalized (lower-case) view, against the text that ends right where the number starts.
+_ORDER_CUE = re.compile(
+    r"(?<!\w)(?:commande|cmd|r[ée]f|r[ée]f[ée]rence|facture|ticket|dossier|colis|suivi"
+    r"|order|invoice|tracking|booking|طلبية|الطلبية|فاتورة|الفاتورة)"
+    r"(?:\s*(?:n°|n\.|no\.?|nº|num[ée]ro|num\.?|number|nr\.?|#|:|-|رقم))*\s*$"
+)
+_INTERNATIONAL = re.compile(r"\s*(?:\+|00)")
+
 _TRUNK_ZERO = re.compile(r"(?<![\w+])(?:\+|00)\s?(\d{1,3})[\s.]?\(0\)[\s.-]?((?:\d[\s.-]?){6,13}\d)(?!\d)")
 
 
@@ -71,4 +89,13 @@ class PhoneRecognizer:
                 continue
             if phonenumbers.is_valid_number(number) and self._keep(number):
                 found[(m.start(), m.end())] = None
-        return [to_span(doc, s, e, EntityType.PHONE, 1.0, self.name) for s, e in sorted(found)]
+        return [
+            to_span(doc, s, e, EntityType.PHONE, _score(doc.text, s, e), self.name) for s, e in sorted(found)
+        ]
+
+
+def _score(text: str, start: int, end: int) -> float:
+    """1.0, or `CUE_SCORE` for a nationally written number right after an order cue."""
+    if _INTERNATIONAL.match(text, start):
+        return 1.0
+    return CUE_SCORE if _ORDER_CUE.search(text, max(0, start - 40), start) else 1.0
