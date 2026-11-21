@@ -1,6 +1,6 @@
 # ADR-0004: Causal entity linking (placeholder numbering vs linking)
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-11-21, on the S3 benchmark: see [Measured](#measured-s3-42))
 - Date: 2026-11-15
 - Related: [ADR-0002 stateless by default](0002-stateless-by-default.md) (this ADR replaces its "renumbering" consequence), [deep dive B](../design/04-deep-dives.md#b-entity-linking-consistency)
 
@@ -80,6 +80,25 @@ Details the decision left open, settled while implementing it in [`core/linking.
 - **Other types** link by value: letters and digits for numbers (`22 123 456` = `22.123.456`), folded text for the rest.
 - **A placeholder the user types after its number was issued** (`PHONE_1` in message 3, when `PHONE_1` was issued in message 1) can't be renumbered. It becomes an entity whose value is the literal text: it goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactly what the user wrote. Without this, restoring would silently turn the user's `PHONE_1` into the phone number. The conversation-level round-trip property test found this case.
 - `anonymize(text)` is the one-message conversation, so single texts get the same linking.
+
+### Measured (S3, #42)
+
+`nona` system on `dev` (120 conversations, 292 turns; 40 of them multi-turn). The linking metrics are defined in [05 §6](../design/05-dataset.md#6-how-leaks-are-counted-input-to-the-leak-rate-script). They read placeholders from the payload alone and only count mentions that got one. A name that leaks is a detection failure, already counted by the leak rate.
+
+| PERSON | all of `dev` | multi-turn part |
+|---|---|---|
+| Mentions with a placeholder | 48.8% (103/211) | 32.5% (52/160) |
+| Wrong merge (entities) | 0% (0/57) | 0% (0/16) |
+| Wrong split (entities with 2+ masked mentions) | 0% (0/24) | 0% (0/16) |
+| Ambiguity (later mentions) | 0% (0/46) | 0% (0/36) |
+
+Over all types: 0/170 merged, 0/51 split, 0/73 ambiguous. The 8 gold-`ambiguous` mentions (a shared first name) are skipped by these rates. Nona gave 4 of them their own placeholder, as the decision says, and missed the other 4.
+
+**Re-sent assistant turns** leak 43.6% (48/110) of direct identifiers. None of them belongs to an entity Nona had already masked in an earlier turn: every one is a name that detection never caught. So the claim under *Consequences* holds on `dev` (an issued placeholder is never leaked back), and the remaining leaks are recall, which S4's NER addresses.
+
+**Why Accepted:** the short→long pattern links (`Boukadida`, then `Chirine Boukadida` → one placeholder), two people sharing a first name stay apart, prefix stability and round trip are property-tested, and no issued placeholder leaks back. The rates are only as broad as detection: with half the PERSON mentions masked, they say linking makes no wrong decision on what it sees, not that every hard case is covered. They are re-measured on the frozen test set in S4.
+
+**Found while measuring:** a bare first name before the full name in the same message (`Chirine. Chirine Boukadida…`) leaks, because forward propagation only searches earlier messages (#48).
 
 ## Consequences
 

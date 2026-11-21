@@ -162,4 +162,5 @@ a number or a user need justifies it.
 | S0 | done, except #6 (PyPI publisher) and #7 (old draft), which need the owner | — |
 | S1 | done (#2; dev regenerated in #26 with valid phone numbers only) | identity system: 100% leak (110/110 direct-identifier mentions), 0% over-masking, on dev v0 (80 conversations) |
 | S2 | done (#25, #27–#32) | structured types (email, phone, IBAN, RIB, card, IP, CIN): **0% leaked** on dev, down from 100%. Over-masking 0.2% of tokens, 2/19 distractors (8-digit order numbers that are valid TN mobiles). Headline 39.1% because names are still undetected (S3, S4) |
-| S3 to S8 | not started | — |
+| S3 | in progress: #35–#38, #41, #42 done; #39, #40, #48 open | names: headline **26.1%** (64/245) on dev (120 conversations; not comparable with S2's 80). On the v0 part it is 0%, but inflated: 76 of 98 v0 names are in the gazetteer. On the multi-turn part, whose names are held out of the gazetteer, it is 48.5%, and 70% of PERSON mentions leak. Structured types 0%, over-masking 0/2362 tokens and 0/42 distractors. Linking (ADR-0004, now Accepted): 0 wrong merges (0/57 people), 0 wrong splits (0/24), 0 ambiguity hits (0/46), over the 48.8% of PERSON mentions that get a placeholder. Re-sent assistant turns leak 43.6% (48/110), all names never detected before |
+| S4 to S8 | not started | — |

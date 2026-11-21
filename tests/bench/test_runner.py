@@ -11,6 +11,7 @@ from nona.bench.metrics import Rate
 from nona.bench.runner import run, summary
 from nona.bench.systems import IdentitySystem, NonaSystem
 from nona.cli import main
+from nona.core import EntityType
 
 ROOT = Path(__file__).resolve().parents[2]
 DEV = ROOT / "bench" / "data" / "dev.jsonl"
@@ -137,3 +138,15 @@ def test_bench_runs_several_systems(
     assert "system=identity" in printed
     assert "system=nona" in printed
     assert (out / "mini-nona.json").is_file()
+
+
+def test_nona_links_people_consistently_on_dev() -> None:
+    """ADR-0004: on the mentions Nona masks, no two people share a placeholder and no one gets two."""
+    r = run(NonaSystem(), "dev", DEV)
+    people = r.report.linking((EntityType.PERSON,))
+    assert people.placed.hits > 0
+    assert people.wrong_merge.hits == 0
+    assert people.wrong_split.hits == 0
+    linking = summary(r)["linking"]
+    assert set(linking) == {"all", "PERSON"}
+    assert set(linking["PERSON"]) == {"mentions_with_placeholder", "wrong_merge", "wrong_split", "ambiguity"}

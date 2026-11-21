@@ -18,8 +18,9 @@ from typing import Any
 
 from nona import __version__
 from nona.bench.dataset import Conversation, dataset_hash, load_jsonl
-from nona.bench.metrics import DIRECT_IDENTIFIERS, Outcome, Rate, Report, evaluate
+from nona.bench.metrics import DIRECT_IDENTIFIERS, Linking, Outcome, Rate, Report, evaluate
 from nona.bench.systems import System
+from nona.core import EntityType
 
 # Short column headers, so the table fits in a terminal.
 _ABBREVIATIONS = {
@@ -53,6 +54,15 @@ def _rate_json(rate: Rate) -> dict[str, Any]:
     return {"rate": None if value is None else round(value, 6), "hits": rate.hits, "total": rate.total}
 
 
+def _linking_json(linking: Linking) -> dict[str, Any]:
+    return {
+        "mentions_with_placeholder": _rate_json(linking.placed),
+        "wrong_merge": _rate_json(linking.wrong_merge),
+        "wrong_split": _rate_json(linking.wrong_split),
+        "ambiguity": _rate_json(linking.ambiguity),
+    }
+
+
 def summary(r: Run) -> dict[str, Any]:
     report = r.report
     by_language: dict[str, dict[str, Any]] = {}
@@ -82,6 +92,10 @@ def summary(r: Run) -> dict[str, Any]:
         "over_masking": {
             "tokens": _rate_json(report.masked_tokens),
             "distractors": _rate_json(report.masked_distractors),
+        },
+        "linking": {
+            "all": _linking_json(report.linking()),
+            "PERSON": _linking_json(report.linking((EntityType.PERSON,))),
         },
         "leak_rate_by_language_and_type": by_language,
     }
@@ -129,7 +143,17 @@ def format_table(r: Run) -> str:
         f"Leak rate, LOCATION and ORG     {report.location_organization}",
         f"Over-masking, non-PII tokens    {report.masked_tokens}",
         f"Over-masking, distractors       {report.masked_distractors}",
+        "",
+        "Linking (all roles, ambiguous mentions skipped)   all types / PERSON",
     ]
+    linked, people = report.linking(), report.linking((EntityType.PERSON,))
+    for label, field in (
+        ("Mentions with a placeholder", "placed"),
+        ("Wrong merge, entities", "wrong_merge"),
+        ("Wrong split, entities", "wrong_split"),
+        ("Ambiguity, later mentions", "ambiguity"),
+    ):
+        lines.append(f"{label:<32}{getattr(linked, field)} / {getattr(people, field)}")
     direct = ", ".join(sorted(_ABBREVIATIONS[t.value] for t in DIRECT_IDENTIFIERS))
     lines.append(f"(direct = {direct})")
     return "\n".join(lines)
@@ -153,6 +177,9 @@ def write_outputs(r: Run, out_dir: Path) -> Path:
                 "public": m.public,
                 "text": m.text,
                 "outcome": m.outcome.value,
+                "entity": m.entity,
+                "ambiguous": m.ambiguous,
+                "placeholder": m.placeholder,
             },
             ensure_ascii=False,
         )
