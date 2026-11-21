@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from nona.bench.generate import TEMPLATES, generate
+from nona.core import EntityType, normalize
+from nona.core.recognizers import (
+    EmailRecognizer,
+    IpRecognizer,
+    PhoneRecognizer,
+    Recognizer,
+    default_recognizers,
+)
+
+
+def found(recognizer: Recognizer, text: str) -> list[str]:
+    """The original substrings a recognizer reports."""
+    return [span.text_in(text) for span in recognizer.detect(normalize(text))]
+
+
+# --------------------------------------------------------------------------- email
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("write to ahmed.bs@example.com today", ["ahmed.bs@example.com"]),
+        ("Mail: Sami.Trabelsi@Example.ORG.", ["Sami.Trabelsi@Example.ORG"]),  # case kept, final dot excluded
+        ("a+tag@example.net", ["a+tag@example.net"]),
+        ("first_last@sub.example.co.uk", ["first_last@sub.example.co.uk"]),
+        ("<rim.jlassi@example.com>", ["rim.jlassi@example.com"]),
+        ("mailto:hajer@example.com", ["hajer@example.com"]),
+        ("x@example.com,y@example.org", ["x@example.com", "y@example.org"]),
+        ("سامي@example.com", ["سامي@example.com"]),
+        ("ena 3andi mail: med92@example.com", ["med92@example.com"]),
+        ("user-name@example-mail.com", ["user-name@example-mail.com"]),
+        ("ＡＨＭＥＤ@example.com", ["ＡＨＭＥＤ@example.com"]),  # noqa: RUF001 - full-width on purpose
+    ],
+)
+def test_email_found(text: str, expected: list[str]) -> None:
+    assert found(EmailRecognizer(), text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no email here",
+        "@handle on twitter",
+        "ahmed@",
+        "ahmed@localhost",
+        "a..b@example",
+        "price 3@5 dinars",
+        "example.com",
+        "user@-example.com",
+        "user@example.c",
+        "user@@example.com",
+        "ahmed.@example.com",
+    ],
+)
+def test_email_not_found(text: str) -> None:
+    assert found(EmailRecognizer(), text) == []
+
+
+# --------------------------------------------------------------------------- phone
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("nomrou 22 123 456", ["22 123 456"]),
+        ("tel 22.123.456 ok", ["22.123.456"]),
+        ("a3tih 22123456", ["22123456"]),
+        ("+216 22 123 456", ["+216 22 123 456"]),
+        ("appelle le 00216 22 123 456", ["00216 22 123 456"]),
+        ("+21622123456", ["+21622123456"]),
+        ("bureau: 71 234 567", ["71 234 567"]),
+        ("Rappelle au 06 12 34 56 78 avant 18h", ["06 12 34 56 78"]),
+        ("06.12.34.56.78", ["06.12.34.56.78"]),
+        ("+33 6 12 34 56 78", ["+33 6 12 34 56 78"]),
+        ("+33612345678", ["+33612345678"]),
+        ("رقمي ٢٢ ١٢٣ ٤٥٦", ["٢٢ ١٢٣ ٤٥٦"]),  # Eastern Arabic digits, reported in the original script
+        ("22 123 456 w 98 765 432", ["22 123 456", "98 765 432"]),
+    ],
+)
+def test_phone_found(text: str, expected: list[str]) -> None:
+    assert found(PhoneRecognizer(), text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "le 27/07/2025",
+        "carte 4111 1111 1111 1111",
+        "iban TN59 1000 6035 1835 9847 8831",
+        "cin 00806360",
+        "prix 950,020 dt",
+        "REF-48213",
+        "12 500 dinars",
+        "en 2026",
+        "06 12 34",
+        "version 1.2.3",
+        "rdv à 10:30",
+        "06 39 98 12 34 56 78 90",
+    ],
+)
+def test_phone_not_found(text: str) -> None:
+    assert found(PhoneRecognizer(), text) == []
+
+
+def test_phone_regions_are_configurable() -> None:
+    assert found(PhoneRecognizer(regions=("FR",)), "nomrou 22 123 456") == []
+    assert found(PhoneRecognizer(regions=("FR",)), "+216 22 123 456") == ["+216 22 123 456"]
+    with pytest.raises(ValueError, match="region"):
+        PhoneRecognizer(regions=())
+
+
+# --------------------------------------------------------------------------- IP
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("server 192.0.2.1 is down", ["192.0.2.1"]),
+        ("logins from 203.0.113.57.", ["203.0.113.57"]),
+        ("198.51.100.241, 198.51.100.7", ["198.51.100.241", "198.51.100.7"]),
+        ("ip=10.0.0.1;", ["10.0.0.1"]),
+        ("dns 8.8.8.8", ["8.8.8.8"]),
+        ("(192.0.2.44)", ["192.0.2.44"]),
+        ("v6 2001:db8::1 ok", ["2001:db8::1"]),
+        ("2001:DB8:0:0:8:800:200C:417A", ["2001:DB8:0:0:8:800:200C:417A"]),
+        ("link-local fe80::1", ["fe80::1"]),
+        ("loopback ::1", ["::1"]),
+        ("[2001:db8:85a3::8a2e:370:7334]", ["2001:db8:85a3::8a2e:370:7334"]),
+    ],
+)
+def test_ip_found(text: str, expected: list[str]) -> None:
+    assert found(IpRecognizer(), text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "256.1.1.1",
+        "version 1.2.3",
+        "1.2.3.4.5",
+        "192.168.1",
+        "rdv à 10:30:00",
+        "::",
+        "0.0.0.0",  # noqa: S104 - test data, not a bind address
+        "1.2.3.4a",
+        "01.02.03.04",
+        "abc::def::1",
+        "le 2026-11-21",
+    ],
+)
+def test_ip_not_found(text: str) -> None:
+    assert found(IpRecognizer(), text) == []
+
+
+# --------------------------------------------------------------------------- all recognizers
+
+
+def test_default_recognizers_cover_their_types() -> None:
+    recognizers = default_recognizers()
+    assert [r.name for r in recognizers] == ["regex:email", "phonenumbers", "regex:ip"]
+    covered = frozenset().union(*(r.supported_types for r in recognizers))
+    assert covered == {EntityType.EMAIL, EntityType.PHONE, EntityType.IP_ADDRESS}
+
+
+def test_spans_carry_type_score_and_detector() -> None:
+    text = "Sami: 22 123 456, sami@example.com, 192.0.2.9"
+    spans = [s for r in default_recognizers() for s in r.detect(normalize(text))]
+    assert {(s.type, s.detector, s.score) for s in spans} == {
+        (EntityType.PHONE, "phonenumbers", 1.0),
+        (EntityType.EMAIL, "regex:email", 1.0),
+        (EntityType.IP_ADDRESS, "regex:ip", 1.0),
+    }
+
+
+TYPES = {EntityType.EMAIL, EntityType.PHONE, EntityType.IP_ADDRESS}
+
+
+@settings(max_examples=30, deadline=None)
+@given(seed=st.integers(min_value=0, max_value=2**32 - 1))
+def test_every_generated_email_phone_and_ip_is_found_exactly(seed: int) -> None:
+    """On generated data, each gold mention of these types is reported with exactly its gold offsets."""
+    recognizers = default_recognizers()
+    for conv in generate(len(TEMPLATES), seed=seed, prefix="g"):
+        for turn in conv.turns:
+            spans = {(s.start, s.end, s.type) for r in recognizers for s in r.detect(normalize(turn.text))}
+            for m in turn.mentions:
+                etype = conv.entity(m.entity).type
+                if etype in TYPES:
+                    assert (m.start, m.end, etype) in spans, f"{etype} {m.text!r} missed in {turn.text!r}"
