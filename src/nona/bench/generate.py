@@ -28,6 +28,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import phonenumbers
+
 from nona.bench.dataset import KNOWN_TAGS, LANGUAGES, Conversation, dumps_jsonl, parse_conversation
 from nona.core import EntityType
 
@@ -149,18 +151,32 @@ def _group(s: str, sizes: Sequence[int], sep: str) -> str:
     return sep.join(part for part in out if part)
 
 
+def _valid_phone(national: str, region: str) -> bool:
+    """Valid for its region per libphonenumber: no unassigned or overseas ranges (05 §5)."""
+    try:
+        return phonenumbers.is_valid_number(phonenumbers.parse(national, region))
+    except phonenumbers.NumberParseException:
+        return False
+
+
 def _phone_tn(rng: random.Random) -> str:
-    if rng.random() < 0.8:
-        national = rng.choice("2459") + _digits(rng, 7)  # mobile
-    else:
-        national = "7" + rng.choice("12345") + _digits(rng, 6)  # landline
+    while True:
+        if rng.random() < 0.8:
+            national = rng.choice("2459") + _digits(rng, 7)  # mobile
+        else:
+            national = "7" + rng.choice("12345") + _digits(rng, 6)  # landline
+        if _valid_phone(national, "TN"):
+            break
     spaced = _group(national, (2, 3, 3), " ")
     dotted = _group(national, (2, 3, 3), ".")
     return rng.choice((spaced, dotted, national, f"+216 {spaced}", f"00216 {spaced}", f"+216{national}"))
 
 
 def _phone_fr(rng: random.Random) -> str:
-    national = "0" + rng.choice("67") + _digits(rng, 8)
+    while True:
+        national = "0" + rng.choice("67") + _digits(rng, 8)
+        if _valid_phone(national, "FR"):  # rejects overseas ranges like 06 94 (French Guiana, +594)
+            break
     pairs = _group(national, (2, 2, 2, 2, 2), " ")
     dotted = _group(national, (2, 2, 2, 2, 2), ".")
     international = "+33 " + _group(national[1:], (1, 2, 2, 2, 2), " ")

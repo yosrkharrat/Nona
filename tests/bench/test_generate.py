@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
+import phonenumbers
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -136,6 +137,8 @@ def test_synthetic_values_follow_the_rules(seed: int) -> None:
             v = e.value
             if e.type is EntityType.EMAIL:
                 assert v.rsplit("@", 1)[1] in EMAIL_DOMAINS
+            elif e.type is EntityType.PHONE:
+                assert any(phonenumbers.is_valid_number(phonenumbers.parse(v, r)) for r in ("TN", "FR")), v
             elif e.type is EntityType.IBAN:
                 assert iban_valid(v)
             elif e.type is EntityType.RIB:
