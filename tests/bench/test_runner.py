@@ -106,12 +106,8 @@ def test_nona_leaks_no_structured_value_on_dev() -> None:
     report = run(NonaSystem(), "dev", DEV).report
     structured = [m for m in report.mentions if m.type.value in STRUCTURED]
     assert structured
-    assert [m for m in structured if m.outcome.value != "protected"] == [
-        m
-        for m in structured
-        if m.outcome.value == "partial"  # only partials, explained by unmasked names
-    ]
-    assert all(m.outcome.value != "leaked" for m in structured)
+    # Partial leaks remain possible: `bilel.me@…` is masked, but the unmasked name `Bilel` matches it.
+    assert [m.text for m in structured if m.outcome.value == "leaked"] == []
 
 
 def test_nona_over_masks_little_on_dev() -> None:
