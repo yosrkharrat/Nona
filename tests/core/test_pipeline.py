@@ -18,9 +18,9 @@ def test_top_level_import() -> None:
 def test_end_to_end_example_from_the_api_doc() -> None:
     nona = Nona()
     result = nona.anonymize("Appelle Ahmed au +216 22 123 456 ou ahmed.bs@example.com")
-    assert result.text == "Appelle Ahmed au PHONE_1 ou EMAIL_1"  # names come in S3/S4
-    assert nona.restore("PHONE_1 confirmé, j'écris à EMAIL_1.", result.mapping) == (
-        "+216 22 123 456 confirmé, j'écris à ahmed.bs@example.com."
+    assert result.text == "Appelle PERSON_1 au PHONE_1 ou EMAIL_1"
+    assert nona.restore("PERSON_1 confirmé, j'écris à EMAIL_1.", result.mapping) == (
+        "Ahmed confirmé, j'écris à ahmed.bs@example.com."
     )
 
 

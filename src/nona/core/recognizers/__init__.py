@@ -13,6 +13,7 @@ from nona.core.normalize import NormalizedDoc
 from nona.core.recognizers.cin import CinRecognizer
 from nona.core.recognizers.email import EmailRecognizer
 from nona.core.recognizers.financial import CardRecognizer, IbanRecognizer, RibRecognizer
+from nona.core.recognizers.gazetteer import GazetteerRecognizer
 from nona.core.recognizers.ip import IpRecognizer
 from nona.core.recognizers.phone import PhoneRecognizer
 from nona.core.recognizers.span import to_span
@@ -30,7 +31,7 @@ class Recognizer(Protocol):
 
 
 def default_recognizers() -> list[Recognizer]:
-    """The structured recognizers of FR-1, in a fixed order (determinism, ADR-0002)."""
+    """The structured recognizers of FR-1 and the gazetteer, in a fixed order (determinism, ADR-0002)."""
     return [
         EmailRecognizer(),
         PhoneRecognizer(),
@@ -39,6 +40,7 @@ def default_recognizers() -> list[Recognizer]:
         RibRecognizer(),
         CardRecognizer(),
         CinRecognizer(),
+        GazetteerRecognizer(),
     ]
 
 
@@ -46,6 +48,7 @@ __all__ = [
     "CardRecognizer",
     "CinRecognizer",
     "EmailRecognizer",
+    "GazetteerRecognizer",
     "IbanRecognizer",
     "IpRecognizer",
     "PhoneRecognizer",

@@ -1,0 +1,93 @@
+"""Seed lists for the gazetteer recognizer (deep dive A, layer 3). Data only, no logic.
+
+Written independently of the benchmark generator's seed lists (`nona.bench.generate`), from common names in
+Tunisia and the Maghreb, plus frequent French and English first names. Overlap with the generator is expected
+for the most common names, so the PR that adds a list reports the benchmark both with and without the
+generator's names (an ablation), to keep the dev number honest.
+
+Entries are written as people write them. Spelling variants that `core/canonical.py` already unifies
+(`Mohammed` → `mohamed`, `3ali` → `ali`, Arabic `سامي` → `sami`) need only one entry.
+
+`COMMON_WORDS` are names that are also ordinary words (`Amal` = hope, `Nour` = light, `Anis` = anise,
+`Gharbi` = western). They fire only with a capital letter in the middle of a sentence, or after a cue.
+"""
+
+from __future__ import annotations
+
+FIRST_NAMES_TN: tuple[str, ...] = (
+    # men
+    "Abdallah", "Abdelaziz", "Abdelkader", "Abdelkarim", "Abdelmajid", "Abdelwahed", "Adel", "Adem", "Ahmed",
+    "Ala", "Ali", "Amine", "Ammar", "Amor", "Anis", "Anouar", "Ayoub", "Aymen", "Aziz", "Bassem", "Bechir",
+    "Belgacem", "Bilel", "Borhen", "Brahim", "Chaker", "Chedly", "Chokri", "Dhia", "Elyes", "Fadhel", "Fares",
+    "Farouk", "Fathi", "Faycel", "Fedi", "Firas", "Ghassen", "Habib", "Haythem", "Hamza", "Hassen", "Hatem",
+    "Hedi", "Helmi", "Hichem", "Houssem", "Ilyes", "Imed", "Iheb", "Issam", "Jalel", "Jamel", "Jaouhar",
+    "Karim", "Kamel", "Khaled", "Khalil", "Lassaad", "Lotfi", "Mahdi", "Mahmoud", "Majdi", "Makram", "Malek",
+    "Marouane", "Maher", "Mehdi", "Mohamed", "Mokhtar", "Moncef", "Montassar", "Mondher", "Mounir", "Mourad",
+    "Mustapha", "Nabil", "Naceur", "Nader", "Nizar", "Noureddine", "Omar", "Oussama", "Raouf", "Ridha",
+    "Riadh", "Rached", "Radhouane", "Rafik", "Ramzi", "Saber", "Sabri", "Sadok", "Safouane",
+    "Sahbi", "Said", "Salah", "Salem", "Sami", "Seif", "Selim", "Skander", "Slim", "Slah", "Sofiene",
+    "Sofien", "Tarek", "Taoufik", "Wajdi", "Walid", "Wassim", "Yacine", "Yassine", "Yahya", "Youssef", "Zied",
+    "Zouhair",
+    # women
+    "Aicha", "Alya", "Amal", "Amira", "Amel", "Arij", "Asma", "Azza", "Baya", "Besma", "Cyrine", "Dorra",
+    "Emna", "Eya", "Faten", "Fatma", "Ghada", "Hajer", "Hanen", "Hela", "Hiba", "Houda", "Imen", "Ines",
+    "Jihen", "Khadija", "Kaouther", "Latifa", "Leila", "Lina", "Lobna", "Malek", "Manel", "Mariem", "Maroua",
+    "Meriem", "Mouna", "Monia", "Nadia", "Najet", "Nawel", "Nesrine", "Nour", "Nourhene", "Olfa", "Ons",
+    "Rahma", "Rania", "Rim", "Rihab", "Rym", "Sabrine", "Safa", "Salma", "Samia", "Sana", "Sarra", "Siwar",
+    "Sonia", "Souad", "Syrine", "Takwa", "Wafa", "Wiem", "Yosra", "Zeineb", "Zohra",
+)  # fmt: skip
+
+FIRST_NAMES_FR_EN: tuple[str, ...] = (
+    "Alexandre", "Anne", "Antoine", "Camille", "Charlotte", "Chloé", "Claire", "Élodie", "Émilie", "Florian",
+    "François", "Guillaume", "Hugo", "Isabelle", "Julie", "Julien", "Laura", "Léa", "Louis", "Lucas", "Manon",
+    "Margaux", "Marie", "Mathieu", "Maxime", "Nathalie", "Nicolas", "Pauline", "Philippe", "Pierre", "Romain",
+    "Sophie", "Thomas", "Valérie", "Vincent",
+    "Andrew", "Benjamin", "Charlie", "Daniel", "David", "Emily", "Emma", "Ethan", "George", "Grace", "Hannah",
+    "Jack", "James", "Jessica", "John", "Laura", "Lucy", "Megan", "Michael", "Oliver", "Olivia", "Ryan",
+    "Samuel", "Sarah", "Sophia", "Thomas", "William",
+)  # fmt: skip
+
+SURNAMES_TN: tuple[str, ...] = (
+    "Abidi", "Ammar", "Arfaoui", "Ayadi", "Ayari", "Azzouz", "Baccar", "Bahri", "Bakir", "Belaid", "Belhadj",
+    "Ben Abdallah", "Ben Ahmed", "Ben Ali", "Ben Amor", "Ben Aissa", "Ben Brahim", "Ben Hassen",
+    "Ben Mansour", "Ben Miled", "Ben Mustapha", "Ben Nasr", "Ben Othman", "Ben Romdhane", "Ben Said",
+    "Ben Salah", "Ben Salem", "Ben Slimane", "Ben Youssef", "Bouaziz", "Bouazizi", "Boughanmi", "Bouslama",
+    "Chaabane", "Chaouch", "Chebbi", "Cherif", "Dhaouadi", "Dridi", "Ellouze", "Fakhfakh", "Ferchichi",
+    "Gabsi", "Gharbi", "Ghannouchi", "Guesmi", "Hadj Ali", "Hamdi", "Hammami", "Hamrouni", "Hosni",
+    "Jaziri", "Jebali", "Jelassi", "Jlassi", "Jendoubi", "Jouini", "Kallel", "Karoui", "Kchaou", "Khelifi",
+    "Khemiri", "Ksouri", "Ladhari", "Laabidi", "Labidi", "Mabrouk", "Maaloul", "Mansouri", "Marzouki",
+    "Masmoudi", "Mathlouthi", "Mbarek", "Mejri", "Messaoudi", "Mezghani", "Miladi", "Nasri", "Nefzi",
+    "Ouali", "Ouertani", "Rekik", "Riahi", "Romdhani", "Saadi", "Saidi", "Sassi", "Selmi", "Sfaxi", "Slimi",
+    "Snoussi", "Souissi", "Tlili", "Toumi", "Trabelsi", "Triki", "Yahyaoui", "Zaier", "Zouari", "Zribi",
+)  # fmt: skip
+
+# Arabic script. Common names whose Latin form is in `canonical.VARIANTS` link across scripts.
+NAMES_AR: tuple[str, ...] = (
+    "أحمد", "محمد", "علي", "سامي", "يوسف", "محمود", "عمر", "حمزة", "كريم", "مهدي", "أمين", "ياسين", "خالد",
+    "هشام", "وليد", "منصف", "نبيل", "طارق", "عبدالله", "صالح", "سليم", "فاطمة", "خديجة", "مريم", "أمال",
+    "نور", "ليلى", "سلمى", "رحمة", "عائشة", "زينب", "إيناس", "ريم", "أسماء", "هدى", "سارة", "منى", "نادية",
+    "الطرابلسي", "الغربي", "الجلاصي", "المنصوري", "بن سالم", "بن علي", "بن عمر", "الخليفي", "الماجري",
+)  # fmt: skip
+
+COMMON_WORDS: tuple[str, ...] = (
+    "Amal", "Nour", "Salam", "Sabri", "Anis", "Salem", "Said", "Malek", "Ali", "Baya", "Ons", "Wafa", "Safa",
+    "Hiba", "Rahma", "Lina", "Eya", "Alya", "Grace", "Jack", "Gharbi", "Sfaxi", "Bahri", "Cherif", "Mabrouk",
+    "Ammar", "Amor", "Laura", "Charlie", "Ala", "أمال", "نور", "رحمة", "سالم", "صالح",
+)  # fmt: skip
+
+CITIES: tuple[str, ...] = (
+    "Tunis", "Sfax", "Sousse", "Kairouan", "Bizerte", "Gabès", "Ariana", "Gafsa", "Monastir", "Ben Arous",
+    "Kasserine", "Médenine", "Nabeul", "Tataouine", "Béja", "Le Kef", "Mahdia", "Sidi Bouzid", "Jendouba",
+    "Tozeur", "Manouba", "Siliana", "Zaghouan", "Kébili", "La Marsa", "Carthage", "Hammamet", "Djerba",
+    "Zarzis", "Houmt Souk", "La Goulette", "Sidi Bou Said", "El Menzah", "Ennasr", "Lac 2", "Raoued",
+    "Mégrine", "Rades", "Hammam Lif", "Hammam Sousse", "Msaken", "Moknine", "Ksar Hellal", "Menzel Bourguiba",
+    "Kelibia", "Korba", "Tabarka", "Douz", "Nefta", "Metlaoui",
+    "Alger", "Oran", "Constantine", "Casablanca", "Rabat", "Marrakech", "Tripoli",
+    "Paris", "Lyon", "Marseille", "Toulouse", "Nice", "Bordeaux", "Lille", "Nantes", "Strasbourg",
+    "London", "Manchester",
+    "تونس", "صفاقس", "سوسة", "القيروان", "بنزرت", "قابس", "أريانة", "قفصة", "المنستير", "نابل", "المهدية",
+    "جربة", "الحمامات", "قرطاج", "المرسى",
+)  # fmt: skip
+
+# Cities that are also words or names: matched only with a capital letter (deep dive A).
+COMMON_CITIES: tuple[str, ...] = ("Nice", "Douz", "Korba", "Ennasr", "Lac 2", "Carthage")

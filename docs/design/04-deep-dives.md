@@ -27,6 +27,8 @@ English-trained NER models see `m3a` and `3andi` as noise and mis-tag names next
 | 3. Gazetteers | Tunisian / Maghrebi first names, surnames, cities | Matched in Latin (several spellings: `Mohamed/Mohammed/Med`), Arabic script, and Arabizi. This layer covers what GLiNER misses in Arabizi |
 | 4. Context rules | honorifics and cues: `M.`, `Mme`, `Dr`, `si`, `sidi`, `khalti`, `3amm`, `m3a`, `ism-ou` | Raise the score of the following capitalized token or gazetteer hit |
 
+Layers 3 and 4 are implemented in [`core/recognizers/gazetteer.py`](../../src/nona/core/recognizers/gazetteer.py) (S3, #37): words are compared by canonical token (so one entry covers `Mohamed`/`Med`/`محمد`), names extend into *runs* (`Ahmed Ben Salem`, `Ahmed Karoui`), strong cues (`Mme`, `Dr`, `sidi`, `esmou`) and weak ones (`si`, greetings) set the score, and cities are LOCATION spans. The score table is in the module docstring.
+
 **Tunisian phone numbers** follow the national numbering plan as libphonenumber encodes it: 8 digits, no trunk `0`, written `XX XXX XXX`, country code `+216` or `00216`.
 - **Mobile:** `2x`, `5x`, `9x`, `40`–`48`, and a few `3x` ranges.
 - **Fixed:** `7x` and `30`–`32`.
