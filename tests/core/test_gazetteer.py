@@ -144,3 +144,31 @@ def test_spans_are_valid_on_any_text(text: str) -> None:
     for span in GazetteerRecognizer().detect(normalize(text)):
         assert 0 <= span.start < span.end <= len(text)
         assert span.text_in(text).strip() == span.text_in(text)
+
+
+# --------------------------------------------------------------------------- S3 review leaks (#54)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("السيد كمال الزغلامي وصل", [("كمال الزغلامي", P)]),  # an Arabic family name of the الـ…ي kind
+        ("اتصل بيا محمد الطرابلسي اليوم", [("محمد الطرابلسي", P)]),
+        ("محمد اليوم مريض", [("محمد", P)]),  # `اليوم` (today) is not a family name
+        ("رقم محمد الثاني", [("محمد", P)]),  # an adjective shaped like one (`الثاني`, the second)
+        ("السيدة سعاد وصلت", [("سعاد", P)]),  # no capitals in Arabic: a cue doesn't take the verb
+        ("J'ai vu M'barek hier", [("M'barek", P)]),
+        ("J'ai vu Abdel Kader Trabelsi", [("Abdel Kader Trabelsi", P)]),
+        ("Abdel Aziz est arrivé", [("Abdel Aziz", P)]),
+        ("c'est Abd El Aziz qui vient", [("Abd El Aziz", P)]),
+        ("ولسامي", [("سامي", P)]),  # two clitics
+        ("للطرابلسي", [("لطرابلسي", P)]),  # ل + ال: the first ل is left out
+        ("مشيت لصفاقس", [("صفاقس", L)]),
+        ("مشيت للمنستير", [("لمنستير", L)]),
+        ("Je suis à Gabes demain", [("Gabes", L)]),  # the list has `Gabès`
+        ("le stade de Radès", [("Radès", L)]),  # the list has `Rades`
+        ("El Kef c'est loin", [("El Kef", L)]),
+    ],
+)
+def test_review_leaks(text: str, expected: list[tuple[str, EntityType]]) -> None:
+    assert kept(text) == expected

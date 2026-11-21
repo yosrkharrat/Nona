@@ -19,7 +19,7 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import LEFT, RIGHT
+from nona.core.boundaries import LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, strict_at
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.types import Entity, EntityType, Span
 
@@ -44,22 +44,18 @@ def _type_pattern(etype: EntityType) -> str:
 def placeholder_regex(types: Iterable[EntityType]) -> re.Pattern[str]:
     """`TYPE_n`, case-insensitive, also `TYPE n` and `TYPEn`. Group 1 is the type, group 2 the number.
 
-    Bounded like forward propagation (`core/boundaries.py`), so a restored value is always found again.
+    Loose boundaries here; `restore` then holds name placeholders to the strict ones, like forward
+    propagation does (`core/boundaries.py`), so a restored value is always found again.
     """
     names = sorted({_type_pattern(t) for t in types}, key=len, reverse=True)
     if not names:
         return re.compile(r"(?!)")  # matches nothing
-    return re.compile(LEFT + "(" + "|".join(names) + r")[ _]?(\d+)" + RIGHT, re.IGNORECASE)
+    return re.compile(LOOSE_LEFT + "(" + "|".join(names) + r")[ _]?(\d+)" + LOOSE_RIGHT, re.IGNORECASE)
 
 
 # Spotting placeholders the user typed (to reserve their numbers, or to treat one as a literal) keeps the
 # looser boundaries: `عندPERSON_2` or `PERSON_2s` still reserves number 2. Only restoring needs strict ones.
-_ANY_PLACEHOLDER = re.compile(
-    r"(?<![A-Za-z0-9])("
-    + "|".join(sorted({_type_pattern(t) for t in EntityType}, key=len, reverse=True))
-    + r")[ _]?(\d+)(?!\d)",
-    re.IGNORECASE,
-)
+_ANY_PLACEHOLDER = placeholder_regex(EntityType)
 
 
 def _canonical_type(raw: str) -> EntityType:
@@ -228,7 +224,12 @@ def restore(text: str, mapping: Mapping) -> str:
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
 
     def replace(m: re.Match[str]) -> str:
-        placeholder = f"{_canonical_type(m.group(1)).value}_{int(m.group(2))}"
-        return mapping.value(placeholder) if placeholder in mapping else m.group(0)
+        etype = _canonical_type(m.group(1))
+        placeholder = f"{etype.value}_{int(m.group(2))}"
+        if placeholder not in mapping:
+            return m.group(0)
+        if etype in NAME_TYPES and not strict_at(m.string, m.start(), m.end()):
+            return m.group(0)  # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
+        return mapping.value(placeholder)
 
     return placeholder_regex(types).sub(replace, text)

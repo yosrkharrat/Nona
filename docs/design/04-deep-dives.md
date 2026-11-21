@@ -40,7 +40,7 @@ Layers 3 and 4 are implemented in [`core/recognizers/gazetteer.py`](../../src/no
 **Tricky cases to put in tests from day one:**
 - Common words that are also names: `Amal` (hope), `Salam`, `Nour`, `Sabri`, `Monastir`. The gazetteer only fires if a context rule or capitalization supports it.
 - Phone formats: `+216 22 123 456`, `0021622123456`, `22.123.456`, `٢٢١٢٣٤٥٦` (Eastern Arabic digits, so normalize the digits first).
-- Names split by Arabic clitics: `لسامي` = `ل` + `سامي` ("to Sami"). Strip prefix clitics (`ل، ب، و، ف`) on gazetteer misses.
+- Names split by Arabic clitics: `لسامي` = `ل` + `سامي` ("to Sami"). Strip up to two prefix clitics (`و ف ب ل ك`; `للطرابلسي` = `ل` + `الطرابلسي`) on gazetteer misses, for names and for cities (#54).
 
 **v0.2+ lever:** fine-tune GLiNER on synthetic Darija/Arabizi data. Full fine-tuning is feasible (a DeBERTa-sized encoder); QLoRA experience transfers. Only do it once the benchmark shows where layer 2 fails.
 

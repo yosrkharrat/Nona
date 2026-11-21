@@ -10,6 +10,9 @@ set of canonical tokens:
    say how someone is addressed, not who they are.
 3. **Glue name particles to the next word**: `ben salem` → `bensalem`, `el abed` → `elabed`, and the same
    for `بن`. A particle is part of the surname, and people write it attached, spaced or hyphenated.
+   `Abdel` and `Abd` glue before one of the names of God: `Abdel Kader`, `Abd El Kader` and `Abdelkader`
+   are all `abdelkader`, while `Abdel Trabelsi` stays {abdel, trabelsi}. A
+   word-initial `M'` is part of the name, not the honorific: `M'hamed` → `mhamed`.
 4. **Arabizi digits** inside a word stand for Arabic letters: `3` (ع) and `2` (ء) are dropped, `7` → `h`,
    `9` → `k`, `5` → `kh`. So `3ali` → `ali` and `m7ammed` → `mhammed`.
 5. **Spelling variants** map to one form, from a small table: `Mohammed`, `Muhammad`, `Med` → `mohamed`, and
@@ -125,14 +128,44 @@ def _de_arabizi(word: str) -> str:
     return "".join(_ARABIZI.get(c, c) for c in word if not (c.isdigit() and c not in _ARABIZI))
 
 
+_M_ELISION = re.compile(rf"(?<![\w{_APOSTROPHES}])m[{_APOSTROPHES}](?=\w)")  # `M'hamed`, `M'barek`
+
+
 def _words(surface: str) -> list[str]:
-    """Folded words, split on spaces, hyphens and apostrophes, honorifics and bare numbers removed."""
+    """Folded words, split on spaces, hyphens and apostrophes, honorifics and bare numbers removed.
+
+    A word-initial `M'` is part of the name, not the honorific `M`: `M'hamed` → `mhamed`, `M'barek` →
+    `mbarek`.
+    """
     out: list[str] = []
-    for raw in _WORD.findall(_fold(surface)):
+    for raw in _WORD.findall(_M_ELISION.sub("m", _fold(surface))):
         if raw.strip("-" + _APOSTROPHES) in HONORIFICS:
             continue
         out.extend(p for p in re.split(rf"[-{_APOSTROPHES}]", raw) if p)
     return [w for w in out if w not in HONORIFICS and not w.isdigit()]
+
+
+# `Abd` ("servant of") + one of the names of God makes one first name: `Abdel Kader`, `Abd El Aziz`. `Abdel`
+# alone is also a first name (`Abdel Trabelsi`), so it only glues before one of these.
+ABD_PREFIXES: frozenset[str] = frozenset({"abd", "abdel", "abdal", "abdul", "abdou"})
+DIVINE_NAMES: frozenset[str] = frozenset(
+    {
+        "kader", "qader", "kadir", "aziz", "karim", "rahman", "rahim", "jalil", "majid", "wahed", "wahab",
+        "latif", "hamid", "hakim", "malek", "razak", "razzak", "basset", "monem", "fattah", "ghani", "jabbar",
+        "kabir", "halim", "hafidh", "hafid", "salem", "razzek", "moula", "naceur", "nasser", "wahid", "allah",
+        "lah", "ali",
+    }
+)  # fmt: skip
+
+
+def _abd_glue(words: list[str], i: int) -> bool:
+    """Whether word `i` is an `Abd` prefix that belongs to the next name (`abdel kader`, `abd el aziz`)."""
+    if words[i] not in ABD_PREFIXES or i + 1 >= len(words):
+        return False
+    nxt = words[i + 1]
+    if nxt in {"el", "al"} and i + 2 < len(words):
+        nxt = words[i + 2]
+    return nxt in DIVINE_NAMES
 
 
 def _glued(surface: str) -> list[tuple[str, str, str]]:
@@ -141,7 +174,7 @@ def _glued(surface: str) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     glue = ""
     for i, word in enumerate(words):
-        if word in PARTICLES and i + 1 < len(words):
+        if (word in PARTICLES and i + 1 < len(words)) or _abd_glue(words, i):
             glue += word
             continue
         token = VARIANTS.get(glue + word, glue + word)
