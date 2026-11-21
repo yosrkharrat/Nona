@@ -210,3 +210,48 @@ def test_every_generated_structured_value_is_found_exactly(seed: int) -> None:
                 etype = conv.entity(m.entity).type
                 if etype in TYPES:
                     assert (m.start, m.end, etype) in spans, f"{etype} {m.text!r} missed in {turn.text!r}"
+
+
+# --------------------------------------------------------------------------- Tunisian conventions (#33)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("+216 (0)71 234 567", ["+216 (0)71 234 567"]),  # the French "(0)" habit
+        ("00216 (0) 22 123 456", ["00216 (0) 22 123 456"]),
+        ("+33 (0)6 12 34 56 78", ["+33 (0)6 12 34 56 78"]),
+        ("Tél : 71 234 567\nFax : 71 234 568", ["71 234 567", "71 234 568"]),  # a fax is a fixed line
+        ("فاكس 71 234 567", ["71 234 567"]),
+        ("(+216) 71 234 567", ["(+216) 71 234 567"]),
+        ("216 71 234 567", ["216 71 234 567"]),
+        ("00 216 71 234 567", ["00 216 71 234 567"]),
+        ("71 23 45 67", ["71 23 45 67"]),  # in pairs
+        ("71-234-567", ["71-234-567"]),
+        ("nomrou 36 123 456", ["36 123 456"]),  # a 3x mobile range
+        ("el fixe 30 123 456", ["30 123 456"]),  # a 3x fixed range
+        ("bureau 79 123 456", ["79 123 456"]),
+    ],
+)
+def test_tunisian_formats_found(text: str, expected: list[str]) -> None:
+    assert found(PhoneRecognizer(), text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "appelez le numéro vert 80 100 200",  # toll-free
+        "jeu concours 88 123 456",  # premium rate
+        "service client 81 101 234",  # shared cost
+        "service client 82 101 234",
+        "+216 (0)49 123 456",  # 49 is not an assigned range
+        "mobile 49 123 456",
+    ],
+)
+def test_service_and_unassigned_numbers_not_found(text: str) -> None:
+    assert found(PhoneRecognizer(), text) == []
+
+
+def test_service_numbers_can_be_included() -> None:
+    recognizer = PhoneRecognizer(include_service_numbers=True)
+    assert found(recognizer, "numéro vert 80 100 200, jeu 88 123 456") == ["80 100 200", "88 123 456"]

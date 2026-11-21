@@ -27,6 +27,13 @@ English-trained NER models see `m3a` and `3andi` as noise and mis-tag names next
 | 3. Gazetteers | Tunisian / Maghrebi first names, surnames, cities | Matched in Latin (several spellings: `Mohamed/Mohammed/Med`), Arabic script, and Arabizi. This layer covers what GLiNER misses in Arabizi |
 | 4. Context rules | honorifics and cues: `M.`, `Mme`, `Dr`, `si`, `sidi`, `khalti`, `3amm`, `m3a`, `ism-ou` | Raise the score of the following capitalized token or gazetteer hit |
 
+**Tunisian phone numbers** follow the national numbering plan as libphonenumber encodes it: 8 digits, no trunk `0`, written `XX XXX XXX`, country code `+216` or `00216`.
+- **Mobile:** `2x`, `5x`, `9x`, `40`–`48`, and a few `3x` ranges.
+- **Fixed:** `7x` and `30`–`32`.
+- **Fax:** a fax line is an ordinary fixed line, so a fax number is masked like any phone. Only the context (`Fax :`, `فاكس`) says it's a fax.
+- **Service numbers are skipped:** toll-free `8010…`, shared cost `8110…`/`8210…` and premium rate `88…` identify a company, not a person (`include_service_numbers=True` masks them anyway).
+- **`+216 (0)71 234 567` is found.** The `(0)` is a French habit that is wrong for Tunisia, and libphonenumber rejects it, but people write it, and a miss would be a leak.
+
 **Tricky cases to put in tests from day one:**
 - Common words that are also names: `Amal` (hope), `Salam`, `Nour`, `Sabri`, `Monastir`. The gazetteer only fires if a context rule or capitalization supports it.
 - Phone formats: `+216 22 123 456`, `0021622123456`, `22.123.456`, `٢٢١٢٣٤٥٦` (Eastern Arabic digits, so normalize the digits first).

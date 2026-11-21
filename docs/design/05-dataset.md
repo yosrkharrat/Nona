@@ -101,7 +101,7 @@ Fake values must never be the real data of a real person.
 |---|---|
 | Names | Common first names combined with common surnames, generated at random. No public figures except entities marked `public` |
 | Emails | Reserved domains only: `example.com`, `example.org`, `example.net` (RFC 2606). Detection doesn't depend on the domain |
-| Phones | Randomly generated in valid Tunisian and French formats. A collision with a real number is possible but meaningless, since no name is attached to it outside this file |
+| Phones | Random numbers that libphonenumber accepts, drawn from the whole numbering plan: Tunisian mobile (`2x`, `4x`, `5x`, `9x`, `3x`) and fixed lines (`7x`, `3x`, also used for fax), French `06`/`07`. Written every common way: `XX XXX XXX`, dots, dashes, pairs, `+216`, `(+216)`, `00 216`, `216`, and the `+216 (0)` habit. Business service numbers (toll-free, shared cost, premium) appear only as distractors. A collision with a real number is possible but meaningless, since no name is attached to it outside this file |
 | IBAN / RIB | Valid checksums (mod-97) with random digits |
 | Cards | Luhn-valid numbers from published **test** card ranges only |
 | CIN | Random 8 digits |
