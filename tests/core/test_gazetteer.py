@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from nona.core import EntityType, Nona, normalize
-from nona.core.recognizers import GazetteerRecognizer
+from nona.core.recognizers import GazetteerRecognizer, gazetteer_data
 
 P, L = EntityType.PERSON, EntityType.LOCATION
 
@@ -51,7 +53,9 @@ def test_gazetteer_names(text: str, expected: list[tuple[str, EntityType]]) -> N
         ("My name is Emily Stone", [("Emily Stone", P)]),
         ("je m'appelle Kenza Haddad", [("Kenza Haddad", P)]),
         ("3andi rdv m3a Ghofrane", [("Ghofrane", P)]),
-        ("Merci Gaspard", [("Gaspard", P)]),  # weak cue, capitalized
+        ("Merci Skander", [("Skander", P)]),  # weak cue, listed name
+        ("السيدة سعاد وصلت", [("سعاد", P)]),  # Arabic honorific (teh marbuta), unlisted name
+        ("M. ben salem a appelé", [("ben salem", P)]),  # `M.` is strong once its dot is there
     ],
 )
 def test_context_cues(text: str, expected: list[tuple[str, EntityType]]) -> None:
@@ -71,6 +75,13 @@ def test_context_cues(text: str, expected: list[tuple[str, EntityType]]) -> None
         "M Bricolage est fermé",  # `M` without its dot is not a cue
         "le vent gharbi souffle",  # gharbi = western
         "ahmed.bs@example.com",  # resolved as an email by the pipeline, not here
+        "Merci Beaucoup pour tout",  # a weak cue needs a listed name
+        "Hello World",
+        "Hi Team, see you",
+        "chnowa 3amel lyoum?",  # 3amel = doing: a name only after the Arabizi step
+        "sana jdida sa3ida",  # sana = year
+        "sadiki el aziz",  # el + a common word
+        "Bonjour\nGaspard",  # a cue doesn't cross a line break
     ],
 )
 def test_not_names(text: str) -> None:
@@ -90,6 +101,38 @@ def test_not_names(text: str) -> None:
 )
 def test_cities(text: str, expected: list[tuple[str, EntityType]]) -> None:
     assert kept(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Ahmed - Sami ont appelé", [("Ahmed", P), ("Sami", P)]),  # a spaced dash separates people
+        ("Ahmed Karoui - Directeur Commercial", [("Ahmed Karoui", P)]),
+        ("Meeting With Ahmed Tomorrow Morning", [("Ahmed", P)]),
+        ("Ahmed Lefort Dupont Martin", [("Ahmed Lefort", P)]),  # one unlisted word per run
+        ("سلم على أحمد", [("أحمد", P)]),  # على (on) is not Ali
+        ("سلم على سامي", [("سامي", P)]),
+    ],
+)
+def test_run_boundaries(text: str, expected: list[tuple[str, EntityType]]) -> None:
+    assert kept(text) == expected
+
+
+def test_seed_lists_have_no_duplicates() -> None:
+    for name in ("FIRST_NAMES_TN", "FIRST_NAMES_FR_EN", "SURNAMES_TN", "NAMES_AR", "COMMON_WORDS", "CITIES"):
+        values: tuple[str, ...] = getattr(gazetteer_data, name)
+        assert len(values) == len(set(values)), name
+
+
+def test_detection_is_linear_in_text_length() -> None:
+    small, large = "Bonjour Ahmed, voici le rapport. " * 200, "Bonjour Ahmed, voici le rapport. " * 2000
+    recognizer = GazetteerRecognizer()
+    timings = []
+    for text in (small, large):
+        start = time.perf_counter()
+        recognizer.detect(normalize(text))
+        timings.append(time.perf_counter() - start)
+    assert timings[1] < timings[0] * 30  # 10x the text; quadratic would be ~100x
 
 
 def test_email_beats_the_name_inside_it() -> None:

@@ -31,7 +31,7 @@ FIRST_NAMES_TN: tuple[str, ...] = (
     # women
     "Aicha", "Alya", "Amal", "Amira", "Amel", "Arij", "Asma", "Azza", "Baya", "Besma", "Cyrine", "Dorra",
     "Emna", "Eya", "Faten", "Fatma", "Ghada", "Hajer", "Hanen", "Hela", "Hiba", "Houda", "Imen", "Ines",
-    "Jihen", "Khadija", "Kaouther", "Latifa", "Leila", "Lina", "Lobna", "Malek", "Manel", "Mariem", "Maroua",
+    "Jihen", "Khadija", "Kaouther", "Latifa", "Leila", "Lina", "Lobna", "Manel", "Mariem", "Maroua",
     "Meriem", "Mouna", "Monia", "Nadia", "Najet", "Nawel", "Nesrine", "Nour", "Nourhene", "Olfa", "Ons",
     "Rahma", "Rania", "Rim", "Rihab", "Rym", "Sabrine", "Safa", "Salma", "Samia", "Sana", "Sarra", "Siwar",
     "Sonia", "Souad", "Syrine", "Takwa", "Wafa", "Wiem", "Yosra", "Zeineb", "Zohra",
@@ -41,9 +41,9 @@ FIRST_NAMES_FR_EN: tuple[str, ...] = (
     "Alexandre", "Anne", "Antoine", "Camille", "Charlotte", "Chloé", "Claire", "Élodie", "Émilie", "Florian",
     "François", "Guillaume", "Hugo", "Isabelle", "Julie", "Julien", "Laura", "Léa", "Louis", "Lucas", "Manon",
     "Margaux", "Marie", "Mathieu", "Maxime", "Nathalie", "Nicolas", "Pauline", "Philippe", "Pierre", "Romain",
-    "Sophie", "Thomas", "Valérie", "Vincent",
+    "Sophie", "Valérie", "Vincent",
     "Andrew", "Benjamin", "Charlie", "Daniel", "David", "Emily", "Emma", "Ethan", "George", "Grace", "Hannah",
-    "Jack", "James", "Jessica", "John", "Laura", "Lucy", "Megan", "Michael", "Oliver", "Olivia", "Ryan",
+    "Jack", "James", "Jessica", "John", "Lucy", "Megan", "Michael", "Oliver", "Olivia", "Ryan",
     "Samuel", "Sarah", "Sophia", "Thomas", "William",
 )  # fmt: skip
 
@@ -73,6 +73,14 @@ COMMON_WORDS: tuple[str, ...] = (
     "Amal", "Nour", "Salam", "Sabri", "Anis", "Salem", "Said", "Malek", "Ali", "Baya", "Ons", "Wafa", "Safa",
     "Hiba", "Rahma", "Lina", "Eya", "Alya", "Grace", "Jack", "Gharbi", "Sfaxi", "Bahri", "Cherif", "Mabrouk",
     "Ammar", "Amor", "Laura", "Charlie", "Ala", "أمال", "نور", "رحمة", "سالم", "صالح",
+    # Darija and Arabic words that are also names: `sana` (year), `salah` (prayer), `aziz` (dear),
+    # `karim` (generous), `amel`/`3amel` (doing), `fares` (rider), `kamel` (whole), `hassen` (better),
+    # `adel` (fair), `amine` (trustworthy), `habib` (dear), `hedi` (calm), `imen` (faith), `houda`
+    # (guidance), `rim` (gazelle), `faten` (charming), `selim`/`slim` (safe), `ridha` (consent),
+    # `najet` (rescue), `jamel` (beauty), `nabil` (noble), `khaled` (eternal), `sabrine` (patient)
+    "Sana", "Salah", "Aziz", "Karim", "Amel", "Fares", "Kamel", "Hassen", "Adel", "Amine", "Habib", "Hedi",
+    "Imen", "Houda", "Rim", "Faten", "Selim", "Slim", "Ridha", "Najet", "Jamel", "Nabil", "Khaled",
+    "Sabrine", "Mounir", "Monia", "Hanen", "Latifa", "Jalel",
 )  # fmt: skip
 
 CITIES: tuple[str, ...] = (
