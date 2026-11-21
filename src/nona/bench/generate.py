@@ -328,7 +328,9 @@ _SLOT = re.compile(r"\{(\w+)(?:\.(\w+))?(\?)?\}")
 def _split_kind(kind: str) -> tuple[str, str | None]:
     """`phone:tn@p1` → (`phone:tn`, `p1`). A person's `=p1` (shared first name) is removed from the base."""
     base, _, owner = kind.partition("@")
-    return base.partition("=")[0], owner or None
+    if base.startswith("person:"):
+        base = base.partition("=")[0]
+    return base, owner or None
 
 
 def _shares(kind: str) -> str | None:
@@ -372,8 +374,19 @@ def check_template(t: Template) -> None:
             if not t.slots.get(owner, "").startswith("person:"):
                 raise ValueError(f"{t.name}: slot {slot}: owner {owner!r} is not a person slot")
         shared = _shares(kind)
-        if shared is not None and (shared == slot or not t.slots.get(shared, "").startswith("person:")):
-            raise ValueError(f"{t.name}: slot {slot}: shares a first name with {shared!r}, not a person slot")
+        if shared is not None:
+            target = t.slots.get(shared, "")
+            if shared == slot or not target.startswith("person:"):
+                raise ValueError(
+                    f"{t.name}: slot {slot}: shares a first name with {shared!r}, not a person slot"
+                )
+            if _shares(target) is not None:
+                raise ValueError(
+                    f"{t.name}: slot {slot}: shares with {shared!r}, which shares too (no chains)"
+                )
+            mine, theirs = _PERSON.fullmatch(kind), _PERSON.fullmatch(target)
+            if mine and theirs and mine.group(2) and theirs.group(2) != mine.group(2):
+                raise ValueError(f"{t.name}: slot {slot}: shares a first name across genders with {shared!r}")
 
 
 def _tpl(
@@ -540,12 +553,14 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
          "{p1.first}. {p1} travaille à notre agence de {c1}, ligne directe {ph}.",
          (A, "Merci, j'appelle Mme {p1.last} au {ph}."),
          tags="honorific"),
-    _tpl("mt-aeb-no-pii", "aeb-Latn", {"w1": "~word:amal", "w2": "~word:sana", "w3": "~word:3amel"},
+    _tpl("mt-aeb-no-pii", "aeb-Latn",
+         {"w1": "~word:amal", "w2": "~word:sana", "w3": "~word:3amel", "w4": "~word:3ali",
+          "w5": "~word:nour"},
          "sbe7 el khir, 3andi {w1} kbir fel projet hedha.",
          (A, "Behi, chnowa el moshkla ?"),
-         "el {w2} hedhi el as3ar tal3et barcha.",
+         "el {w2} hedhi el as3ar tal3et barcha, w el kera {w4} zeda.",
          (A, "Fhemtek. Nchoufou el budget m3a b3adhna ?"),
-         "ey, chnowa {w3} ena ghodwa ? nkamlou el khedma.",
+         "ey, chnowa {w3} ena ghodwa ? w ma fammech {w5} fel bureau, nbadlou el lampa.",
          tags="common-word-name"),
     _tpl("mt-en-no-pii", "en", {},
          "Hello World is the first program I wrote. Can you explain it?",
@@ -680,6 +695,8 @@ def generate(
     """`count` conversations, numbered from `start`. Every template is used once per round, shuffled."""
     if count < 0:
         raise ValueError("count must be >= 0")
+    if start < 1:
+        raise ValueError("start must be >= 1")
     if not templates:
         raise ValueError("no templates")
     for t in templates:

@@ -289,6 +289,10 @@ def test_lower_form_and_city_kind() -> None:
         ({"ph": "phone:tn"}, "{ph?}", "only a person mention can be ambiguous"),
         ({"p1": "person:tn=p9"}, "{p1}", "not a person slot"),
         ({"p1": "person:tn=p1"}, "{p1}", "not a person slot"),
+        ({"p1": "person:tn", "p2": "person:tn=p1", "p3": "person:tn=p2"}, "{p1}{p2}{p3}", "no chains"),
+        ({"p1": "person:tn=p2", "p2": "person:tn=p1"}, "{p1}{p2}", "no chains"),
+        ({"p1": "person:tn:m", "p2": "person:tn:f=p1"}, "{p1}{p2}", "across genders"),
+        ({"p1": "person:tn", "em": "email=p1"}, "{p1}{em}", "unknown kind"),
     ],
 )
 def test_check_template_rejects_bad_sharing_and_ambiguity(
@@ -306,6 +310,18 @@ def test_cli_generates_the_multi_turn_set_from_a_start_number(capsys: pytest.Cap
     assert ids == ["dev-0081", "dev-0082", "dev-0083"]
 
 
-def test_dev_has_forty_conversations_of_four_turns_or_more() -> None:
+def test_dev_multi_turn_set_has_forty_conversations_of_four_turns_or_more() -> None:
     dev = load_jsonl(Path(__file__).resolve().parents[2] / "bench" / "data" / "dev.jsonl")
-    assert sum(len(c.turns) >= 4 for c in dev) >= 40
+    multi_turn = [c for c in dev if int(c.id.removeprefix("dev-")) >= 81]
+    assert len(multi_turn) >= 40
+    assert all(len(c.turns) >= 4 for c in multi_turn)
+
+
+def test_every_word_distractor_is_used() -> None:
+    used = {kind for t in MULTI_TURN_TEMPLATES for kind in t.slots.values()}
+    assert {"~word:amal", "~word:nour", "~word:3ali", "~word:sana", "~word:3amel"} <= used
+
+
+def test_start_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="start"):
+        generate(1, seed=1, prefix="x", start=0)
