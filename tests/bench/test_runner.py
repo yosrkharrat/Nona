@@ -9,7 +9,7 @@ import pytest
 from nona.bench.dataset import dumps_jsonl, load_jsonl
 from nona.bench.metrics import Rate
 from nona.bench.runner import run, summary
-from nona.bench.systems import IdentitySystem
+from nona.bench.systems import IdentitySystem, NonaSystem
 from nona.cli import main
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -94,3 +94,46 @@ def test_bench_reports_an_invalid_dataset(tmp_path: Path, capsys: pytest.Capture
     (tmp_path / "bad.jsonl").write_text('{"id": "x"}\n', encoding="utf-8")
     assert main(["bench", "--split", "bad", "--data", str(tmp_path), "--out", str(tmp_path / "r")]) == 1
     assert "missing field" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- the nona system (S2)
+
+STRUCTURED = {"EMAIL", "PHONE", "IBAN", "RIB", "CARD", "IP_ADDRESS", "NATIONAL_ID"}
+
+
+def test_nona_leaks_no_structured_value_on_dev() -> None:
+    """S2 exit criterion: the structured leak rate on dev drops from 100% to 0%."""
+    report = run(NonaSystem(), "dev", DEV).report
+    structured = [m for m in report.mentions if m.type.value in STRUCTURED]
+    assert structured
+    # Partial leaks remain possible: `bilel.me@…` is masked, but the unmasked name `Bilel` matches it.
+    assert [m.text for m in structured if m.outcome.value == "leaked"] == []
+
+
+def test_nona_over_masks_little_on_dev() -> None:
+    report = run(NonaSystem(), "dev", DEV).report
+    tokens = report.masked_tokens.value
+    assert tokens is not None
+    assert tokens < 0.01
+
+
+def test_bench_runs_several_systems(
+    data_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "results"
+    args = [
+        "bench",
+        "--systems",
+        "identity,nona",
+        "--split",
+        "mini",
+        "--data",
+        str(data_dir),
+        "--out",
+        str(out),
+    ]
+    assert main(args) == 0
+    printed = capsys.readouterr().out
+    assert "system=identity" in printed
+    assert "system=nona" in printed
+    assert (out / "mini-nona.json").is_file()
