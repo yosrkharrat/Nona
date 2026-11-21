@@ -270,6 +270,64 @@ def test_allowlist_beats_look_ahead() -> None:
     assert conv.texts == ("Chirine. PERSON_1.",)
 
 
+# --------------------------------------------------------------------------- owners (deep dive B, step 6)
+
+
+def _owners(conv: object) -> dict[str, str | None]:
+    return {e.placeholder: e.owner for m in conv.messages for e in m.entities if e.type is EntityType.EMAIL}  # type: ignore[attr-defined]
+
+
+def test_an_email_belongs_to_the_person_it_spells() -> None:
+    conv = nona().anonymize_messages(["Ahmed Ben Salem a envoyé le devis, son mail ahmed.bs@gmail.com"])
+    assert conv.texts == ("PERSON_1 a envoyé le devis, son mail EMAIL_1",)  # metadata only
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
+def test_an_email_given_before_the_name_still_links() -> None:
+    conv = nona().anonymize_messages(["écris à s.trabelsi@example.com", "c'est Sami Trabelsi"])
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
+def test_two_candidate_people_mean_no_owner() -> None:
+    conv = nona().anonymize_messages(["Ahmed Ben Salem et Ahmed Karoui : ahmed@example.com"])
+    assert _owners(conv) == {"EMAIL_1": None}
+
+
+def test_an_ambiguous_person_owns_nothing() -> None:
+    conv = nona(names=["Ahmed Karoui", "Ahmed Jlassi", "Ahmed"]).anonymize_messages(
+        ["Ahmed Karoui, Ahmed Jlassi.", "Ahmed : ahmed@example.com"]
+    )
+    assert conv.texts[1] == "PERSON_3 : EMAIL_1"
+    assert _owners(conv) == {"EMAIL_1": None}
+
+
+def test_an_owner_never_changes_once_given() -> None:
+    msgs = ["Ahmed Ben Salem : ahmed@example.com", "et Ahmed Karoui"]
+    n = nona()
+    assert _owners(n.anonymize_messages(msgs[:1])) == {"EMAIL_1": "PERSON_1"}
+    assert _owners(n.anonymize_messages(msgs)) == {"EMAIL_1": "PERSON_1"}  # a second Ahmed came too late
+
+
+def test_a_superset_naming_someone_else_has_no_owner() -> None:
+    conv = nona(names=["Sami", "Ahmed Karoui"]).anonymize_messages(
+        ["Sami et Ahmed Karoui : sami_ahmed@example.com"]
+    )
+    assert _owners(conv) == {"EMAIL_1": None}
+    conv = nona(names=["Wassim"]).anonymize_messages(["Wassim : wassim.ferchichi@example.com"])
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
+def test_a_surname_written_without_its_particle_links() -> None:
+    conv = nona().anonymize_messages(["Ahmed Ben Salem : ahmed.salem@example.com"])
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
+def test_an_unrelated_email_has_no_owner_and_other_types_never_do() -> None:
+    conv = nona().anonymize_messages(["Sami Trabelsi : contact@example.com, 22 123 456"])
+    assert _owners(conv) == {"EMAIL_1": None}
+    assert all(e.owner is None for e in conv.messages[0].entities)
+
+
 def test_allowlist_beats_propagation() -> None:
     conv = nona(allowlist=["Sami"]).anonymize_messages(["Sami Trabelsi", "Sami"])
     assert conv.texts == ("PERSON_1", "Sami")

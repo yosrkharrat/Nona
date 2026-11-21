@@ -11,7 +11,7 @@ from nona.bench.metrics import Rate
 from nona.bench.runner import run, summary
 from nona.bench.systems import IdentitySystem, NonaSystem
 from nona.cli import main
-from nona.core import EntityType
+from nona.core import Entity, EntityType, Nona
 
 ROOT = Path(__file__).resolve().parents[2]
 DEV = ROOT / "bench" / "data" / "dev.jsonl"
@@ -150,3 +150,38 @@ def test_nona_links_people_consistently_on_dev() -> None:
     linking = summary(r)["linking"]
     assert set(linking) == {"all", "PERSON"}
     assert set(linking["PERSON"]) == {"mentions_with_placeholder", "wrong_merge", "wrong_split", "ambiguity"}
+
+
+def _touching(
+    entities: tuple[Entity, ...], start: int, end: int, etype: EntityType
+) -> list[tuple[str, str | None]]:
+    return [
+        (e.placeholder, e.owner)
+        for e in entities
+        if e.type is etype and any(s.start < end and start < s.end for s in e.mentions)
+    ]
+
+
+def test_nona_never_gives_an_email_the_wrong_owner_on_dev() -> None:
+    """Deep dive B, step 6: owners are conservative. Checked against the gold `owner` of each email."""
+    correct = 0
+    nona = Nona()  # the owner is metadata, not in the payload the bench sees, so this calls Nona directly
+    for conv in load_jsonl(DEV):
+        result = nona.anonymize_messages([t.text for t in conv.turns])
+        people: dict[str, set[str]] = {}
+        for i, turn in enumerate(conv.turns):
+            for m in turn.mentions:
+                for placeholder, _ in _touching(
+                    result.messages[i].entities, m.start, m.end, EntityType.PERSON
+                ):
+                    people.setdefault(m.entity, set()).add(placeholder)
+        for i, turn in enumerate(conv.turns):
+            for m in turn.mentions:
+                gold = conv.entity(m.entity)
+                for _, owner in _touching(result.messages[i].entities, m.start, m.end, EntityType.EMAIL):
+                    if owner is None:
+                        continue
+                    assert gold.owner is not None, (conv.id, m.text)
+                    assert owner in people.get(gold.owner, set()), (conv.id, m.text, owner)
+                    correct += 1
+    assert correct >= 8
