@@ -32,45 +32,7 @@ import phonenumbers
 
 from nona.bench.dataset import KNOWN_TAGS, LANGUAGES, Conversation, dumps_jsonl, parse_conversation
 from nona.core import EntityType
-
-# --------------------------------------------------------------------------- checksums
-
-
-def luhn_valid(number: str) -> bool:
-    digits = [int(c) for c in number if c.isdigit()]
-    if len(digits) < 12:
-        return False
-    total = 0
-    for i, d in enumerate(reversed(digits)):
-        if i % 2 == 1:
-            d *= 2
-            if d > 9:
-                d -= 9
-        total += d
-    return total % 10 == 0
-
-
-def _alnum_to_int(s: str) -> int:
-    """IBAN digit expansion: letters become 10..35 (ISO 13616)."""
-    return int("".join(str(int(c, 36)) for c in s))
-
-
-def iban_check_digits(country: str, bban: str) -> str:
-    return f"{98 - _alnum_to_int(bban + country + '00') % 97:02d}"
-
-
-def iban_valid(iban: str) -> bool:
-    compact = iban.replace(" ", "").upper()
-    if len(compact) < 15 or not compact.isalnum():
-        return False
-    return _alnum_to_int(compact[4:] + compact[:4]) % 97 == 1
-
-
-def tn_rib_valid(rib: str) -> bool:
-    """A Tunisian RIB is 20 digits whose last two are a key that makes the whole number divisible by 97."""
-    digits = rib.replace(" ", "")
-    return len(digits) == 20 and digits.isdigit() and int(digits) % 97 == 0
-
+from nona.core.checksums import iban_check_digits
 
 # --------------------------------------------------------------------------- seed lists
 

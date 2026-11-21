@@ -164,9 +164,16 @@ def test_ip_not_found(text: str) -> None:
 
 def test_default_recognizers_cover_their_types() -> None:
     recognizers = default_recognizers()
-    assert [r.name for r in recognizers] == ["regex:email", "phonenumbers", "regex:ip"]
+    assert [r.name for r in recognizers] == [
+        "regex:email",
+        "phonenumbers",
+        "regex:ip",
+        "checksum:iban",
+        "checksum:rib",
+        "checksum:card",
+    ]
     covered = frozenset().union(*(r.supported_types for r in recognizers))
-    assert covered == {EntityType.EMAIL, EntityType.PHONE, EntityType.IP_ADDRESS}
+    assert covered == TYPES
 
 
 def test_spans_carry_type_score_and_detector() -> None:
@@ -179,12 +186,19 @@ def test_spans_carry_type_score_and_detector() -> None:
     }
 
 
-TYPES = {EntityType.EMAIL, EntityType.PHONE, EntityType.IP_ADDRESS}
+TYPES = {
+    EntityType.EMAIL,
+    EntityType.PHONE,
+    EntityType.IP_ADDRESS,
+    EntityType.IBAN,
+    EntityType.RIB,
+    EntityType.CARD,
+}
 
 
 @settings(max_examples=30, deadline=None)
 @given(seed=st.integers(min_value=0, max_value=2**32 - 1))
-def test_every_generated_email_phone_and_ip_is_found_exactly(seed: int) -> None:
+def test_every_generated_structured_value_is_found_exactly(seed: int) -> None:
     """On generated data, each gold mention of these types is reported with exactly its gold offsets."""
     recognizers = default_recognizers()
     for conv in generate(len(TEMPLATES), seed=seed, prefix="g"):
