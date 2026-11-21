@@ -159,6 +159,6 @@ a number or a user need justifies it.
 
 | Slice | Status | Headline number |
 |---|---|---|
-| S0 | local work done; GitHub repo pending | — |
-| S1 | done (branch `feat/s1-benchmark`) | identity system: 100% leak (116/116 direct-identifier mentions), 0% over-masking, on dev v0 (80 conversations) |
+| S0 | done, except #6 (PyPI publisher) and #7 (old draft), which need the owner | — |
+| S1 | done (#2; dev regenerated in #26 with valid phone numbers only) | identity system: 100% leak (110/110 direct-identifier mentions), 0% over-masking, on dev v0 (80 conversations) |
 | S2 to S8 | not started | — |
