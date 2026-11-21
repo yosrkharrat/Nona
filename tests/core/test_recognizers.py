@@ -5,7 +5,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from nona.bench.generate import TEMPLATES, generate
-from nona.core import EntityType, normalize
+from nona.core import EntityType, Nona, normalize
 from nona.core.recognizers import (
     EmailRecognizer,
     IpRecognizer,
@@ -13,6 +13,7 @@ from nona.core.recognizers import (
     Recognizer,
     default_recognizers,
 )
+from nona.core.recognizers.phone import CUE_SCORE
 
 
 def found(recognizer: Recognizer, text: str) -> list[str]:
@@ -255,3 +256,48 @@ def test_service_and_unassigned_numbers_not_found(text: str) -> None:
 def test_service_numbers_can_be_included() -> None:
     recognizer = PhoneRecognizer(include_service_numbers=True)
     assert found(recognizer, "numéro vert 80 100 200, jeu 88 123 456") == ["80 100 200", "88 123 456"]
+
+
+# --------------------------------------------------------------------------- phone: order-cue context rule
+
+
+def scores(text: str) -> list[tuple[str, float]]:
+    return [(s.text_in(text), s.score) for s in PhoneRecognizer().detect(normalize(text))]
+
+
+@pytest.mark.parametrize(
+    ("text", "number"),
+    [
+        ("Ma commande n° 24176705 n'est toujours pas arrivée", "24176705"),
+        ("Commande N° 24176705", "24176705"),  # matched on the normalized (folded) view
+        ("Order 24176705 never arrived", "24176705"),
+        ("order #24176705", "24176705"),
+        ("Réf: 71 234 567", "71 234 567"),
+        ("reference number: 24176705", "24176705"),
+        ("facture numéro 24176705", "24176705"),
+        ("colis 24176705", "24176705"),
+        ("الطلبية رقم 24176705", "24176705"),
+    ],
+)
+def test_order_cue_lowers_the_score(text: str, number: str) -> None:
+    assert scores(text) == [(number, CUE_SCORE)]
+    assert Nona().anonymize(text).text == text  # below the default threshold
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Envoie la facture au 22 123 456",  # the cue isn't adjacent: a real phone, and a miss would leak
+        "commande, appelle-moi au 22 123 456",
+        "le n° 22 123 456",  # a connector alone is not a cue
+        "réf +216 22 123 456",  # international format is never an order number
+        "order 0021622123456",
+        "Tél : 22 123 456",
+    ],
+)
+def test_phone_without_adjacent_order_cue_keeps_full_score(text: str) -> None:
+    assert [score for _, score in scores(text)] == [1.0]
+
+
+def test_order_cue_applies_to_its_own_number_only() -> None:
+    assert scores("Facture 71 234 567, Tél 22 123 456") == [("71 234 567", CUE_SCORE), ("22 123 456", 1.0)]
