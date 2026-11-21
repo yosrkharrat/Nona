@@ -41,7 +41,7 @@ flowchart TB
 | Component | Responsibility | Key decision |
 |---|---|---|
 | **Payload walker** | Visits every user-controlled string in an OpenAI request (02 §1 table) and writes the replacements back | Pure function over pydantic models, so it is easy to test against OpenAI fixtures |
-| **Normalizer** | NFKC, strips Arabic tatweel and diacritics, folds case, **Arabizi digit map** (`3→ع, 7→ح, 9→ق, 5→خ, 2→ء`), and keeps an offset map back to the original text | Detection runs on the normalized view, replacement on the original text |
+| **Normalizer** | NFKC, folds case, Eastern Arabic digits to ASCII, strips Arabic tatweel and diacritics, and keeps an exact offset map back to the original text (`core/normalize.py`). The **Arabizi digit map** (`3→ع, 7→ح, 9→ق, 5→خ, 2→ء`) is a second view for name recognizers (S4): applied to the same view it would turn phone numbers into letters | Detection runs on the normalized view, replacement on the original text |
 | **Detection engine** | Runs recognizers and returns candidate `Span`s with scores | Plugin interface (`Recognizer` protocol). Union of recognizers, because recall comes first |
 | **Span resolver** | Resolves overlaps (longest span wins, then highest priority), applies thresholds and the allow/deny lists | Deterministic ordering, a requirement for ADR-0002 |
 | **Entity linker** | Groups mentions into entities (`Ahmed` ≈ `Ahmed Ben Salem` ≈ `ahmed.bs@…`) | Conservative: only merges when unambiguous (deep dive B) |
