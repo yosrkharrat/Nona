@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections.abc import Sequence
 
@@ -185,12 +186,65 @@ def test_structured_values_propagate_too() -> None:
     assert n.anonymize_messages(["22 123 456", "encore 22 123 456"]).texts == ("PHONE_1", "encore PHONE_1")
 
 
-def test_kept_and_redacted_values_are_not_propagated() -> None:
+def test_redacted_values_are_propagated_and_kept_ones_are_not() -> None:
     pseudonymizer = Pseudonymizer()  # defaults: CARD redacted, ORGANIZATION kept
     text = "carte 4242 4242 4242 4242 chez Acme"
     spans = [Span(6, 25, EntityType.CARD, 1.0, "t"), Span(31, 35, EntityType.ORGANIZATION, 1.0, "t")]
     assert pseudonymizer.add(text, spans) == "carte [CARD] chez Acme"
-    assert pseudonymizer.known_surfaces() == []
+    assert pseudonymizer.known_surfaces() == [(EntityType.CARD, "4242 4242 4242 4242")]
+
+
+def test_a_redacted_name_stays_redacted_when_the_detector_misses_it_later() -> None:
+    n = nona(names=["Kenza"], blind_to=["rappelle"], policies={EntityType.PERSON: Policy.REDACT})
+    assert n.anonymize_messages(["Kenza a appelé.", "Kenza rappelle demain."]).texts == (
+        "[PERSON] a appelé.",
+        "[PERSON] rappelle demain.",
+    )
+
+
+def test_a_kept_organization_does_not_hide_a_known_name() -> None:
+    class Clinic:
+        name = "clinic"
+        supported_types = frozenset({EntityType.ORGANIZATION})
+
+        def detect(self, doc: NormalizedDoc) -> list[Span]:
+            i = doc.original.find("Clinique")
+            return [Span(i, len(doc.original) - 1, EntityType.ORGANIZATION, 0.9, self.name)] if i >= 0 else []
+
+    n = Nona([*STRUCTURED, Names(["Ahmed Ben Salem"], blind_to=["Clinique"]), Clinic()])
+    conv = n.anonymize_messages(["Ahmed Ben Salem a appelé.", "Rendez-vous à la Clinique Ahmed Ben Salem."])
+    assert conv.texts[1] == "Rendez-vous à la Clinique PERSON_1."
+    # the same in one message: the name found there wins over the organization
+    seeing = Nona([*STRUCTURED, Names(["Ahmed Ben Salem"]), Clinic()])
+    one = seeing.anonymize_messages(["Ahmed Ben Salem a appelé de la Clinique Ahmed Ben Salem."])
+    assert one.texts == ("PERSON_1 a appelé de la Clinique PERSON_1.",)
+
+
+def test_a_typed_placeholder_glued_to_a_word_still_reserves_its_number() -> None:
+    conv = nona(names=["Sami"]).anonymize_messages(["عندPERSON_1 خبر", "Sami a appelé"])
+    assert conv.texts == ("عندPERSON_1 خبر", "PERSON_2 a appelé")
+
+
+AFFIXES = ["", "ل", "و", "وب", "_", "'", "-", "(", "«"]
+SUFFIXES = ["", "_2024", "'s", ".", ")", "»", "-"]
+
+
+@pytest.mark.parametrize(
+    ("value", "prefix", "suffix"),
+    list(
+        itertools.product(
+            ["Kenza Boukadida", "كنزة", "Sami", "22 123 456", "a@example.com"], AFFIXES, SUFFIXES
+        )
+    ),
+)
+def test_a_restored_value_never_leaks_back(value: str, prefix: str, suffix: str) -> None:
+    """ADR-0004: whatever the model glues to a placeholder, the restored text is masked again when re-sent."""
+    n = nona(names=["Kenza Boukadida", "كنزة", "Sami"], blind_to=["merci", "شكرا"])
+    first = n.anonymize_messages([f"contact : {value} ."])
+    (placeholder,) = first.mapping.placeholders
+    reply = n.restore(f"merci {prefix}{placeholder}{suffix} شكرا", first.mapping)
+    resent = n.anonymize_messages([f"contact : {value} .", reply]).texts[1]
+    assert value not in resent, (reply, resent)
 
 
 # --------------------------------------------------------------------------- look-ahead inside a message

@@ -277,10 +277,10 @@ def scores(text: str) -> list[tuple[str, float]]:
         ("Commande N° 24176705", "24176705"),  # matched on the normalized (folded) view
         ("Order 24176705 never arrived", "24176705"),
         ("order #24176705", "24176705"),
-        ("Réf: 71 234 567", "71 234 567"),
+        ("Réf: 71234567", "71234567"),
+        ("Réf. 24176705", "24176705"),  # a bare dot after the abbreviation
         ("reference number: 24176705", "24176705"),
         ("facture numéro 24176705", "24176705"),
-        ("colis 24176705", "24176705"),
         ("الطلبية رقم 24176705", "24176705"),
     ],
 )
@@ -298,6 +298,12 @@ def test_order_cue_lowers_the_score(text: str, number: str) -> None:
         "réf +216 22 123 456",  # international format is never an order number
         "order 0021622123456",
         "Tél : 22 123 456",
+        "Réf: 71 234 567",  # grouped digits are how people write phones, not order numbers
+        "facture: 22 123 456 c'est mon numéro",
+        "Pour le suivi : 22123456",  # `suivi`, `colis`, `dossier`, `ticket` introduce contacts too
+        "le livreur du colis: 22123456",
+        "commande\n22123456",  # a cue doesn't reach across a line break
+        "Merci pour la commande. 22123456 est mon whatsapp",  # a full stop is not a connector
     ],
 )
 def test_phone_without_adjacent_order_cue_keeps_full_score(text: str) -> None:
@@ -305,4 +311,4 @@ def test_phone_without_adjacent_order_cue_keeps_full_score(text: str) -> None:
 
 
 def test_order_cue_applies_to_its_own_number_only() -> None:
-    assert scores("Facture 71 234 567, Tél 22 123 456") == [("71 234 567", CUE_SCORE), ("22 123 456", 1.0)]
+    assert scores("Facture 71234567, Tél 22 123 456") == [("71234567", CUE_SCORE), ("22 123 456", 1.0)]
