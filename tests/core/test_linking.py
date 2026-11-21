@@ -193,6 +193,83 @@ def test_kept_and_redacted_values_are_not_propagated() -> None:
     assert pseudonymizer.known_surfaces() == []
 
 
+# --------------------------------------------------------------------------- look-ahead inside a message
+
+
+def test_a_bare_first_name_before_the_full_name_is_masked() -> None:
+    conv = nona(names=["Chirine Boukadida"]).anonymize_messages(["Chirine. Chirine Boukadida travaille ici."])
+    assert conv.texts == ("PERSON_1. PERSON_1 travaille ici.",)
+    assert conv.mapping.value("PERSON_1") == "Chirine Boukadida"
+
+
+def test_a_bare_surname_after_the_full_name_is_masked() -> None:
+    conv = nona(names=["Sami Trabelsi"], blind_to=["merci"]).anonymize_messages(
+        ["Sami Trabelsi a appelé, Trabelsi rappellera."]
+    )
+    assert conv.texts == ("PERSON_1 a appelé, PERSON_1 rappellera.",)
+
+
+def test_look_ahead_skips_particle_halves_lowercase_and_short_words() -> None:
+    text = "Salem et amal: Ahmed Ben Salem, et Al. amal Trabelsi."
+    conv = nona(names=["Ahmed Ben Salem", "amal Trabelsi"]).anonymize_messages([text])
+    assert conv.texts == ("Salem et amal: PERSON_1, et Al. PERSON_2.",)
+
+
+def test_look_ahead_words_become_known_forms_for_later_messages() -> None:
+    conv = nona(names=["Chirine Boukadida"], blind_to=["rappelle"]).anonymize_messages(
+        ["Chirine, Chirine Boukadida.", "rappelle Chirine"]
+    )
+    assert conv.texts == ("PERSON_1, PERSON_1.", "rappelle PERSON_1")
+
+
+def test_a_shared_first_name_found_by_look_ahead_is_ambiguous() -> None:
+    conv = nona(names=["Ahmed Karoui", "Ahmed Jlassi"]).anonymize_messages(
+        ["Ahmed Karoui et Ahmed Jlassi, puis Ahmed."]
+    )
+    assert conv.texts == ("PERSON_1 et PERSON_2, puis PERSON_3.",)
+
+
+def test_look_ahead_leaves_names_that_are_ordinary_words_to_context() -> None:
+    # `Mabrouk` is "congratulations" in Darija: only the gazetteer's context rules may decide on it alone.
+    conv = nona(names=["Mabrouk Jlassi"]).anonymize_messages(["Mabrouk ! Mabrouk Jlassi a eu son bac."])
+    assert conv.texts == ("Mabrouk ! PERSON_1 a eu son bac.",)
+
+
+def test_look_ahead_ignores_weak_person_spans() -> None:
+    class Weak:
+        name = "weak"
+        supported_types = frozenset({EntityType.PERSON})
+
+        def detect(self, doc: NormalizedDoc) -> list[Span]:
+            i = doc.original.find("Bonne Route")
+            return [Span(i, i + 11, EntityType.PERSON, 0.55, self.name)] if i >= 0 else []
+
+    conv = Nona([Weak()]).anonymize_messages(["Bonne Route ! Route barrée.", "Route libre."])
+    assert conv.texts == ("PERSON_1 ! Route barrée.", "Route libre.")
+
+
+def test_look_ahead_does_not_retype_a_detected_span() -> None:
+    class Place:
+        name = "place"
+        supported_types = frozenset({EntityType.LOCATION})
+
+        def detect(self, doc: NormalizedDoc) -> list[Span]:
+            return [
+                Span(m.start(), m.end(), EntityType.LOCATION, 0.8, self.name)
+                for m in re.finditer("Gabes", doc.original)
+            ]
+
+    n = Nona([Place(), Names(["Sami Gabes"])], policies=ALL_REVERSIBLE)
+    assert n.anonymize("Sami Gabes habite Gabes.").text == "PERSON_1 habite LOCATION_1."
+
+
+def test_allowlist_beats_look_ahead() -> None:
+    conv = nona(names=["Chirine Boukadida"], allowlist=["Chirine"]).anonymize_messages(
+        ["Chirine. Chirine Boukadida."]
+    )
+    assert conv.texts == ("Chirine. PERSON_1.",)
+
+
 def test_allowlist_beats_propagation() -> None:
     conv = nona(allowlist=["Sami"]).anonymize_messages(["Sami Trabelsi", "Sami"])
     assert conv.texts == ("PERSON_1", "Sami")
@@ -227,7 +304,7 @@ def test_message_entities_list_only_their_own_mentions() -> None:
 PIECES = [
     *" ,.?\n",
     "Ahmed", "Ahmed Ben Salem", "Ahmed Karoui", "M. Ben Salem", "Sami", "Sami Trabelsi", "Amal", "amal",
-    "Mme",
+    "Mme", "Karoui", "Trabelsi", "Salem",
     "22 123 456", "22.123.456", "98 765 432", "a@example.com", "PERSON_1", "person 2", "PHONE_1", "relancé",
     "4242 4242 4242 4242",
 ]  # fmt: skip

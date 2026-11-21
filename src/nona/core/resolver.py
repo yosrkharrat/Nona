@@ -57,7 +57,9 @@ def denylist_spans(doc: NormalizedDoc, terms: Iterable[str]) -> list[Span]:
     return spans
 
 
-def known_spans(doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]]) -> list[Span]:
+def known_spans(
+    doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]], detector: str = "propagation"
+) -> list[Span]:
     """Forward propagation (ADR-0004, step 2): each occurrence of a surface form linked in an earlier message.
 
     Multi-word forms match on the normalized view (case, spacing and digits don't matter). Single-word forms
@@ -68,12 +70,11 @@ def known_spans(doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]]) -> 
         pattern, on_normalized = _known_pattern(surface)
         if on_normalized:
             spans.extend(
-                to_span(doc, m.start(), m.end(), etype, 1.0, "propagation")
-                for m in pattern.finditer(doc.text)
+                to_span(doc, m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.text)
             )
         else:
             spans.extend(
-                Span(m.start(), m.end(), etype, 1.0, "propagation") for m in pattern.finditer(doc.original)
+                Span(m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.original)
             )
     return spans
 

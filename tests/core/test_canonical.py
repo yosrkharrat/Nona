@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nona.core.canonical import HONORIFICS, canonical_tokens, compatible
+from nona.core.canonical import HONORIFICS, canonical_tokens, compatible, name_words
 
 
 def toks(*words: str) -> frozenset[str]:
@@ -78,3 +78,40 @@ def test_canonical_tokens_is_total_and_honorific_free(text: str) -> None:
 def test_case_and_honorific_prefix_dont_change_tokens(text: str) -> None:
     assert canonical_tokens(text.upper()) == canonical_tokens(text)
     assert canonical_tokens("M. " + text) == canonical_tokens(text)
+
+
+# --------------------------------------------------------------------------- name words (look-ahead)
+
+
+@pytest.mark.parametrize(
+    ("surface", "expected"),
+    [
+        ("Chirine Boukadida", ["Chirine", "Boukadida"]),
+        ("Mme Chirine Boukadida", ["Chirine", "Boukadida"]),  # the honorific names no one
+        ("Ahmed Ben Salem", ["Ahmed"]),  # `Salem` alone is not `bensalem`, and `Ben` is a particle
+        ("Ahmed Ben-Salem", ["Ahmed"]),
+        ("SAMI TRABELSI", ["SAMI", "TRABELSI"]),
+        ("amal trabelsi", []),  # lowercase Latin words are as likely ordinary words
+        ("Sami", []),  # the whole mention is already a span
+        ("Al Jaziri", []),  # `al` is a particle: the surname is `aljaziri`
+        ("Mohamed Ali", ["Mohamed", "Ali"]),
+        ("Ali Ali", ["Ali"]),
+        ("سامي الطرابلسي", ["سامي", "الطرابلسي"]),  # no case in Arabic script
+        ("Che\u0301rine Boukadida", ["Che\u0301rine", "Boukadida"]),  # NFD accent, as macOS may send it
+        ("مُحَمَّد الطرابلسي", ["مُحَمَّد", "الطرابلسي"]),  # harakat
+        ("Sami O'Brien", ["Sami", "O'Brien"]),  # an elision stays whole: no bare `Brien`
+        ("Jean-Pierre Dupont", ["Jean", "Pierre", "Dupont"]),
+        ("PERSON_1 Trabelsi", ["Trabelsi"]),  # a typed placeholder is not a name word
+    ],
+)
+def test_name_words(surface: str, expected: list[str]) -> None:
+    assert name_words(surface) == expected
+
+
+@given(st.text(max_size=40))
+def test_name_words_are_words_of_the_mention_inside_its_tokens(text: str) -> None:
+    whole = canonical_tokens(text)
+    for word in name_words(text):
+        assert word in text
+        assert canonical_tokens(word) <= whole
+        assert len(word) >= 3

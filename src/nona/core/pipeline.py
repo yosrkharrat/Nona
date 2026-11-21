@@ -2,7 +2,8 @@
 
 `anonymize_messages` is the conversation-level path the proxy uses (ADR-0004): messages are processed in
 order, every surface form linked in an earlier message is searched for again (forward propagation), and
-placeholders issued for a message never change whatever comes after it.
+placeholders issued for a message never change whatever comes after it. Inside a message, the name words of
+each detected PERSON are searched for too (look-ahead), so `Chirine. Chirine Boukadida…` masks both.
 
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
@@ -13,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
+from nona.core.canonical import canonical_tokens, name_words
 from nona.core.normalize import normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
@@ -24,8 +26,13 @@ from nona.core.pseudonymize import (
     restore,
 )
 from nona.core.recognizers import Recognizer, default_recognizers
+from nona.core.recognizers.gazetteer import COMMON
 from nona.core.resolver import denylist_spans, known_spans, resolve
 from nona.core.types import EntityType, Span
+
+# Look-ahead only takes the words of a confident PERSON span, so one weak false positive can't spread its
+# words over the rest of the conversation (they become known forms).
+LOOK_AHEAD_MIN_SCORE = 0.8
 
 
 class DetectorError(RuntimeError):
@@ -72,7 +79,24 @@ class Nona:
                 candidates.extend(recognizer.detect(doc))
             except Exception as exc:
                 raise DetectorError(recognizer.name) from exc
-        return resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+        spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+        # Look-ahead (ADR-0004, step 4): a bare first name before the full name in the same message.
+        # Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left to the
+        # gazetteer's context rules: `Mabrouk ! Mabrouk Jlassi a eu son bac` keeps its first `Mabrouk`.
+        # It only fills gaps: a word already covered by any span (a place, an organization) is left alone.
+        words = [
+            (EntityType.PERSON, word)
+            for s in spans
+            if s.type is EntityType.PERSON and s.score >= LOOK_AHEAD_MIN_SCORE
+            for word in name_words(s.text_in(text))
+            if not canonical_tokens(word) & COMMON
+        ]
+        extra = [
+            c for c in known_spans(doc, words, detector="look-ahead") if not any(c.overlaps(s) for s in spans)
+        ]
+        if not extra:
+            return spans
+        return resolve([*spans, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
 
     def anonymize(self, text: str) -> Anonymized:
         return self.anonymize_messages([text]).messages[0]

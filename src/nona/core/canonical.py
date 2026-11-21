@@ -147,6 +147,35 @@ def canonical_tokens(surface: str) -> frozenset[str]:
     return frozenset(VARIANTS.get(t, t) for t in tokens) - HONORIFICS
 
 
+# A word as written: letters with their combining marks (NFD accents, Arabic harakat and tatweel), and
+# apostrophe elisions kept whole (`O'Brien`). Hyphens separate words (`Jean-Pierre`, `Ben-Salem`).
+_MARKS = "\u0300-\u036f\u0610-\u061a\u0640\u064b-\u065f\u0670"
+_NAME_WORD = re.compile(rf"[\w{_MARKS}]+(?:[{_APOSTROPHES}][\w{_MARKS}]+)*")
+
+
+def name_words(surface: str) -> list[str]:
+    """Words of a PERSON mention that name the same person on their own, as written (ADR-0004, look-ahead).
+
+    `Chirine` and `Boukadida` in `Mme Chirine Boukadida`. A word qualifies when its own token set is inside
+    the mention's, so honorifics, particles and the half of a glued surname (`Salem` in `Ben Salem` is not
+    `bensalem`) don't, nor half of an elision (`Brien` in `O'Brien`). Skipped: words with fewer than 3
+    letters, all-lowercase Latin words (a lowercase `amal` is as likely the word "hope"), and anything with a
+    digit or an underscore (a typed placeholder such as `PERSON_1`).
+    """
+    whole = canonical_tokens(surface)
+    out: list[str] = []
+    for word in _NAME_WORD.findall(surface):
+        letters = sum(c.isalpha() for c in word)
+        if letters < 3 or word.islower() or word == surface.strip():
+            continue
+        if "_" in word or any(c.isdigit() for c in word):
+            continue
+        tokens = canonical_tokens(word)
+        if tokens and tokens <= whole and word not in out:
+            out.append(word)
+    return out
+
+
 def compatible(a: frozenset[str], b: frozenset[str]) -> bool:
     """Two non-empty token sets that one contains the other (ADR-0004, step 4)."""
     return bool(a) and bool(b) and (a <= b or b <= a)
