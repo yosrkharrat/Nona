@@ -32,6 +32,7 @@ English-trained NER models see `m3a` and `3andi` as noise and mis-tag names next
 - **Fixed:** `7x` and `30`–`32`.
 - **Fax:** a fax line is an ordinary fixed line, so a fax number is masked like any phone. Only the context (`Fax :`, `فاكس`) says it's a fax.
 - **Service numbers are skipped:** toll-free `8010…`, shared cost `8110…`/`8210…` and premium rate `88…` identify a company, not a person (`include_service_numbers=True` masks them anyway).
+- **Order numbers aren't phones.** An 8-digit order number is often a valid mobile. A number in national format right after an order cue (`commande`, `réf`, `order`, `facture`, `الطلبية`…, with only `n°`, `#`, `:` in between) gets a score below the threshold. The cue must be adjacent: in `envoie la facture au 22 123 456` the number is a phone.
 - **`+216 (0)71 234 567` is found.** The `(0)` is a French habit that is wrong for Tunisia, and libphonenumber rejects it, but people write it, and a miss would be a leak.
 
 **Tricky cases to put in tests from day one:**
