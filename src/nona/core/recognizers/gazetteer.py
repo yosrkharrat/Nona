@@ -73,6 +73,17 @@ FIRST = _keys(data.FIRST_NAMES_TN + data.FIRST_NAMES_FR_EN) | _keys(
 )
 LAST = _keys(data.SURNAMES_TN) | _keys(tuple(n for n in data.NAMES_AR if " " in n or n.startswith("ال")))
 COMMON = _keys(data.COMMON_WORDS)
+# An Arabic name shares its Latin form's key (`كريم` → `karim`, to link across scripts), but whether it is an
+# ordinary word depends on the script: `Karim` is "generous" in Darija written in Latin letters, yet the list
+# only says so for the Arabic forms it names. Arabic-script words use this set.
+COMMON_AR = _keys(tuple(w for w in data.COMMON_WORDS if any("\u0600" <= c <= "\u06ff" for c in w)))
+
+
+def common(key: str | None, cased: bool) -> bool:
+    """Whether a listed name is also an ordinary word, in a script with capitals (`cased`) or without."""
+    return key in (COMMON if cased else COMMON_AR)
+
+
 NAMES = FIRST | LAST
 
 # Honorifics that are also ordinary words in another language: weak cues only. `M.` is strong once its dot
@@ -309,7 +320,7 @@ def _cue(doc: NormalizedDoc, words: list[_Word], i: int) -> str:
 
 def _score(run: list[_Word], cue: str) -> float:
     listed = [w for w in run if w.name]
-    common_only = bool(listed) and all(w.key in COMMON for w in listed)
+    common_only = bool(listed) and all(common(w.key, w.cap is not None) for w in listed)
     if cue == "strong":
         return 0.95
     if not listed:

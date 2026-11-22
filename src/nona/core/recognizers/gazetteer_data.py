@@ -61,7 +61,7 @@ SURNAMES_TN: tuple[str, ...] = (
     "Snoussi", "Souissi", "Tlili", "Toumi", "Trabelsi", "Triki", "Yahyaoui", "Zaier", "Zouari", "Zribi",
 )  # fmt: skip
 
-# Arabic script. Common names whose Latin form is in `canonical.VARIANTS` link across scripts.
+# Arabic script. Each has its Latin form in `canonical.VARIANTS`, so it links across scripts (tested).
 NAMES_AR: tuple[str, ...] = (
     "أحمد", "محمد", "علي", "سامي", "يوسف", "محمود", "عمر", "حمزة", "كريم", "مهدي", "أمين", "ياسين", "خالد",
     "هشام", "وليد", "منصف", "نبيل", "طارق", "عبدالله", "صالح", "سليم", "فاطمة", "خديجة", "مريم", "أمال",

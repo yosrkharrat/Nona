@@ -6,7 +6,9 @@ CIN on the same 8 digits). The resolver:
 1. drops spans below `min_score`, and spans whose text is on the allowlist (FR-5);
 2. adds every denylist term as a `CUSTOM` span (FR-5), and every known surface form from earlier messages of
    the conversation (forward propagation, ADR-0004);
-3. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
+3. cuts every span at a placeholder the user typed (`Sami Trabelsi PERSON_1` → `Sami Trabelsi`): a detection
+   that swallowed one would replace it, and its text would end up in the mapping;
+4. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -18,7 +20,7 @@ import functools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.boundaries import LEFT, LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, RIGHT
+from nona.core.boundaries import LEFT, LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, RIGHT, TYPED_PLACEHOLDER
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -100,6 +102,28 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
     return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
 
 
+def _outside(span: Span, original: str, holes: Sequence[tuple[int, int]]) -> Span | None:
+    """The span cut back to the text before the first placeholder it overlaps (or after one at its start),
+    spaces trimmed. `None` if nothing is left."""
+    start, end = span.start, span.end
+    for h_start, h_end in holes:
+        if h_end <= start or end <= h_start:
+            continue
+        if start < h_start:
+            end = h_start
+            break
+        start = h_end
+    while start < end and original[start].isspace():
+        start += 1
+    while end > start and original[end - 1].isspace():
+        end -= 1
+    if start >= end:
+        return None
+    if (start, end) == (span.start, span.end):
+        return span
+    return Span(start, end, span.type, span.score, span.detector)
+
+
 def resolve(
     spans: Iterable[Span],
     original: str,
@@ -109,7 +133,11 @@ def resolve(
 ) -> list[Span]:
     """Non-overlapping spans, sorted by position. `original` is the text the spans index into."""
     allowed = {_fold(term) for term in allowlist}
-    candidates = [s for s in spans if s.score >= min_score and _fold(s.text_in(original)) not in allowed]
+    holes = [m.span() for m in TYPED_PLACEHOLDER.finditer(original)]
+    cut = [_outside(s, original, holes) for s in spans] if holes else list(spans)
+    candidates = [
+        s for s in cut if s is not None and s.score >= min_score and _fold(s.text_in(original)) not in allowed
+    ]
     kept: list[Span] = []
     for span in sorted(candidates, key=_rank):
         if not any(span.overlaps(k) for k in kept):

@@ -238,3 +238,24 @@ def test_abdel_alone_is_a_first_name() -> None:
     assert canonical_tokens("Abdel Trabelsi") == {"abdel", "trabelsi"}
     assert compatible(canonical_tokens("Abdel Ben Salem"), canonical_tokens("M. Ben Salem"))
     assert canonical_tokens("Abdou Rahman") == {"abdourahman"}
+
+
+# --------------------------------------------------------------------------- variants (#55)
+
+VARIANT_PAIRS = [
+    ("Rym", "Rim"), ("Syrine", "Cyrine"), ("Yassine", "Yacine"), ("Sofiene", "Sofien"), ("Jlassi", "Jelassi"),
+    ("Labidi", "Laabidi"), ("Chedly", "Chedli"), ("Wassim", "Ouassim"), ("Qais", "Kais"), ("Mahdi", "Mehdi"),
+    ("كريم", "Karim"), ("مهدي", "Mehdi"), ("ياسين", "Yassine"), ("خالد", "Khaled"), ("حمزة", "Hamza"),
+    ("أيوب", "Ayoub"), ("أمل", "Amel"), ("الطرابلسي", "Trabelsi"), ("بن علي", "Ben Ali"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("a", "b"), VARIANT_PAIRS)
+def test_spelling_variants_and_scripts_unify(a: str, b: str) -> None:
+    assert canonical_tokens(a) == canonical_tokens(b)
+
+
+def test_every_arabic_list_name_has_a_latin_form() -> None:
+    from nona.core.recognizers.gazetteer_data import NAMES_AR
+
+    assert [n for n in NAMES_AR if not all(t.isascii() for t in canonical_tokens(n))] == []

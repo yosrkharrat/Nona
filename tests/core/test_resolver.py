@@ -88,3 +88,23 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
     shuffled = spans[:]
     rng.shuffle(shuffled)
     assert resolve(shuffled, TEXT) == result
+
+
+def test_a_span_is_cut_at_a_typed_placeholder() -> None:
+    text = "Écris à Sami Trabelsi PERSON_1 stp."
+    start = text.index("Sami")
+    swallowing = Span(start, text.index(" stp"), EntityType.PERSON, 0.9, "g")
+    assert [s.text_in(text) for s in resolve([swallowing], text)] == ["Sami Trabelsi"]
+    inside = Span(text.index("PERSON"), text.index("_1"), EntityType.PERSON, 0.95, "g")
+    assert resolve([inside], text) == []
+    after = "PERSON_1 Trabelsi"
+    assert [s.text_in(after) for s in resolve([Span(0, len(after), EntityType.PERSON, 0.9, "g")], after)] == [
+        "Trabelsi"
+    ]
+
+
+def test_loose_placeholder_lookalikes_are_not_cut() -> None:
+    # `card 4242…` and `RIB 0812…` read as `CARD_n` and `RIB_n` with the loose pattern: they are real values.
+    for text in ["card 4242424242424242", "RIB 08123456789012345678"]:
+        span = Span(text.index(" ") + 1, len(text), EntityType.CARD, 1.0, "c")
+        assert resolve([span], text) == [span]
