@@ -240,3 +240,16 @@ def test_review_cases_of_56(text: str, expected: list[tuple[str, EntityType]]) -
 @pytest.mark.parametrize("text", ["Mabrouk Alik", "Mabrouk, 3lik", "Mabrouk 3alikom", "2 M. DT"])
 def test_more_blessings_and_amounts(text: str) -> None:
     assert kept(text) == []
+
+
+def test_city_matching_is_linear() -> None:
+    """Each city match was compared with every earlier one (#57): 100k characters of cities took 7 s."""
+    small = "Tunis Sfax Sousse Gabès Paris et Nabeul, " * 100
+    large = small * 10
+    recognizer = GazetteerRecognizer()
+    timings = []
+    for text in (small, large):
+        start = time.perf_counter()
+        recognizer.detect(normalize(text))
+        timings.append(time.perf_counter() - start)
+    assert timings[1] < timings[0] * 30  # 10x the text; quadratic would be ~100x

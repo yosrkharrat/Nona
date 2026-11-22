@@ -210,8 +210,11 @@ def _abd_glue(words: list[str], i: int) -> bool:
     return nxt in DIVINE_NAMES
 
 
-def _glued(surface: str) -> list[tuple[str, str, str]]:
-    """`(token, particles, word)` per token of a mention: `ben salem` → `("bensalem", "ben", "salem")`."""
+@functools.lru_cache(maxsize=8192)
+def _glued(surface: str) -> tuple[tuple[str, str, str], ...]:
+    """`(token, particles, word)` per token of a mention: `ben salem` → `("bensalem", "ben", "salem")`.
+
+    Cached: linking asks for the same surface forms after every message (owners, `canonical_tokens`)."""
     words = [w for w in map(_de_arabizi, _words(surface)) if w and w not in HONORIFICS]
     out: list[tuple[str, str, str]] = []
     glue = ""
@@ -223,7 +226,7 @@ def _glued(surface: str) -> list[tuple[str, str, str]]:
         if token not in HONORIFICS:
             out.append((token, glue, word))
         glue = ""
-    return out
+    return tuple(out)
 
 
 def canonical_tokens(surface: str) -> frozenset[str]:
@@ -285,7 +288,8 @@ _DIGITS = "0123456789"
 Splits = dict[str, tuple[str, str]]  # glued token → (particles, word), from `glued_parts`
 
 
-def _handle_pieces(handle: str) -> list[str]:
+@functools.lru_cache(maxsize=4096)
+def _handle_pieces(handle: str) -> tuple[str, ...]:
     """Letters of each piece of a local part or handle.
 
     A `+tag` is dropped (`ahmed+devis`). Runs of 2+ digits at either end are a year or a counter (`sami92`,
@@ -302,9 +306,10 @@ def _handle_pieces(handle: str) -> list[str]:
         letters = "".join(c for c in _de_arabizi(folded) if c.isalpha())
         if letters:
             out.append(letters)
-    return out
+    return tuple(out)
 
 
+@functools.lru_cache(maxsize=4096)
 def _units(token: str, split: tuple[str, str] | None) -> tuple[frozenset[str], frozenset[str]]:
     """How a handle may write one canonical token: in full, and as initials.
 
@@ -346,14 +351,23 @@ def _spells(letters: str, units: list[tuple[frozenset[str], frozenset[str]]], ev
     return fits(0, 0, False)
 
 
+_FrozenSplits = tuple[tuple[str, tuple[str, str]], ...]
+
+
+def _freeze(tokens: frozenset[str], splits: Splits | None) -> _FrozenSplits:
+    """The splits that matter for these tokens, hashable, so results can be cached."""
+    return tuple(sorted((t, s) for t, s in (splits or {}).items() if t in tokens))
+
+
 def _prepare(
-    handle: str, tokens: frozenset[str], splits: Splits | None
-) -> tuple[list[str], list[tuple[frozenset[str], frozenset[str]]]] | None:
+    handle: str, tokens: frozenset[str], splits: _FrozenSplits
+) -> tuple[tuple[str, ...], list[tuple[frozenset[str], frozenset[str]]]] | None:
     pieces = _handle_pieces(handle)
     ordered = sorted(tokens)
     if not pieces or not ordered or len(ordered) > 8 or sum(map(len, pieces)) > _MAX_LETTERS:
         return None
-    return pieces, [_units(t, (splits or {}).get(t)) for t in ordered]
+    by_token = dict(splits)
+    return pieces, [_units(t, by_token.get(t)) for t in ordered]
 
 
 def handle_matches(
@@ -370,7 +384,14 @@ def handle_matches(
     pieces that aren't the person's can be left out, if the other pieces cover **every** token. So
     `wassim.ferchichi` fits someone known as `Wassim`, while `sami.jlassi` doesn't fit `Sami Trabelsi`. At
     most 6 pieces are searched that way.
+
+    Pure, so cached: linking asks again after every message, and the proxy re-runs whole conversations.
     """
+    return _handle_matches(handle, tokens, _freeze(tokens, splits), superset)
+
+
+@functools.lru_cache(maxsize=16384)
+def _handle_matches(handle: str, tokens: frozenset[str], splits: _FrozenSplits, superset: bool) -> bool:
     prepared = _prepare(handle, tokens, splits)
     if prepared is None:
         return False
@@ -389,6 +410,11 @@ def handle_matches(
 
 def handle_names(handle: str, tokens: frozenset[str], splits: Splits | None = None) -> bool:
     """Whether one separated piece of the handle is a name part of this person, written in full."""
+    return _handle_names(handle, tokens, _freeze(tokens, splits))
+
+
+@functools.lru_cache(maxsize=16384)
+def _handle_names(handle: str, tokens: frozenset[str], splits: _FrozenSplits) -> bool:
     prepared = _prepare(handle, tokens, splits)
     if prepared is None:
         return False

@@ -130,6 +130,9 @@ class Linker:
         self._reserved: dict[EntityType, set[int]] = {}
         self._owners: dict[int, LinkedEntity] = {}  # id(email entity) → its person
         self._final: set[int] = set()  # ids of emails whose owner is an exact spelling: never changes
+        # Incremental owners: per email, how it matches each person; per person, the version last matched
+        self._matches: dict[int, dict[int, tuple[bool, bool, bool]]] = {}
+        self._versions: dict[int, tuple[frozenset[str], int]] = {}
 
     @property
     def entities(self) -> tuple[LinkedEntity, ...]:
@@ -190,29 +193,54 @@ class Linker:
         return self._owners.get(id(entity))
 
     def _assign_owners(self) -> None:
-        people = [
-            e
+        """Decide the owner of every email not settled yet. Incremental: each email keeps how it matches each
+        person, and only new emails, or people whose tokens or forms changed, are matched again. Deciding is
+        then a scan of booleans, so a conversation costs O(messages * emails * people) cheap steps, with the
+        expensive handle matching done once per (email, person version)."""
+        people = {
+            id(e): e
             for e in self._entities
             if e.type is EntityType.PERSON and e.tokens and not e.ambiguous and not e.literal
-        ]
-        splits = {id(p): _splits(p) for p in people}
+        }
+        versions = {pid: (p.tokens, len(p.surfaces)) for pid, p in people.items()}
+        changed = [pid for pid, v in versions.items() if self._versions.get(pid) != v]
+        gone = [pid for pid in self._versions if pid not in people]
+        self._versions = versions
+        splits = {pid: _splits(people[pid]) for pid in changed}
         for entity in self._entities:
             if entity.type is not EntityType.EMAIL or entity.literal or id(entity) in self._final:
                 continue
-            self._owners.pop(id(entity), None)  # a provisional owner is decided again
             local = entity.key.rsplit("@", 1)[0]
-            exact = [p for p in people if handle_matches(local, p.tokens, splits[id(p)], superset=False)]
+            new_email = id(entity) not in self._matches
+            matches = self._matches.setdefault(id(entity), {})
+            if not new_email and not changed and not gone:
+                continue  # nothing it depends on changed
+            for pid in gone:
+                matches.pop(pid, None)
+            for pid in people if new_email else changed:
+                person = people[pid]
+                sp = splits.get(pid)
+                if sp is None:
+                    sp = splits[pid] = _splits(person)
+                matches[pid] = (
+                    handle_matches(local, person.tokens, sp, superset=False),
+                    handle_matches(local, person.tokens, sp),
+                    handle_names(local, person.tokens, sp),
+                )
+            self._owners.pop(id(entity), None)  # a provisional owner is decided again
+            exact = [pid for pid, (e, _, _) in matches.items() if e]
             if exact:
                 if len(exact) == 1:
-                    self._owners[id(entity)] = exact[0]
+                    self._owners[id(entity)] = people[exact[0]]
                     self._final.add(id(entity))
+                    del self._matches[id(entity)]
                 continue
-            loose = [p for p in people if handle_matches(local, p.tokens, splits[id(p)])]
+            loose = [pid for pid, (_, lo, _) in matches.items() if lo]
             if len(loose) != 1:
                 continue
-            if any(handle_names(local, q.tokens, splits[id(q)]) for q in people if q is not loose[0]):
+            if any(names for pid, (_, _, names) in matches.items() if pid != loose[0]):
                 continue  # the extra piece names someone else in the conversation
-            self._owners[id(entity)] = loose[0]
+            self._owners[id(entity)] = people[loose[0]]
 
     def issued(self, etype: EntityType, number: int) -> bool:
         return any(e.type is etype and e.number == number for e in self._entities)

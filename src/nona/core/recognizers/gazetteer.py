@@ -243,8 +243,10 @@ class GazetteerRecognizer:
 
     def detect(self, doc: NormalizedDoc) -> list[Span]:
         places = _cities(doc)
-        taken = [(s, e) for s, e, _ in places]
-        words = [w for w in _words(doc) if not any(s < w.end and w.start < e for s, e in taken)]
+        taken = bytearray(len(doc.text) + 1)  # 1 where a city is: overlap checks in O(word length)
+        for s, e, _ in places:
+            taken[s:e] = b"\x01" * (e - s)
+        words = [w for w in _words(doc) if not any(taken[w.start : w.end])]
         spans = [to_span(doc, s, e, EntityType.LOCATION, score, self.name) for s, e, score in places]
         i = 0
         while i < len(words):
@@ -414,11 +416,13 @@ def _unaccent(text: str) -> str:
 
 
 def _cities(doc: NormalizedDoc) -> list[tuple[int, int, float]]:
-    """Non-overlapping city matches, longest first: (normalized start, end, score)."""
+    """Non-overlapping city matches, longest first: (normalized start, end, score). Linear in the text length
+    times the number of patterns: each match is checked against a per-character mask, not earlier matches."""
     found: list[tuple[int, int, float]] = []
+    taken = bytearray(len(doc.text) + 1)
     for pattern, is_common in _city_patterns():
         for m in pattern.finditer(doc.text):
-            if any(m.start() < e and s < m.end() for s, e, _ in found):
+            if any(taken[m.start() : m.end()]):
                 continue
             o_start, _ = doc.to_original(m.start(), m.end())
             first = doc.original[o_start]
@@ -427,4 +431,5 @@ def _cities(doc: NormalizedDoc) -> list[tuple[int, int, float]]:
             if is_common and _initial(doc.original, o_start):
                 continue
             found.append((m.start(), m.end(), 0.8))
+            taken[m.start() : m.end()] = b"\x01" * (m.end() - m.start())
     return sorted(found)
