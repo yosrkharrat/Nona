@@ -25,7 +25,7 @@ English-trained NER models see `m3a` and `3andi` as noise and mis-tag names next
 | 1. Structured recognizers | email, phone, IBAN, RIB, card, IP, CIN | Regex **plus validation** (mod-97, Luhn, `phonenumbers`). The CIN is "8 digits", which collides with prices and order numbers, so it needs a context word within ±5 tokens (`cin`, `carte d'identité`, `بطاقة`, `ب.ت.و`, `carte`) or it scores low |
 | 2. GLiNER (multilingual) | PERSON, LOCATION, ORG | Run on the original text and on the de-Arabizi'd view, then union the results. Candidates: `gliner_multi-v2.1`, `gliner_multi_pii-v1`. Pick on the dev set |
 | 3. Gazetteers | Tunisian / Maghrebi first names, surnames, cities | Matched in Latin (several spellings: `Mohamed/Mohammed/Med`), Arabic script, and Arabizi. This layer covers what GLiNER misses in Arabizi |
-| 4. Context rules | honorifics and cues: `M.`, `Mme`, `Dr`, `si`, `sidi`, `khalti`, `3amm`, `m3a`, `ism-ou` | Raise the score of the following capitalized token or gazetteer hit |
+| 4. Context rules | strong cues (`M.`, `Mme`, `Dr`, `sidi`, `khalti`, `3amm`, `ism-ou`) start a name on the next capitalized token; weak ones (`si`, `3am`, `m3a`, `ena`, greetings) only lift a gazetteer hit (#56) | Raise the score of the following capitalized token or gazetteer hit |
 
 Layers 3 and 4 are implemented in [`core/recognizers/gazetteer.py`](../../src/nona/core/recognizers/gazetteer.py) (S3, #37): words are compared by canonical token (so one entry covers `Mohamed`/`Med`/`محمد`), names extend into *runs* (`Ahmed Ben Salem`, `Ahmed Karoui`), strong cues (`Mme`, `Dr`, `sidi`, `esmou`) and weak ones (`si`, greetings) set the score, and cities are LOCATION spans. The score table is in the module docstring.
 

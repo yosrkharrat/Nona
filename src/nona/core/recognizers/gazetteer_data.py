@@ -81,6 +81,8 @@ COMMON_WORDS: tuple[str, ...] = (
     "Sana", "Salah", "Aziz", "Karim", "Amel", "Fares", "Kamel", "Hassen", "Adel", "Amine", "Habib", "Hedi",
     "Imen", "Houda", "Rim", "Faten", "Selim", "Slim", "Ridha", "Najet", "Jamel", "Nabil", "Khaled",
     "Sabrine", "Mounir", "Monia", "Hanen", "Latifa", "Jalel",
+    # `sahbi` (my friend), `saber` (patient), `seif` (summer, sword), `anouar` (lights)
+    "Sahbi", "Saber", "Seif", "Anouar",
 )  # fmt: skip
 
 CITIES: tuple[str, ...] = (

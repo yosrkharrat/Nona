@@ -114,3 +114,9 @@ def test_a_placeholder_inside_a_span_leaves_both_sides() -> None:
     text = "Sami PERSON_1 Trabelsi"
     span = Span(0, len(text), EntityType.PERSON, 0.9, "ner")
     assert [s.text_in(text) for s in resolve([span], text)] == ["Sami", "Trabelsi"]
+
+
+def test_a_structured_value_holding_a_placeholder_shape_is_not_cut() -> None:
+    text = "PERSON_1@example.com"
+    email = Span(0, len(text), EntityType.EMAIL, 1.0, "email")
+    assert resolve([email], text) == [email]

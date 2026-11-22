@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from nona import Nona as TopLevelNona
@@ -101,6 +101,7 @@ def canonical_form(text: str, result: Anonymized) -> str:
 
 
 @given(texts)
+@example("PERSON_1@example.com")  # an email whose local part looks like a placeholder
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
     so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone)."""
