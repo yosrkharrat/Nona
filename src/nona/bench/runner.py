@@ -9,6 +9,7 @@ Outputs, per system:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import platform
 from collections.abc import Sequence
@@ -21,6 +22,10 @@ from nona.bench.dataset import Conversation, dataset_hash, load_jsonl
 from nona.bench.metrics import DIRECT_IDENTIFIERS, Linking, Outcome, Rate, Report, evaluate
 from nona.bench.systems import System
 from nona.core import EntityType
+
+# The repository root, when running from a checkout: dataset paths in the summary are written relative to it,
+# so the summary doesn't depend on the directory `nona bench` was run from.
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Short column headers, so the table fits in a terminal.
 _ABBREVIATIONS = {
@@ -43,10 +48,37 @@ class Run:
         return dataset_hash(self.conversations)
 
 
+def requests(system: System, conversation: Conversation) -> list[list[str]]:
+    """What the upstream receives in each request of the stateless flow (ADR-0002): request `k` re-sends
+    turns `0..k`, computed from them only. So every copy of a turn is causal, and every copy is scored."""
+    return [
+        list(system.payloads(dataclasses.replace(conversation, turns=conversation.turns[: k + 1])))
+        for k in range(len(conversation.turns))
+    ]
+
+
+def causal_payloads(system: System, conversation: Conversation) -> list[str]:
+    """Turn `i` as first sent, from turns `0..i` only (ADR-0004): a system that looks ahead gains nothing."""
+    return [request[k] for k, request in enumerate(requests(system, conversation))]
+
+
 def run(system: System, split: str, dataset: Path) -> Run:
     conversations = load_jsonl(dataset)
-    results = [evaluate(c, system.payloads(c)) for c in conversations]
+    results = []
+    for c in conversations:
+        sent = requests(system, c)
+        last = sent[-1] if sent else []
+        copies = [[request[i] for request in sent[i:]] for i in range(len(c.turns))]
+        results.append(evaluate(c, last, copies))
     return Run(system.name, split, dataset, conversations, Report.from_results(results))
+
+
+def _display_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _rate_json(rate: Rate) -> dict[str, Any]:
@@ -57,6 +89,7 @@ def _rate_json(rate: Rate) -> dict[str, Any]:
 def _linking_json(linking: Linking) -> dict[str, Any]:
     return {
         "mentions_with_placeholder": _rate_json(linking.placed),
+        "partly_leaking": _rate_json(linking.partly_leaking),
         "wrong_merge": _rate_json(linking.wrong_merge),
         "wrong_split": _rate_json(linking.wrong_split),
         "ambiguity": _rate_json(linking.ambiguity),
@@ -77,16 +110,19 @@ def summary(r: Run) -> dict[str, Any]:
         "system": r.system,
         "split": r.split,
         "dataset": {
-            "path": r.dataset.as_posix(),
+            "path": _display_path(r.dataset),
             "sha256": r.dataset_sha256,
             "conversations": len(r.conversations),
             "turns": sum(len(c.turns) for c in r.conversations),
             "mentions": len(report.mentions),
         },
         "nona_version": __version__,
-        "python": platform.python_version(),
+        "python": ".".join(platform.python_version_tuple()[:2]),
         "leak_rate": _rate_json(report.headline),
+        "obfuscated_rate": _rate_json(report.obfuscated),
         "partial_leak_rate": _rate_json(report.partial),
+        "deleted_rate": _rate_json(report.deleted),
+        "held_out_person_leak_rate": _rate_json(report.held_out),
         "assistant_turn_leak_rate": _rate_json(report.assistant),
         "location_organization_leak_rate": _rate_json(report.location_organization),
         "over_masking": {
@@ -138,17 +174,21 @@ def format_table(r: Run) -> str:
         fmt(rows[-1]),
         "",
         f"Leak rate, direct identifiers   {report.headline}",
+        f"  of which obfuscated           {report.obfuscated}",
         f"Partial leak rate               {report.partial}",
+        f"Deleted (no placeholder)        {report.deleted}",
+        f"Leak rate, PERSON held out      {report.held_out}",
         f"Leak rate, assistant turns      {report.assistant}",
         f"Leak rate, LOCATION and ORG     {report.location_organization}",
         f"Over-masking, non-PII tokens    {report.masked_tokens}",
         f"Over-masking, distractors       {report.masked_distractors}",
         "",
-        "Linking (all roles, ambiguous mentions skipped)   all types / PERSON",
+        "Linking (all roles, ambiguous and partly leaking mentions skipped)   all types / PERSON",
     ]
     linked, people = report.linking(), report.linking((EntityType.PERSON,))
     for label, field in (
         ("Mentions with a placeholder", "placed"),
+        ("  of which partly leaking", "partly_leaking"),
         ("Wrong merge, entities", "wrong_merge"),
         ("Wrong split, entities", "wrong_split"),
         ("Ambiguity, later mentions", "ambiguity"),
