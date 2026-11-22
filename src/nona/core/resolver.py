@@ -6,9 +6,10 @@ CIN on the same 8 digits). The resolver:
 1. drops spans below `min_score`, and spans whose text is on the allowlist (FR-5);
 2. adds every denylist term as a `CUSTOM` span (FR-5), and every known surface form from earlier messages of
    the conversation (forward propagation, ADR-0004);
-3. cuts every span at a placeholder the user typed (`Sami Trabelsi PERSON_1` → `Sami Trabelsi`; `Sami PERSON_1
-   Trabelsi` → `Sami` and `Trabelsi`): a detection that swallowed one would replace it, and its text would end
-   up in the mapping;
+3. cuts every name span (PERSON, LOCATION, ORGANIZATION, CUSTOM) at a placeholder the user typed
+   (`Sami Trabelsi PERSON_1` → `Sami Trabelsi`; `Sami PERSON_1 Trabelsi` → `Sami` and `Trabelsi`): a detection
+   that swallowed one would replace it, and its text would end up in the mapping. A structured value is never
+   cut: `PERSON_1@example.com` is one email;
 4. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
@@ -142,7 +143,12 @@ def resolve(
     spans = list(spans)
     holes = placeholder_holes(original)
     if holes:
-        spans = [piece for s in spans for piece in cut_at_placeholders(s, original, holes)]
+        # Only names: cutting `PERSON_1@example.com` would leave `@example.com`, which can't round-trip.
+        spans = [
+            piece
+            for s in spans
+            for piece in (cut_at_placeholders(s, original, holes) if s.type in NAME_TYPES else [s])
+        ]
     candidates = [s for s in spans if s.score >= min_score and _fold(s.text_in(original)) not in allowed]
     kept: list[Span] = []
     for span in sorted(candidates, key=_rank):

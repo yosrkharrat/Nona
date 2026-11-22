@@ -52,7 +52,8 @@ def test_gazetteer_names(text: str, expected: list[tuple[str, EntityType]]) -> N
         ("khalti Zina jet", [("Zina", P)]),
         ("My name is Emily Stone", [("Emily Stone", P)]),
         ("je m'appelle Kenza Haddad", [("Kenza Haddad", P)]),
-        ("3andi rdv m3a Ghofrane", [("Ghofrane", P)]),
+        ("3andi rdv m3a Sami", [("Sami", P)]),  # `m3a` is a weak cue (#56): listed names only
+        ("3andi rdv m3a Ghofrane", []),  # an unlisted name after it is left to S4's model
         ("Merci Skander", [("Skander", P)]),  # weak cue, listed name
         ("السيدة سعاد وصلت", [("سعاد", P)]),  # Arabic honorific (teh marbuta), unlisted name
         ("M. ben salem a appelé", [("ben salem", P)]),  # `M.` is strong once its dot is there
@@ -172,3 +173,51 @@ def test_spans_are_valid_on_any_text(text: str) -> None:
 )
 def test_review_leaks(text: str, expected: list[tuple[str, EntityType]]) -> None:
     assert kept(text) == expected
+
+
+# --------------------------------------------------------------------------- over-masking (S3 review, #56)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "je suis marié",  # folds to `marie`, but an accented word isn't that name
+        "une eau claire et une pierre",  # lowercase French first names are words
+        "une explication claire",
+        "pierre claire",
+        "ya sahbi",  # Darija: my friend
+        "lazem saber",  # patient
+        "fi seif",  # summer
+        "el anouar",  # the lights
+        "m3a Ooredoo",  # `m3a` (with) is a weak cue: no unlisted word after it
+        "Ena Tounsi",  # `ena` (I)
+        "2 M. Dinars",  # `M.` after a number is a unit
+        "je m'appelle\nKenza Haddad",  # cues don't cross a line break
+        "Grâce à vous",
+        "Mabrouk !",
+        "Mabrouk 3lik",
+        "mabrouk 3likom",
+    ],
+)
+def test_ordinary_words_are_not_names(text: str) -> None:
+    assert kept(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("j'ai vu sami", [("sami", P)]),  # Arabizi writes Tunisian names lowercase
+        ("m3a mo7amed", [("mo7amed", P)]),  # Arabizi digits are not accents
+        ("مرحبا نور", [("نور", P)]),  # a greeting lifts an Arabic common-word name, like `Merci Amal`
+        ("شكرا أمال", [("أمال", P)]),
+        ("Mabrouk Jlassi a eu son bac", [("Mabrouk Jlassi", P)]),
+        ("Saber Trabelsi a appelé", [("Saber Trabelsi", P)]),  # a common word in a full name stays a name
+    ],
+)
+def test_names_still_found(text: str, expected: list[tuple[str, EntityType]]) -> None:
+    assert kept(text) == expected
+
+
+def test_a_cue_before_a_line_break_does_not_lift_the_next_line() -> None:
+    spans = [s for s in GazetteerRecognizer().detect(normalize("Bonjour\nKarim est là")) if s.score >= 0.5]
+    assert [s.score for s in spans] == [0.5]  # a common-word name starting a line, no cue
