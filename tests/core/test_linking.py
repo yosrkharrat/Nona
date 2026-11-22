@@ -614,3 +614,90 @@ def test_rym_stays_a_full_score_name() -> None:
     # Not merged with `Rim`, which is also the word for gazelle (see `canonical.VARIANTS`).
     [span] = Nona().detect("Rym a appelé.")
     assert span.score == 0.85
+
+
+# --------------------------------------------------------------------------- performance (#57)
+
+
+def _reference_assign_owners(self: object) -> None:
+    """The owner pass before #57, deciding everything again after each message. The incremental one agrees."""
+    from nona.core.canonical import handle_matches, handle_names
+    from nona.core.linking import _splits  # pyright: ignore[reportPrivateUsage]
+
+    linker = self  # type: ignore[assignment]
+    entities = linker._entities  # type: ignore[attr-defined]
+    people = [
+        e for e in entities if e.type is EntityType.PERSON and e.tokens and not e.ambiguous and not e.literal
+    ]
+    splits = {id(p): _splits(p) for p in people}
+    for entity in entities:
+        if entity.type is not EntityType.EMAIL or entity.literal or id(entity) in linker._final:  # type: ignore[attr-defined]
+            continue
+        linker._owners.pop(id(entity), None)  # type: ignore[attr-defined]
+        local = entity.key.rsplit("@", 1)[0]
+        exact = [p for p in people if handle_matches(local, p.tokens, splits[id(p)], superset=False)]
+        if exact:
+            if len(exact) == 1:
+                linker._owners[id(entity)] = exact[0]  # type: ignore[attr-defined]
+                linker._final.add(id(entity))  # type: ignore[attr-defined]
+            continue
+        loose = [p for p in people if handle_matches(local, p.tokens, splits[id(p)])]
+        if len(loose) != 1:
+            continue
+        if any(handle_names(local, q.tokens, splits[id(q)]) for q in people if q is not loose[0]):
+            continue
+        linker._owners[id(entity)] = loose[0]  # type: ignore[attr-defined]
+
+
+OWNER_PIECES = [
+    " ", ",", "Ahmed", "Ahmed Ben Salem", "Ahmed Karoui", "Sami", "Sami Trabelsi", "Wassim", "Karoui",
+    "ahmed@example.com", "ahmed.bs@example.com", "ahmed.bensalem@gmail.com", "s.trabelsi@example.com",
+    "sami_ahmed@example.com", "wassim.ferchichi@example.com", "contact@example.com",
+]  # fmt: skip
+owner_conversation = st.lists(
+    st.lists(st.sampled_from(OWNER_PIECES), max_size=6).map(" ".join), min_size=1, max_size=6
+)
+
+
+@settings(max_examples=150, deadline=None)
+@given(owner_conversation)
+def test_incremental_owners_agree_with_deciding_everything_again(msgs: list[str]) -> None:
+    from nona.core.linking import Linker
+
+    names = ["Ahmed", "Ahmed Ben Salem", "Ahmed Karoui", "Sami", "Sami Trabelsi", "Wassim", "Karoui"]
+    fast = _owners(nona(names=names).anonymize_messages(msgs))
+    original = Linker._assign_owners
+    Linker._assign_owners = _reference_assign_owners  # type: ignore[method-assign]
+    try:
+        slow = _owners(nona(names=names).anonymize_messages(msgs))
+    finally:
+        Linker._assign_owners = original  # type: ignore[method-assign]
+    assert fast == slow
+
+
+def _owner_conversation(size: int) -> list[str]:
+    firsts = ["Sami", "Ahmed", "Karim", "Mehdi", "Hamza", "Omar", "Nabil", "Tarek", "Walid", "Amine"]
+    lasts = ["Trabelsi", "Gharbi", "Jlassi", "Karoui", "Mejri", "Zouari", "Triki", "Sassi", "Riahi", "Hamdi"]
+    return [f"{firsts[i % 10]} {lasts[i // 10 % 10]} : contact{i}.x{i}@example.com" for i in range(size)]
+
+
+def test_owner_matching_grows_slower_than_cubic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A message, a new person and a new unowned email each: matching every email against every person after
+    every message was cubic (#57). Counted, not timed, so CI noise can't decide it."""
+    import nona.core.linking as linking
+
+    calls = 0
+    real = linking.handle_matches
+
+    def counting(*args: object, **kwargs: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(linking, "handle_matches", counting)
+    counts = []
+    for size in (40, 80):
+        calls = 0
+        Nona().anonymize_messages(_owner_conversation(size))
+        counts.append(calls)
+    assert counts[1] < counts[0] * 5  # quadratic is ~4x; cubic ~8x

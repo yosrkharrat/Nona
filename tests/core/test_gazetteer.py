@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nona.core import EntityType, Nona, normalize
+from nona.core import EntityType, Nona, NormalizedDoc, normalize
 from nona.core.recognizers import GazetteerRecognizer, gazetteer_data
 
 P, L = EntityType.PERSON, EntityType.LOCATION
@@ -240,3 +240,21 @@ def test_review_cases_of_56(text: str, expected: list[tuple[str, EntityType]]) -
 @pytest.mark.parametrize("text", ["Mabrouk Alik", "Mabrouk, 3lik", "Mabrouk 3alikom", "2 M. DT"])
 def test_more_blessings_and_amounts(text: str) -> None:
     assert kept(text) == []
+
+
+def test_city_matching_is_linear() -> None:
+    """Each city match was compared with every earlier one (#57): 100k characters of cities took 7 s."""
+    small = normalize("Tunis Sfax Sousse Gabès Paris et Nabeul, " * 200)
+    large = normalize("Tunis Sfax Sousse Gabès Paris et Nabeul, " * 2000)
+    recognizer = GazetteerRecognizer()
+    recognizer.detect(small)  # compiles the city patterns once, outside the timing
+
+    def best(doc: NormalizedDoc) -> float:
+        runs = []
+        for _ in range(5):
+            start = time.perf_counter()
+            recognizer.detect(doc)
+            runs.append(time.perf_counter() - start)
+        return min(runs)
+
+    assert best(large) < best(small) * 30  # 10x the text; quadratic would be ~100x
