@@ -19,8 +19,9 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, strict_at
+from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, placeholder_regex, strict_at
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
+from nona.core.normalize import normalize
 from nona.core.types import Entity, EntityType, Span
 
 
@@ -35,27 +36,6 @@ DEFAULT_POLICIES: AbcMapping[EntityType, Policy] = {
     EntityType.CARD: Policy.REDACT,
     EntityType.ORGANIZATION: Policy.KEEP,
 }
-
-
-def _type_pattern(etype: EntityType) -> str:
-    return etype.value.replace("_", "[ _]")
-
-
-def placeholder_regex(types: Iterable[EntityType]) -> re.Pattern[str]:
-    """`TYPE_n`, case-insensitive, also `TYPE n` and `TYPEn`. Group 1 is the type, group 2 the number.
-
-    Loose boundaries here; `restore` then holds name placeholders to the strict ones, like forward
-    propagation does (`core/boundaries.py`), so a restored value is always found again.
-    """
-    names = sorted({_type_pattern(t) for t in types}, key=len, reverse=True)
-    if not names:
-        return re.compile(r"(?!)")  # matches nothing
-    return re.compile(LOOSE_LEFT + "(" + "|".join(names) + r")[ _]?(\d+)" + LOOSE_RIGHT, re.IGNORECASE)
-
-
-# Spotting placeholders the user typed (to reserve their numbers, or to treat one as a literal) keeps the
-# looser boundaries: `عندPERSON_2` or `PERSON_2s` still reserves number 2. Only restoring needs strict ones.
-_ANY_PLACEHOLDER = placeholder_regex(EntityType)
 
 
 def _canonical_type(raw: str) -> EntityType:
@@ -112,9 +92,14 @@ class AnonymizedConversation:
         return tuple(m.text for m in self.messages)
 
 
+def fold_surface(surface: str) -> str:
+    """How `Pseudonymizer.seeds` keys a surface form: normalized, spacing collapsed."""
+    return " ".join(normalize(surface).text.split())
+
+
 def reserved_numbers(text: str) -> list[tuple[EntityType, int]]:
     """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued."""
-    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in _ANY_PLACEHOLDER.finditer(text)]
+    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in ANY_PLACEHOLDER.finditer(text)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,8 +128,24 @@ class Pseudonymizer:
         linked = [(e.type, s) for e in self._linker.entities if e.propagates for s in e.surfaces]
         return [*linked, *self._redacted]
 
-    def add(self, original: str, spans: Iterable[Span]) -> str:
-        """Pseudonymize the next message from its resolved (non-overlapping) spans; return its text."""
+    def seeds(self) -> dict[str, frozenset[str]]:
+        """Folded surface form → the tokens look-ahead may spread when that form is propagated (the seeds of
+        every person with that form, `core/linking.py`)."""
+        out: dict[str, frozenset[str]] = {}
+        for e in self._linker.entities:
+            if e.seeds and e.propagates:
+                for surface in e.surfaces:
+                    key = fold_surface(surface)
+                    out[key] = out.get(key, frozenset()) | e.seeds
+        return out
+
+    def add(
+        self, original: str, spans: Iterable[Span], seeds: AbcMapping[Span, frozenset[str]] | None = None
+    ) -> str:
+        """Pseudonymize the next message from its resolved (non-overlapping) spans; return its text.
+
+        `seeds` gives, for PERSON spans, the tokens look-ahead may spread for their entity (`seeds()`).
+        """
         ordered = sorted(spans, key=Span.sort_key)
         for a, b in itertools.pairwise(ordered):
             if a.overlaps(b):
@@ -152,9 +153,14 @@ class Pseudonymizer:
         kept = [s for s in ordered if self.policy(s.type) is not Policy.KEEP]
         kept = sorted([*kept, *self._colliding_literals(original, kept)], key=Span.sort_key)
         reversible = [s for s in kept if self.policy(s.type) is Policy.PSEUDONYMIZE]
-        entities = dict(
-            zip(reversible, self._linker.link(original, reversible, reserved_numbers(original)), strict=True)
+        seeds = seeds or {}
+        linked = self._linker.link(
+            original,
+            reversible,
+            reserved_numbers(original),
+            [seeds.get(s, frozenset()) for s in reversible],
         )
+        entities = dict(zip(reversible, linked, strict=True))
 
         parts: list[str] = []
         pos = 0
@@ -175,7 +181,7 @@ class Pseudonymizer:
     def _colliding_literals(self, original: str, kept: list[Span]) -> list[Span]:
         """Placeholders the user wrote whose number was already issued (see `core/linking.py`)."""
         out: list[Span] = []
-        for m in _ANY_PLACEHOLDER.finditer(original):
+        for m in ANY_PLACEHOLDER.finditer(original):
             span = Span(m.start(), m.end(), _canonical_type(m.group(1)), 1.0, LITERAL_DETECTOR)
             if self._linker.issued(span.type, int(m.group(2))) and not any(span.overlaps(k) for k in kept):
                 out.append(span)

@@ -11,15 +11,17 @@ resolved span, which entity the span is a mention of:
   - Two or more: the mention is **ambiguous**. It gets its own entity, and every later mention with the same
     token set reuses it. Ambiguous entities are matched only by an identical token set, never by containment,
     so they never make a later full name ambiguous.
-- **Other types** join the entity with the same value: compared on letters and digits for numbers
-  (`22 123 456` = `22.123.456`), and on folded text for the rest.
+- **Other types** join the entity with the same value, after normalization (`٢٢١٢٣٤٥٦` = `22123456`):
+  compared on letters and digits for numbers (`22 123 456` = `22.123.456`), and on folded text for the rest.
 
 Inside one message the linker may look ahead, as a message never changes once sent:
 - PERSON mentions are linked longest first, so `Ahmed … Ahmed Karoui … Ahmed Ben Salem` makes the bare
   `Ahmed` ambiguous instead of letting it absorb whichever full name came next.
-- An earlier entity is **contested** when two mentions of the message fit it but not each other (`Ahmed`
-  earlier, then `Ahmed Karoui et Ahmed Ben Salem`). Neither absorbs it, since which one would depend on word
-  order: both become new entities, and a later bare `Ahmed` is ambiguous.
+- An earlier entity is **contested** when two mentions of the message would each add tokens to it, and don't
+  fit each other (`Ahmed` earlier, then `Ahmed Karoui et Ahmed Ben Salem`). Neither absorbs it, since which
+  one would depend on word order: both become new entities, and a later bare `Ahmed` is ambiguous. Mentions
+  that add nothing (`Sami`, `M. Trabelsi` after `Sami Trabelsi`) just join it, so naming a person again in
+  pieces doesn't split them.
 
 **Freeze.** Entities are never merged, split or renumbered, so placeholders issued for a message stay the same
 whatever comes after it: `link(msgs[:k])` is a prefix of `link(msgs)`. New entities are numbered per type by
@@ -27,11 +29,16 @@ first appearance, skipping numbers reserved because the user literally wrote tha
 
 **Owners** (deep dive B, step 6). An email whose local part spells exactly one person's tokens or
 initials (`ahmed.bs@…` for Ahmed Ben Salem) belongs to that person. It's metadata for the inspection API:
-the email keeps its own `EMAIL_n`. Checked after each message while the email has no owner, so an address
-given before the name links once the name appears. Once given, an owner never changes. An exact spelling
-beats a superset (`wassim.ferchichi` for `Wassim`). Two candidate people, an ambiguous one, or a superset
-whose extra piece names someone else in the conversation (`sami_ahmed` with `Sami` and `Ahmed Karoui`): no
-owner.
+the email keeps its own `EMAIL_n`. Checked after each message, so an address given before the name links
+once the name appears. An exact spelling beats a superset (`wassim.ferchichi` for `Wassim`), and is final.
+A superset owner is only provisional: it's checked again after each message, and dropped once the person
+absorbs a token the handle doesn't spell (`ahmed.bensalem` for `Ahmed`, who turns out to be Ahmed Karoui).
+Two candidate people, an ambiguous one, or a superset whose extra piece names someone else in the
+conversation (`sami_ahmed` with `Sami` and `Ahmed Karoui`): no owner.
+
+**Seeds.** Each person carries the canonical tokens look-ahead may spread for it (`core/pipeline.py`), given
+by the detection that found it. A form propagated from an earlier message spreads only these, so a word that
+was never trusted on its own (`Bonne` in `Sami Bonne`, a weak detection) can't spread later.
 
 **Literal placeholders.** When the user writes `PHONE_1` after `PHONE_1` was issued, the number can't be
 renumbered, so the literal text becomes an entity of its own (spans from `LITERAL_DETECTOR`): it goes upstream
@@ -51,6 +58,7 @@ from nona.core.canonical import (
     handle_matches,
     handle_names,
 )
+from nona.core.normalize import normalize
 from nona.core.types import EntityType, Span
 
 LITERAL_DETECTOR = "literal-placeholder"  # a placeholder the user wrote, colliding with an issued one
@@ -63,7 +71,7 @@ COMPACT_TYPES = frozenset(
 
 def value_key(etype: EntityType, surface: str) -> str:
     """What makes two non-PERSON mentions the same entity."""
-    folded = " ".join(surface.casefold().split())
+    folded = " ".join(normalize(surface).text.split())
     if etype in COMPACT_TYPES:
         return "".join(c for c in folded if c.isalnum())
     return folded
@@ -79,6 +87,7 @@ class LinkedEntity:
     key: str = ""  # everything else, and PERSON mentions with no tokens (an honorific alone)
     ambiguous: bool = False
     surfaces: list[str] = field(default_factory=list[str])
+    seeds: frozenset[str] = frozenset()  # PERSON tokens look-ahead may spread (see **Seeds** above)
 
     @property
     def placeholder(self) -> str:
@@ -119,7 +128,8 @@ class Linker:
         self._by_key: dict[tuple[EntityType, str], LinkedEntity] = {}
         self._next: dict[EntityType, int] = {}
         self._reserved: dict[EntityType, set[int]] = {}
-        self._owners: dict[int, LinkedEntity] = {}  # id(email entity) → its person, frozen once set
+        self._owners: dict[int, LinkedEntity] = {}  # id(email entity) → its person
+        self._final: set[int] = set()  # ids of emails whose owner is an exact spelling: never changes
 
     @property
     def entities(self) -> tuple[LinkedEntity, ...]:
@@ -131,10 +141,12 @@ class Linker:
         original: str,
         spans: Sequence[Span],
         reserved: Iterable[tuple[EntityType, int]] = (),
+        seeds: Sequence[frozenset[str]] = (),
     ) -> list[LinkedEntity]:
         """The entity of each span of one message, in the order of `spans`. Call once per message, in order.
 
-        `reserved` lists placeholder numbers already written in this message; they are never issued.
+        `reserved` lists placeholder numbers already written in this message; they are never issued. `seeds`,
+        if given, has one token set per span, added to its entity's seeds.
         """
         for etype, number in reserved:
             self._reserved.setdefault(etype, set()).add(number)
@@ -160,6 +172,8 @@ class Linker:
             else:
                 entity = self._link_value(span.type, value_key(span.type, surfaces[i]), fresh)
             entity.add_surface(surfaces[i])
+            if i < len(seeds) and seeds[i]:
+                entity.seeds |= seeds[i]
             found[i] = entity
 
         by_position = sorted(range(len(spans)), key=lambda i: spans[i].sort_key())
@@ -183,13 +197,15 @@ class Linker:
         ]
         splits = {id(p): _splits(p) for p in people}
         for entity in self._entities:
-            if entity.type is not EntityType.EMAIL or entity.literal or id(entity) in self._owners:
+            if entity.type is not EntityType.EMAIL or entity.literal or id(entity) in self._final:
                 continue
+            self._owners.pop(id(entity), None)  # a provisional owner is decided again
             local = entity.key.rsplit("@", 1)[0]
             exact = [p for p in people if handle_matches(local, p.tokens, splits[id(p)], superset=False)]
             if exact:
                 if len(exact) == 1:
                     self._owners[id(entity)] = exact[0]
+                    self._final.add(id(entity))
                 continue
             loose = [p for p in people if handle_matches(local, p.tokens, splits[id(p)])]
             if len(loose) != 1:
@@ -202,12 +218,13 @@ class Linker:
         return any(e.type is etype and e.number == number for e in self._entities)
 
     def _contested(self, mentions: set[frozenset[str]]) -> set[int]:
-        """Ids of earlier PERSON entities that two of this message's token sets fit, but not each other."""
+        """Ids of earlier PERSON entities that two of this message's token sets would grow, but that don't fit
+        each other. A token set inside the entity's adds nothing, so it never contests it."""
         out: set[int] = set()
         for entity in self._entities:
             if entity.type is not EntityType.PERSON or entity.ambiguous or not entity.tokens:
                 continue
-            fits = [t for t in mentions if compatible(entity.tokens, t)]
+            fits = [t for t in mentions if compatible(entity.tokens, t) and not t <= entity.tokens]
             if any(not compatible(a, b) for a in fits for b in fits):
                 out.add(id(entity))
         return out

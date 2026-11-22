@@ -238,3 +238,44 @@ def test_abdel_alone_is_a_first_name() -> None:
     assert canonical_tokens("Abdel Trabelsi") == {"abdel", "trabelsi"}
     assert compatible(canonical_tokens("Abdel Ben Salem"), canonical_tokens("M. Ben Salem"))
     assert canonical_tokens("Abdou Rahman") == {"abdourahman"}
+
+
+# --------------------------------------------------------------------------- variants (#55)
+
+VARIANT_PAIRS = [
+    ("Syrine", "Cyrine"), ("Yassine", "Yacine"), ("Sofiene", "Sofien"), ("Jlassi", "Jelassi"),
+    ("Labidi", "Laabidi"), ("Chedly", "Chedli"), ("Wassim", "Ouassim"), ("Qais", "Kais"), ("Mahdi", "Mehdi"),
+    ("كريم", "Karim"), ("مهدي", "Mehdi"), ("ياسين", "Yassine"), ("خالد", "Khaled"), ("حمزة", "Hamza"),
+    ("أيوب", "Ayoub"), ("أمل", "Amel"), ("الطرابلسي", "Trabelsi"), ("بن علي", "Ben Ali"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("a", "b"), VARIANT_PAIRS)
+def test_spelling_variants_and_scripts_unify(a: str, b: str) -> None:
+    assert canonical_tokens(a) == canonical_tokens(b)
+
+
+def test_every_arabic_list_name_has_a_latin_form() -> None:
+    from nona.core.recognizers.gazetteer_data import NAMES_AR
+
+    assert [n for n in NAMES_AR if not all(t.isascii() for t in canonical_tokens(n))] == []
+
+
+def test_merged_list_spellings_agree_on_being_ordinary_words() -> None:
+    """Merged keys share the gazetteer's common-word status, so two listed spellings may only merge if the
+    common-word list treats them alike: merging `Rim` (gazelle) with `Rym` would demote the name `Rym`."""
+    import unicodedata
+
+    from nona.core.canonical import VARIANTS
+    from nona.core.recognizers import gazetteer_data as data
+
+    def fold(word: str) -> str:
+        return "".join(
+            c for c in unicodedata.normalize("NFD", word.casefold()) if not unicodedata.combining(c)
+        )
+
+    listed = {fold(w) for w in data.FIRST_NAMES_TN + data.FIRST_NAMES_FR_EN + data.SURNAMES_TN}
+    common = {fold(w) for w in data.COMMON_WORDS}
+    pairs = [(v, c) for v, c in VARIANTS.items() if v in listed and c in listed]
+    assert pairs  # the check covers something
+    assert [(v, c) for v, c in pairs if (v in common) != (c in common)] == []

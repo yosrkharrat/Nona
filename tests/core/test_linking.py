@@ -454,3 +454,163 @@ def test_single_message_anonymize_is_the_one_message_conversation(msgs: list[str
     n = nona()
     for text in msgs:
         assert n.anonymize(text) == n.anonymize_messages([text]).messages[0]
+
+
+# --------------------------------------------------------------------------- S3 review, linking bugs (#55)
+
+
+def _mapping(conv: object) -> dict[str, str]:
+    m = conv.mapping  # type: ignore[attr-defined]
+    return {p: m.value(p) for p in m.placeholders}
+
+
+def test_naming_a_person_again_in_pieces_does_not_split_them() -> None:
+    # `Sami` and `M. Trabelsi` add nothing to {sami, trabelsi}: they don't contest it.
+    conv = Nona().anonymize_messages(
+        ["Sami Trabelsi a appelé.", "Sami Trabelsi ? Oui, Sami. M. Trabelsi rappellera demain."]
+    )
+    assert conv.texts == ("PERSON_1 a appelé.", "PERSON_1 ? Oui, PERSON_1. M. PERSON_1 rappellera demain.")
+    assert _mapping(conv) == {"PERSON_1": "Sami Trabelsi"}
+
+
+def test_an_unlisted_word_of_a_gazetteer_run_does_not_spread() -> None:
+    conv = Nona().anonymize_messages(
+        ["Merci Sami Bonne journée, Bonne chance !", "Bonne nouvelle : le dossier est prêt."]
+    )
+    assert conv.texts == ("Merci PERSON_1 journée, Bonne chance !", "Bonne nouvelle : le dossier est prêt.")
+    assert Nona.restore(conv.texts[1], conv.mapping) == "Bonne nouvelle : le dossier est prêt."
+
+
+def test_a_run_after_a_strong_cue_spreads_its_unlisted_words() -> None:
+    conv = Nona().anonymize_messages(["je m'appelle Kenza Haddad. Haddad, c'est mon nom.", "Haddad Kenza"])
+    assert conv.texts[0] == "je m'appelle PERSON_1. PERSON_1, c'est mon nom."
+
+
+class _Fixed:
+    """Detects one name at a fixed score."""
+
+    supported_types = frozenset({EntityType.PERSON})
+
+    def __init__(self, text: str, score: float) -> None:
+        self.name = f"fixed-{score}"
+        self._text, self._score = text, score
+
+    def detect(self, doc: NormalizedDoc) -> list[Span]:
+        return [
+            Span(m.start(), m.end(), EntityType.PERSON, self._score, self.name)
+            for m in re.finditer(re.escape(self._text), doc.original)
+        ]
+
+
+def test_a_weak_span_does_not_spread_once_it_is_propagated() -> None:
+    msgs = ["Kenza Haddad a écrit.", "Kenza Haddad a rappelé. Haddad attend."]
+    weak = Nona([_Fixed("Kenza Haddad", 0.55)]).anonymize_messages(msgs)  # type: ignore[list-item]
+    assert weak.texts == ("PERSON_1 a écrit.", "PERSON_1 a rappelé. Haddad attend.")
+    # A confident detection's words do spread when its form comes back
+    strong = Nona([_Fixed("Kenza Haddad", 0.9)]).anonymize_messages(msgs[:1])  # type: ignore[list-item]
+    blind = Nona([_Fixed("Kenza Haddad", 0.9)]).anonymize_messages(msgs)  # type: ignore[list-item]
+    assert strong.texts == ("PERSON_1 a écrit.",)
+    assert blind.texts == ("PERSON_1 a écrit.", "PERSON_1 a rappelé. PERSON_1 attend.")
+
+
+def test_a_propagated_form_spreads_only_its_seeds() -> None:
+    # `Sami Bonne` comes back in message 2 as a known form; `Bonne` was never vouched for.
+    conv = Nona().anonymize_messages(["Merci Sami Bonne journée.", "Sami Bonne, Bonne chance."])
+    assert conv.texts == ("Merci PERSON_1 journée.", "PERSON_1, Bonne chance.")
+
+
+def test_a_typed_placeholder_is_never_swallowed_into_a_name() -> None:
+    conv = Nona().anonymize_messages(["Sami a appelé.", "Écris à Sami Trabelsi PERSON_1 stp."])
+    assert conv.texts == ("PERSON_1 a appelé.", "Écris à PERSON_1 PERSON_2 stp.")
+    assert _mapping(conv) == {"PERSON_1": "Sami Trabelsi", "PERSON_2": "PERSON_1"}
+    assert Nona.restore(conv.texts[0], conv.mapping) == "Sami Trabelsi a appelé."
+    assert Nona.restore(conv.texts[1], conv.mapping) == "Écris à Sami Trabelsi PERSON_1 stp."
+
+
+def test_a_superset_owner_is_dropped_when_the_person_turns_out_to_be_someone_else() -> None:
+    msgs = ["Ahmed : ahmed.bensalem@gmail.com", "Ahmed Karoui a signé."]
+    n = nona(names=["Ahmed", "Ahmed Karoui"])
+    assert _owners(n.anonymize_messages(msgs[:1])) == {"EMAIL_1": "PERSON_1"}  # provisional
+    assert _owners(n.anonymize_messages(msgs)) == {"EMAIL_1": None}
+    assert _owners(n.anonymize_messages(msgs[::-1])) == {"EMAIL_1": None}  # the order doesn't matter
+
+
+def test_a_superset_owner_that_still_fits_stays() -> None:
+    conv = nona(names=["Wassim"]).anonymize_messages(["Wassim : wassim.ferchichi@example.com", "Wassim ok"])
+    assert _owners(conv) == {"EMAIL_1": "PERSON_1"}
+
+
+def test_one_value_in_two_digit_scripts_is_one_entity() -> None:
+    assert value_key(EntityType.PHONE, "22123456") == value_key(EntityType.PHONE, "٢٢١٢٣٤٥٦")
+    conv = Nona().anonymize_messages(["Appelle 22123456.", "Ou ٢٢١٢٣٤٥٦."])
+    assert conv.texts == ("Appelle PHONE_1.", "Ou PHONE_1.")
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Yassine Trabelsi", "Yacine Trabelsi"),
+        ("Cyrine Gharbi", "Syrine Gharbi"),
+        ("Karim Jlassi", "Karim Jelassi"),
+    ],
+)
+def test_spelling_variants_link(first: str, second: str) -> None:
+    conv = Nona().anonymize_messages([f"{first} a appelé.", f"{second} rappellera."])
+    assert conv.texts == ("PERSON_1 a appelé.", "PERSON_1 rappellera.")
+
+
+GAZETTEER_PIECES = [
+    *" ,.?\n",
+    "Merci", "Sami", "Sami Trabelsi", "Trabelsi", "M.", "Bonne", "journée", "Yacine", "Yassine", "Ahmed",
+    "Karoui", "je m'appelle", "Kenza", "Haddad", "22123456", "٢٢١٢٣٤٥٦", "PERSON_1", "PERSON_2", "كريم",
+    "ahmed.bensalem@gmail.com",
+]  # fmt: skip
+gazetteer_conversation = st.lists(
+    st.lists(st.sampled_from(GAZETTEER_PIECES), max_size=8).map(" ".join), min_size=1, max_size=5
+)
+
+
+@settings(max_examples=150, deadline=None)
+@given(gazetteer_conversation, st.integers(min_value=0, max_value=5))
+def test_prefix_stability_with_the_default_recognizers(msgs: list[str], k: int) -> None:
+    """Seeds carry state across messages too: earlier placeholders still never change."""
+    n = Nona()
+    assert n.anonymize_messages(msgs[:k]).texts == n.anonymize_messages(msgs).texts[:k]
+
+
+@settings(max_examples=150, deadline=None)
+@given(gazetteer_conversation)
+def test_round_trip_with_the_default_recognizers(msgs: list[str]) -> None:
+    n = Nona(policies=ALL_REVERSIBLE)
+    conv = n.anonymize_messages(msgs)
+    for original, result in zip(msgs, conv.messages, strict=True):
+        expected, pos = [], 0
+        mentions = [(m, e) for e in result.entities for m in e.mentions]
+        for span, entity in sorted(mentions, key=lambda me: me[0].sort_key()):
+            expected += [original[pos : span.start], entity.canonical]
+            pos = span.end
+        assert n.restore(result.text, conv.mapping) == "".join([*expected, original[pos:]])
+
+
+@pytest.mark.parametrize("text", ["كريم وصل", "خالد وصل", "شفت ريم اليوم"])
+def test_an_arabic_name_keeps_its_own_common_word_status(text: str) -> None:
+    # `كريم` now links to `Karim`, which is on the common-word list for its Darija meaning in Latin letters.
+    # That must not change how the Arabic word is detected: the list decides for Arabic forms separately.
+    assert Nona().anonymize(text).text.startswith(("PERSON_1", "شفت PERSON_1"))
+
+
+def test_an_arabic_name_links_to_its_latin_form() -> None:
+    conv = Nona().anonymize_messages(["كريم الطرابلسي وصل", "Karim Trabelsi a confirmé."])
+    assert conv.texts == ("PERSON_1 وصل", "PERSON_1 a confirmé.")
+
+
+def test_a_span_cut_at_a_placeholder_keeps_its_seeds() -> None:
+    n = Nona([_Fixed("Kenza Haddad PERSON_1", 0.9)])  # type: ignore[list-item]
+    conv = n.anonymize_messages(["Kenza Haddad PERSON_1 a écrit. Haddad attend."])
+    assert conv.texts == ("PERSON_2 PERSON_1 a écrit. PERSON_2 attend.",)  # PERSON_1 was typed: reserved
+
+
+def test_rym_stays_a_full_score_name() -> None:
+    # Not merged with `Rim`, which is also the word for gazelle (see `canonical.VARIANTS`).
+    [span] = Nona().detect("Rym a appelé.")
+    assert span.score == 0.85
