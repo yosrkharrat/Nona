@@ -48,18 +48,28 @@ class Run:
         return dataset_hash(self.conversations)
 
 
-def causal_payloads(system: System, conversation: Conversation) -> list[str]:
-    """Turn `i`'s payload, computed from turns `0..i` only (ADR-0004). A system that looked ahead would gain
-    nothing: what it sends for turn `i` is what it produced before seeing the later turns."""
+def requests(system: System, conversation: Conversation) -> list[list[str]]:
+    """What the upstream receives in each request of the stateless flow (ADR-0002): request `k` re-sends
+    turns `0..k`, computed from them only. So every copy of a turn is causal, and every copy is scored."""
     return [
-        system.payloads(dataclasses.replace(conversation, turns=conversation.turns[: i + 1]))[i]
-        for i in range(len(conversation.turns))
+        list(system.payloads(dataclasses.replace(conversation, turns=conversation.turns[: k + 1])))
+        for k in range(len(conversation.turns))
     ]
+
+
+def causal_payloads(system: System, conversation: Conversation) -> list[str]:
+    """Turn `i` as first sent, from turns `0..i` only (ADR-0004): a system that looks ahead gains nothing."""
+    return [request[k] for k, request in enumerate(requests(system, conversation))]
 
 
 def run(system: System, split: str, dataset: Path) -> Run:
     conversations = load_jsonl(dataset)
-    results = [evaluate(c, causal_payloads(system, c)) for c in conversations]
+    results = []
+    for c in conversations:
+        sent = requests(system, c)
+        last = sent[-1] if sent else []
+        copies = [[request[i] for request in sent[i:]] for i in range(len(c.turns))]
+        results.append(evaluate(c, last, copies))
     return Run(system.name, split, dataset, conversations, Report.from_results(results))
 
 

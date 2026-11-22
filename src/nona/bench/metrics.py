@@ -136,10 +136,16 @@ class Outcome(StrEnum):
 LEAKS = frozenset({Outcome.LEAKED, Outcome.OBFUSCATED})
 
 
-def _spread_out(name: str) -> re.Pattern[str]:
-    """A name's letters with any non-letters between them, at word boundaries: `S a m i`, `S.a.m.i`."""
-    letters = [c for c in name if c.isalnum()]
+def _spread_out(word: str) -> re.Pattern[str]:
+    """One name word's letters with non-letters between them, at word boundaries: `S a m i`, `S.a.m.i`."""
+    letters = [c for c in word if c.isalnum()]
     return re.compile(r"(?<!\w)" + r"[\W_]*".join(map(re.escape, letters)) + r"(?!\w)")
+
+
+def _spelled_out(payload: str, word: str) -> bool:
+    """`word` appears letter by letter with at least one separator (`s a m i`); written plainly, it isn't
+    spelled out (that's an ordinary leak)."""
+    return any(m.group() != word for m in _spread_out(word).finditer(payload))
 
 
 def identifying_tokens(text: str, etype: EntityType) -> list[str]:
@@ -161,11 +167,23 @@ def classify(mention_text: str, etype: EntityType, payload: str) -> Outcome:
             return Outcome.LEAKED
     elif contains_word(norm_payload, normalize(mention_text)):
         return Outcome.LEAKED
-    if etype is EntityType.PERSON and _spread_out(normalize(mention_text)).search(norm_payload):
+    words = identifying_tokens(mention_text, etype)
+    plain = [contains_word(norm_payload, t) for t in words]
+    spelled = [etype is EntityType.PERSON and _spelled_out(norm_payload, t) for t in words]
+    # Every identifying word readable, at least one of them spelled out: the name got through, disguised.
+    if words and any(spelled) and all(p or s for p, s in zip(plain, spelled, strict=True)):
         return Outcome.OBFUSCATED
-    if any(contains_word(norm_payload, t) for t in identifying_tokens(mention_text, etype)):
+    if any(plain) or any(spelled):
         return Outcome.PARTIAL
     return Outcome.PROTECTED
+
+
+_SEVERITY = {Outcome.LEAKED: 3, Outcome.OBFUSCATED: 2, Outcome.PARTIAL: 1, Outcome.PROTECTED: 0}
+
+
+def worst(outcomes: Iterable[Outcome]) -> Outcome:
+    """The most severe outcome: a value that leaked in any request leaked."""
+    return max(outcomes, key=_SEVERITY.__getitem__, default=Outcome.PROTECTED)
 
 
 # --------------------------------------------------------------------------- over-masking
@@ -186,6 +204,32 @@ def changed_ranges(original: str, payload: str) -> list[tuple[int, int]]:
         for tag, i1, i2, _, _ in matcher.get_opcodes()
         if tag in ("replace", "delete")
     ]
+
+
+def span_alignment(original: str, payload: str, start: int, end: int) -> tuple[bool, bool]:
+    """For one mention: (part of it kept as is, all of it deleted), from the same token alignment.
+
+    *Kept* means an identifying word (3+ characters, not an honorific) of the mention went through unchanged
+    (`Chirine PERSON_1`). *Deleted* means every token of the mention was removed, with nothing in its place.
+    Both are about this mention's own tokens, not the rest of the turn.
+    """
+    a = list(_TOKEN.finditer(original))
+    b = [t.casefold() for t in _TOKEN.findall(payload)]
+    inside = [i for i, tok in enumerate(a) if tok.start() < end and start < tok.end()]
+    if not inside:
+        return False, False
+    status: dict[int, str] = {}
+    matcher = difflib.SequenceMatcher(None, [m.group().casefold() for m in a], b, autojunk=False)
+    for tag, i1, i2, _, _ in matcher.get_opcodes():
+        for i in range(i1, i2):
+            status[i] = tag
+    kept = any(
+        status.get(i) == "equal" and len(a[i].group()) >= 3 and a[i].group().casefold() not in NON_IDENTIFYING
+        and a[i].group().isalnum()
+        for i in inside
+    )  # fmt: skip
+    deleted = all(status.get(i) == "delete" for i in inside)
+    return kept, deleted
 
 
 def _overlaps(start: int, end: int, ranges: Iterable[tuple[int, int]]) -> bool:
@@ -218,7 +262,10 @@ def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) 
         owner.append(hit[0] if hit else None)
     parts: list[list[str]] = [[] for _ in spans]
     lost = [False] * len(spans)
-    matcher = difflib.SequenceMatcher(None, [m.group() for m in a], b, autojunk=False)
+    # Case-insensitive, like `changed_ranges`: a lowercased name is still the name, not a placeholder.
+    matcher = difflib.SequenceMatcher(
+        None, [m.group().casefold() for m in a], [t.casefold() for t in b], autojunk=False
+    )
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag != "replace":
             continue
@@ -284,6 +331,8 @@ class MentionResult:
     ambiguous: bool = False
     placeholder: str | None = None  # what replaced the mention in the payload, if anything (`placeholders`)
     listed: bool = False  # PERSON whose gold value has a gazetteer name: detection there is list overlap
+    kept_part: bool = False  # an identifying word of this mention went through unchanged (`span_alignment`)
+    deleted: bool = False  # every token of this mention was removed, with nothing in its place
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +386,7 @@ def link(mentions: Sequence[MentionResult]) -> Linking:
     for m in scoped:
         if m.placeholder is None:
             continue
-        if m.outcome is Outcome.PARTIAL:
+        if m.kept_part:
             partly += 1
             continue
         by_entity[m.entity].append(m.placeholder)
@@ -372,7 +421,14 @@ class ConversationResult:
     masked_distractors: Rate  # distractors the system replaced
 
 
-def evaluate(conversation: Conversation, payloads: Sequence[str]) -> ConversationResult:
+def evaluate(
+    conversation: Conversation,
+    payloads: Sequence[str],
+    copies: Sequence[Sequence[str]] | None = None,
+) -> ConversationResult:
+    """Score one conversation. `payloads[i]` is turn `i` as sent in the last request; it gives placeholders
+    and over-masking. `copies[i]`, if given, holds every copy of turn `i` the upstream received (one per
+    request from `i` on): a mention's outcome is the worst over them, since a value sent once has leaked."""
     if len(payloads) != len(conversation.turns):
         raise ValueError(
             f"{conversation.id}: system returned {len(payloads)} payloads for {len(conversation.turns)} turns"
@@ -383,16 +439,18 @@ def evaluate(conversation: Conversation, payloads: Sequence[str]) -> Conversatio
     distractors = Rate(0, 0)
     for i, (turn, payload) in enumerate(zip(conversation.turns, payloads, strict=True)):
         labels = placeholders(turn.text, payload, [(m.start, m.end) for m in turn.mentions])
+        sent = [payload] if copies is None else [*copies[i], payload]
         for m, label in zip(turn.mentions, labels, strict=True):
             entity = conversation.entity(m.entity)
-            outcome = classify(m.text, entity.type, payload)
+            outcome = worst(classify(m.text, entity.type, p) for p in sent)
+            kept, deleted = span_alignment(turn.text, payload, m.start, m.end)
             listed = entity.type is EntityType.PERSON and bool(
                 canonical_tokens(entity.value) & GAZETTEER_NAMES
             )
             mentions.append(
                 MentionResult(
                     conversation.id, i, turn.role, language, entity.type, entity.public, m.text, outcome,
-                    m.entity, m.ambiguous, label, listed,
+                    m.entity, m.ambiguous, label, listed, kept, deleted,
                 )
             )  # fmt: skip
         changed = changed_ranges(turn.text, payload)
@@ -464,10 +522,10 @@ class Report:
 
     @property
     def deleted(self) -> Rate:
-        """Mentions that neither leaked nor carry a placeholder: removed, or replaced by something the
-        alignment couldn't attribute. Deleting everything would give a perfect leak rate, so it shows here."""
+        """Mentions removed with nothing in their place. Deleting every name would give a perfect leak rate,
+        so it shows here."""
         scope = self.select()
-        return Rate(sum(m.outcome is Outcome.PROTECTED and m.placeholder is None for m in scope), len(scope))
+        return Rate(sum(m.outcome is Outcome.PROTECTED and m.deleted for m in scope), len(scope))
 
     @property
     def held_out(self) -> Rate:

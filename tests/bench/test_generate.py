@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import random
 import re
@@ -242,8 +243,10 @@ def test_template_names_are_unique_across_sets() -> None:
 def test_v0_output_is_pinned() -> None:
     """Adding kinds, pools or template sets must not change what v0 generates from its seed: the documented
     command still gives the committed dev v0, byte for byte."""
-    committed = DEV_PATH.read_text(encoding="utf-8").splitlines(keepends=True)[:80]
-    assert dumps_jsonl(generate(80, seed=20261120, prefix="dev")) == "".join(committed)
+    committed = "".join(DEV_PATH.read_text(encoding="utf-8").splitlines(keepends=True)[:80])
+    assert dumps_jsonl(generate(80, seed=20261120, prefix="dev")) == committed
+    # Also pinned here, so regenerating the file along with a generator change can't move v0 unnoticed.
+    assert hashlib.sha256(committed.encode()).hexdigest() == V0_SHA256
 
 
 DEV_PATH = Path(__file__).resolve().parents[2] / "bench" / "data" / "dev.jsonl"
@@ -325,3 +328,6 @@ def test_every_word_distractor_is_used() -> None:
 def test_start_must_be_positive() -> None:
     with pytest.raises(ValueError, match="start"):
         generate(1, seed=1, prefix="x", start=0)
+
+
+V0_SHA256 = "af0d2d996693785c5b36c07c2ef35f997cb8742d862ac2df39448da300ddd760"

@@ -23,6 +23,7 @@ from nona.bench.metrics import (
     link,
     normalize,
     placeholders,
+    span_alignment,
 )
 from nona.bench.systems import IdentitySystem
 from nona.core import EntityType
@@ -191,8 +192,11 @@ def _m(
     ambiguous: bool = False,
     public: bool = False,
     outcome: Outcome = Outcome.PROTECTED,
+    kept_part: bool = False,
 ) -> MentionResult:
-    return MentionResult("c", 0, "user", "fr", P, public, entity, outcome, entity, ambiguous, placeholder)
+    return MentionResult(
+        "c", 0, "user", "fr", P, public, entity, outcome, entity, ambiguous, placeholder, kept_part=kept_part
+    )
 
 
 def test_link_of_consistent_placeholders_is_clean() -> None:
@@ -477,7 +481,7 @@ def test_lowercasing_is_not_masking() -> None:
 
 def test_a_partly_leaking_placed_mention_is_reported_apart() -> None:
     # `Chirine PERSON_1`: the surname propagated, the first name in clear. It doesn't count as linking.
-    result = link([_m("e1", "PERSON_1"), _m("e1", "PERSON_2", outcome=Outcome.PARTIAL)])
+    result = link([_m("e1", "PERSON_1"), _m("e1", "PERSON_2", outcome=Outcome.PARTIAL, kept_part=True)])
     assert result.partly_leaking == Rate(1, 2)
     assert result.wrong_split == Rate(0, 0)  # the partial mention is left out, so no split
 
@@ -509,3 +513,40 @@ def test_held_out_rate_counts_names_outside_the_gazetteer_only() -> None:
     )  # fmt: skip
     report = Report.from_results([evaluate(c, ["Sami Trabelsi et Chiheb Drira."])])
     assert report.held_out == Rate(1, 1)
+
+
+def test_an_honorific_and_a_neighbouring_word_are_not_a_spelled_out_name() -> None:
+    assert classify("M. Ali", P, "M. PERSON_1 part au Mali") is Outcome.PROTECTED
+
+
+def test_partly_leaking_is_decided_per_mention() -> None:
+    text = "Sami a appelé. Sami Trabelsi aussi."
+    start = text.index("Sami Trabelsi")
+    kept, deleted = span_alignment(
+        text, "Sami a appelé. PERSON_1 aussi.", start, start + len("Sami Trabelsi")
+    )
+    assert (kept, deleted) == (False, False)  # fully replaced, though `Sami` is elsewhere in the turn
+    assert span_alignment("Chirine Boukadida", "Chirine PERSON_1", 0, 17) == (True, False)
+
+
+def test_deleted_is_not_unattributable() -> None:
+    assert span_alignment("Sami arrive.", " arrive.", 0, 4) == (False, True)
+    assert span_alignment("Sami Ben Ali et Karim", "PERSON_1 PERSON_2 PERSON_3", 0, 12)[1] is False
+
+
+def test_a_lowercased_name_is_not_a_placeholder() -> None:
+    assert placeholders("Bonjour Sami", "bonjour sami", [(8, 12)]) == [None]
+
+
+def test_a_leak_in_any_copy_of_a_turn_counts() -> None:
+    c = parse_conversation(
+        {
+            "id": "c", "languages": ["fr"], "source": "handwritten", "tags": [],
+            "entities": [{"id": "e1", "type": "PERSON", "value": "Sami"}],
+            "turns": [{"role": "user", "text": "Sami arrive.",
+                       "mentions": [{"text": "Sami", "entity": "e1", "start": 0, "end": 4}]}],
+        }
+    )  # fmt: skip
+    # masked when first sent, then sent again in clear in a later request
+    result = evaluate(c, ["PERSON_1 arrive."], [["PERSON_1 arrive.", "Sami arrive."]])
+    assert [m.outcome for m in result.mentions] == [Outcome.LEAKED]

@@ -45,7 +45,8 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not dataset.is_file() and not args.data.is_absolute():
         from nona.bench.runner import REPO_ROOT
 
-        dataset = REPO_ROOT / dataset  # run from anywhere inside a checkout
+        if (REPO_ROOT / "pyproject.toml").is_file() and (REPO_ROOT / dataset).is_file():
+            dataset = REPO_ROOT / dataset  # run from anywhere inside a checkout
     if not dataset.is_file():
         print(f"error: no dataset file at {dataset}", file=sys.stderr)
         return 1
