@@ -13,7 +13,7 @@ unlisted word must look like a family name: the article, then a word ending in �
 - *strong*: honorifics and kinship words (`M.`, `Mme`, `Dr`, `sidi`, `khalti`, `3amm`, `السيد`, `السيدة`) and
   name phrases (`je m'appelle`, `my name is`, `esmou`). A strong cue starts a run on a capitalized word, or on
   any word in Arabic script, even one that isn't in the lists; such a run may hold two unlisted words
-  (`je m'appelle Kenza Haddad`). `M.` right after a number is not a cue (`2 M. Dinars`).
+  (`je m'appelle Kenza Haddad`). `M.` between a number and a unit is not a cue (`2 M. Dinars`, million).
 - *weak*: words that are honorifics in one language and ordinary words in another (`si` is "if" in French,
   `me` in English, `3am` "year" in Darija), Darija function words (`m3a` "with", `ena` "I": `m3a Ooredoo`,
   `Ena Tounsi`), and greetings (`Bonjour`, `Merci`, `Hi`, `3aslema`). A weak cue only lifts a listed name:
@@ -29,14 +29,14 @@ The cue itself is never part of the span, and a cue doesn't reach across a line 
 | capitalized single listed name | 0.85 |
 | after a weak cue, capitalized, with a listed name | 0.8 |
 | Arabic script, listed name (a common-word one only after a weak cue: `مرحبا نور`) | 0.8 |
-| lowercase, two words or more, with a Tunisian listed name that isn't a common word | 0.7 |
-| lowercase Tunisian first name, without accents (Arabizi writes names lowercase: `sami`, `mo7amed`) | 0.6 |
+| lowercase or partly capitalized, 2+ words, a listed name that isn't a common word (see below) | 0.7 |
+| lowercase Tunisian first name (Arabizi writes names lowercase: `sami`, `mo7amed`) | 0.6 |
 | common-word name (`Amal`, `Nour`), capitalized mid-sentence | 0.6 |
 | common-word name at the start of a sentence (masked at the default threshold: a leak costs more) | 0.5 |
 | anything else: a lowercase common word (`3amel`), surname alone, French or English first name | 0.3 |
 
-In lowercase, French and English first names (`claire`, `pierre`) are ordinary words, and an accented word
-that only folds to a name (`marié` → `marie`) is not that name.
+In lowercase, French and English first names are ordinary words (`claire`, `pierre`, and `marié`, which folds
+to `marie`). A run that is partly capitalized (`Nicolas ben Salem`) is scored on all its listed names.
 
 `Mabrouk` right before `!` or `3lik`/`3likom` ("congratulations to you") is not a name; #50 adds the full
 context rules.
@@ -112,7 +112,13 @@ _WEAK_PHRASE = re.compile(
     r"|ya|m3a|ena|مرحبا|شكرا)[ \t]*[:,!]?[ \t]*\Z"
 )
 # After `Mabrouk`, these make it "congratulations", not a name.
-_BLESSING_AFTER = re.compile(r"[ \t]*(?:!|(?:3lik|3likom|3lih|3liha|alik|3alik)(?!\w))")
+_BLESSING_AFTER = re.compile(
+    r"[ \t]*,?[ \t]*(?:!|(?:3lik|3likom|3lih|3liha|3likoum|alik|alikom|3alik|3alikom)(?!\w))"
+)
+# What `M.` means after a number (`2 M. Dinars`, two million dinars): a unit, not an honorific.
+_AMOUNT_UNITS = frozenset(
+    {"dinars", "dinar", "dt", "tnd", "d", "euros", "euro", "eur", "dollars", "usd", "de"}
+)
 # Words that start sentences or name things, but never people.
 STOPWORDS = frozenset(
     {
@@ -247,8 +253,8 @@ class GazetteerRecognizer:
                 i += 1
                 continue
             run = words[i:end]
-            if len(run) == 1 and run[0].key == "mabrouk" and _BLESSING_AFTER.match(doc.text, run[0].end):
-                i = end
+            if not cue and run[0].key == "mabrouk" and _BLESSING_AFTER.match(doc.text, run[0].end):
+                i = end  # `Mabrouk !`, `Mabrouk 3lik`: congratulations. After a cue (`Mme Mabrouk !`), a name
                 continue
             start = run[0].start + run[0].clitic
             spans.append(to_span(doc, start, run[-1].end, EntityType.PERSON, _score(run, cue), self.name))
@@ -324,12 +330,12 @@ def _cue(doc: NormalizedDoc, words: list[_Word], i: int) -> str:
     prev = words[i - 1] if i > 0 else None
     if prev is not None and prev.honorific and _HONORIFIC_GAP.fullmatch(doc.text[prev.end : words[i].start]):
         if prev.text == "m":
-            # `M.` is a strong cue; `M` without its dot is too often something else (`M Bricolage`), and after
-            # a number it is a unit (`2 M. Dinars`).
+            # `M.` is a strong cue; `M` without its dot is too often something else (`M Bricolage`), and
+            # between a number and a unit it means million (`2 M. Dinars`).
             j = prev.start - 1
             while j >= 0 and doc.text[j] in " \t":
                 j -= 1
-            if j >= 0 and doc.text[j].isdigit():
+            if j >= 0 and doc.text[j].isdigit() and words[i].text in _AMOUNT_UNITS:
                 return ""
             return "strong" if doc.text.startswith(".", prev.end) else ""
         return "strong" if prev.text in STRONG_HONORIFICS or prev.cap is None else "weak"
@@ -359,14 +365,18 @@ def _score(run: list[_Word], cue: str) -> float:
         if common_only:
             return 0.5 if run[0].initial else 0.6
         return 0.85
-    # Lowercase: only Tunisian names count (see `TUNISIAN`)
+    # Partly capitalized (`Nicolas ben Salem`): the capitalized names vouch for the run
+    if any(caps):
+        if common_only:
+            return 0.3
+        return 0.7 if len(run) > 1 else 0.3
+    # All lowercase: only Tunisian names count (see `TUNISIAN`)
     tunisian = [w for w in listed if w.key in TUNISIAN]
     if not tunisian or all(common(w.key, True) for w in tunisian):
         return 0.3
     if len(run) > 1:
         return 0.7
-    first = [w for w in tunisian if w.key in FIRST_TN and _unaccent(w.text) == w.text]
-    return 0.6 if first else 0.3
+    return 0.6 if any(w.key in FIRST_TN for w in tunisian) else 0.3
 
 
 # Latin letters and their accented forms: `Gabès`, `Gabes` and `GABES` are one city.

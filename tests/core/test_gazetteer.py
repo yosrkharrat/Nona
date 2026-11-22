@@ -221,3 +221,22 @@ def test_names_still_found(text: str, expected: list[tuple[str, EntityType]]) ->
 def test_a_cue_before_a_line_break_does_not_lift_the_next_line() -> None:
     spans = [s for s in GazetteerRecognizer().detect(normalize("Bonjour\nKarim est là")) if s.score >= 0.5]
     assert [s.score for s in spans] == [0.5]  # a common-word name starting a line, no cue
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Nicolas ben Salem a appelé", [("Nicolas ben Salem", P)]),  # partly capitalized: scored on all names
+        ("Bonjour Mme Mabrouk !", [("Mabrouk", P)]),  # after a cue, `Mabrouk !` is a name
+        ("Merci M. Mabrouk 3lik", [("Mabrouk", P)]),
+        ("Facture 12 M. Kchouk", [("Kchouk", P)]),  # `M.` after a number is a unit only before one
+        ("hédi trabelsi est là", [("hédi trabelsi", P)]),  # accents in a lowercase Tunisian name
+    ],
+)
+def test_review_cases_of_56(text: str, expected: list[tuple[str, EntityType]]) -> None:
+    assert kept(text) == expected
+
+
+@pytest.mark.parametrize("text", ["Mabrouk Alik", "Mabrouk, 3lik", "Mabrouk 3alikom", "2 M. DT"])
+def test_more_blessings_and_amounts(text: str) -> None:
+    assert kept(text) == []
