@@ -110,8 +110,8 @@ Over all types: 0/170 merged, 0/51 split, 0/73 ambiguous. The 8 gold-`ambiguous`
 
 | PERSON | all of `dev` | multi-turn part |
 |---|---|---|
-| Mentions with a placeholder | 53.5% (138/258) | 42.0% (87/207) |
-| of which partly leaking (left out below) | 8.7% (12/138) | 13.8% (12/87) |
+| Mentions with a placeholder | 54.0% (141/261) | 42.9% (90/210) |
+| of which partly leaking (left out below) | 10.6% (15/141) | 16.7% (15/90) |
 | Wrong merge (entities) | 0% (0/65) | 0% (0/24) |
 | Wrong split (entities with 2+ masked mentions) | 0% (0/32) | 0% (0/24) |
 | Ambiguity (later mentions) | 0% (0/61) | 0% (0/51) |

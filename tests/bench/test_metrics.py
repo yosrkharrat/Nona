@@ -555,3 +555,12 @@ def test_a_leak_in_any_copy_of_a_turn_counts() -> None:
 def test_a_glued_clitic_is_not_part_of_the_placeholder() -> None:
     # `وسامي` is one token; the system keeps the clitic and masks the name: `وPERSON_1` is PERSON_1.
     assert placeholders("وسامي قال", "وPERSON_1 قال", [(1, 5)]) == ["PERSON_1"]
+
+
+def test_a_glued_clitic_is_stripped_whatever_the_token_counts() -> None:
+    assert placeholders("وسامي الجلاصي قال", "وPERSON_1 قال", [(1, 13)]) == ["PERSON_1"]
+
+
+def test_a_glued_digit_is_not_cut_from_a_placeholder() -> None:
+    assert placeholders("Ali1 arrive", "PERSON_1 arrive", [(0, 3)]) == ["PERSON_1"]
+    assert placeholders("Ali_1 arrive", "PERSON_1 arrive", [(0, 3)]) == ["PERSON_1"]

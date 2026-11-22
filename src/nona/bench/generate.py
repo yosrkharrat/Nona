@@ -642,7 +642,7 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
     _tpl("mt-ar-honorific", "ar", {"p1": "person:ar2:f", "ph": "phone:tn-fixed@p1"},
          "السيدة {p1.last} تنتظر ردًّا على ملفها.",
          (A, "سأتابع الأمر. ما اسمها الأول؟"),
-         "{p1.first}. رقمها المباشر {ph}.",
+         "{p1.first}. {p1} تعمل في فرعنا، ورقمها المباشر {ph}.",
          (A, "شكرًا، سأتصل بالسيدة {p1.last} على {ph}."),
          tags="honorific"),
     _tpl("mt-aeb-arab-listed", "aeb-Arab", {"p1": "person:ar:m", "ph": "phone:tn@p1"},

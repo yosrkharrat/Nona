@@ -273,7 +273,7 @@ def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) 
         if i2 - i1 == j2 - j1:
             for i, token in zip(range(i1, i2), replacement, strict=True):
                 if (k := owner[i]) is not None:
-                    parts[k].append(_strip_outside(token, original, a[i], spans[k]))
+                    parts[k].append(token)
             continue
         runs = [k for k, _ in itertools.groupby(owner[i1:i2])]
         named = [k for k in runs if k is not None]
@@ -294,24 +294,32 @@ def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) 
         else:
             for k in named:
                 lost[k] = True
+    for k, span in enumerate(spans):
+        _strip_glued(parts[k], original, a, span)
     return [None if lost[k] or not parts[k] else " ".join(parts[k]) for k in range(len(spans))]
 
 
-def _strip_outside(token: str, original: str, tok: re.Match[str], span: tuple[int, int]) -> str:
-    """The replacement for the part of an original token that is the mention: a glued clitic before it, or
-    anything after it, kept as is by the system, isn't part of the placeholder (`وسامي` → `وPERSON_1` gives
-    `PERSON_1`)."""
-    before = original[tok.start() : max(tok.start(), span[0])]
-    after = original[min(tok.end(), span[1]) : tok.end()]
-    folded = token.casefold()
+def _strip_glued(parts: list[str], original: str, tokens: list[re.Match[str]], span: tuple[int, int]) -> None:
+    """Remove from a span's replacement what the system kept of its first and last original tokens outside
+    the mention: a glued clitic before it (`وسامي` → `وPERSON_1` gives `PERSON_1`), or letters after it.
+
+    Compared exactly, as a system keeps glued text as written. A suffix is only removed when it holds a
+    letter: `Ali1` → `PERSON_1` must stay `PERSON_1`, not lose its digit.
+    """
+    inside = [t for t in tokens if t.start() < span[1] and span[0] < t.end()]
+    if not parts or not inside:
+        return
+    before = original[inside[0].start() : max(inside[0].start(), span[0])]
+    after = original[min(inside[-1].end(), span[1]) : inside[-1].end()]
+    if before and parts[0].startswith(before) and len(parts[0]) > len(before):
+        parts[0] = parts[0][len(before) :]
     if (
-        (before or after)
-        and len(token) > len(before) + len(after)
-        and folded.startswith(before.casefold())
-        and folded.endswith(after.casefold())
+        after
+        and any(c.isalpha() for c in after)
+        and parts[-1].endswith(after)
+        and len(parts[-1]) > len(after)
     ):
-        return token[len(before) : len(token) - len(after)]
-    return token
+        parts[-1] = parts[-1][: -len(after)]
 
 
 # --------------------------------------------------------------------------- results
