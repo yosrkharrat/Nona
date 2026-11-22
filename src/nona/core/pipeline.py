@@ -37,7 +37,13 @@ from nona.core.pseudonymize import (
 )
 from nona.core.recognizers import Recognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES, common
-from nona.core.resolver import denylist_spans, known_spans, resolve
+from nona.core.resolver import (
+    cut_at_placeholders,
+    denylist_spans,
+    known_spans,
+    placeholder_holes,
+    resolve,
+)
 from nona.core.types import EntityType, Span
 
 # Look-ahead only takes the words of a confident PERSON span, so one weak false positive can't spread its
@@ -127,7 +133,8 @@ class Nona:
         hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
         kept = [s for s in spans if s not in hiding]
         final = resolve([*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
-        return final, {s: t for s, t in span_seeds.items() if s in set(final)}
+        kept_spans = set(final)
+        return final, {s: t for s, t in span_seeds.items() if s in kept_spans}
 
     @staticmethod
     def _look_ahead_words(
@@ -151,11 +158,13 @@ class Nona:
             return not any(common(t, cased) for t in tokens) and (cased or tokens <= NAMES)
 
         # The resolver may keep a propagated form over the recognizer span at the same place: the recognizer
-        # still vouches for it.
+        # still vouches for it. Recognizer spans are cut at typed placeholders as the resolver cuts them.
         confident: dict[tuple[int, int], list[Span]] = {}
+        holes = placeholder_holes(text)
         for r in recognized:
             if r.type is EntityType.PERSON and r.score >= LOOK_AHEAD_MIN_SCORE:
-                confident.setdefault((r.start, r.end), []).append(r)
+                for piece in cut_at_placeholders(r, text, holes):
+                    confident.setdefault((piece.start, piece.end), []).append(piece)
 
         words: list[tuple[EntityType, str]] = []
         span_seeds: dict[Span, frozenset[str]] = {}

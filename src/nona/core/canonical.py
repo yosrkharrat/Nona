@@ -86,7 +86,7 @@ VARIANTS: Mapping[str, str] = {
     **dict.fromkeys(["noor"], "nour"),
     **dict.fromkeys(["moncef"], "monsef"),
     # Tunisian spellings of one name, both in the gazetteer lists
-    **dict.fromkeys(["rim"], "rym"),
+    # Not `Rim`/`Rym`: `rim` (gazelle) is a common word and `Rym` isn't, and merged keys share that status.
     **dict.fromkeys(["cyrine"], "syrine"),
     **dict.fromkeys(["yacine", "yasine"], "yassine"),
     **dict.fromkeys(["sofien", "sofiane"], "sofiene"),

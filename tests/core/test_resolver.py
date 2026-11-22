@@ -108,3 +108,9 @@ def test_loose_placeholder_lookalikes_are_not_cut() -> None:
     for text in ["card 4242424242424242", "RIB 08123456789012345678"]:
         span = Span(text.index(" ") + 1, len(text), EntityType.CARD, 1.0, "c")
         assert resolve([span], text) == [span]
+
+
+def test_a_placeholder_inside_a_span_leaves_both_sides() -> None:
+    text = "Sami PERSON_1 Trabelsi"
+    span = Span(0, len(text), EntityType.PERSON, 0.9, "ner")
+    assert [s.text_in(text) for s in resolve([span], text)] == ["Sami", "Trabelsi"]

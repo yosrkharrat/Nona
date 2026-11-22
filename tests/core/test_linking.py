@@ -602,3 +602,15 @@ def test_an_arabic_name_keeps_its_own_common_word_status(text: str) -> None:
 def test_an_arabic_name_links_to_its_latin_form() -> None:
     conv = Nona().anonymize_messages(["كريم الطرابلسي وصل", "Karim Trabelsi a confirmé."])
     assert conv.texts == ("PERSON_1 وصل", "PERSON_1 a confirmé.")
+
+
+def test_a_span_cut_at_a_placeholder_keeps_its_seeds() -> None:
+    n = Nona([_Fixed("Kenza Haddad PERSON_1", 0.9)])  # type: ignore[list-item]
+    conv = n.anonymize_messages(["Kenza Haddad PERSON_1 a écrit. Haddad attend."])
+    assert conv.texts == ("PERSON_2 PERSON_1 a écrit. PERSON_2 attend.",)  # PERSON_1 was typed: reserved
+
+
+def test_rym_stays_a_full_score_name() -> None:
+    # Not merged with `Rim`, which is also the word for gazelle (see `canonical.VARIANTS`).
+    [span] = Nona().detect("Rym a appelé.")
+    assert span.score == 0.85
