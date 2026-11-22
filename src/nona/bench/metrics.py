@@ -18,6 +18,8 @@ from enum import StrEnum
 
 from nona.bench.dataset import Conversation
 from nona.core import EntityType
+from nona.core.canonical import canonical_tokens
+from nona.core.recognizers.gazetteer import NAMES as GAZETTEER_NAMES
 
 # The headline leak rate covers direct identifiers only (05 §4). LOCATION and ORGANIZATION are reported apart.
 DIRECT_IDENTIFIERS = frozenset(
@@ -53,8 +55,15 @@ _IBAN_HEAD = re.compile(
 
 
 def normalize(text: str) -> str:
-    """NFKC, casefold, Eastern Arabic digits to ASCII, collapse whitespace."""
-    folded = unicodedata.normalize("NFKC", text).casefold().translate(_EASTERN_DIGITS)
+    """Drop format characters (Unicode Cf: zero-width spaces and joiners, soft hyphens), NFKC, casefold,
+    Eastern Arabic digits to ASCII, collapse whitespace.
+
+    Format characters are invisible, so `Sa\u200bmi` reads as `Sami` to a model: a system that inserts them
+    hasn't protected anything. Homoglyphs (a Cyrillic a, U+0430, in `Sami`) are not caught: NFKC doesn't map
+    them, and folding confusables would also merge real Cyrillic or Greek text. 05 §6 documents that limit.
+    """
+    visible = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    folded = unicodedata.normalize("NFKC", visible).casefold().translate(_EASTERN_DIGITS)
     return " ".join(folded.split())
 
 
@@ -118,8 +127,19 @@ def contains_word(haystack: str, needle: str) -> bool:
 
 class Outcome(StrEnum):
     LEAKED = "leaked"  # the value reached the upstream
+    OBFUSCATED = "obfuscated"  # a name spelled out with separators (`S a m i`, `S.a.m.i`): still a leak
     PARTIAL = "partial"  # not the value, but an identifying part of it (e.g. the surname)
     PROTECTED = "protected"
+
+
+# What the leak rate counts: a name a model can read back, however it is spelled.
+LEAKS = frozenset({Outcome.LEAKED, Outcome.OBFUSCATED})
+
+
+def _spread_out(name: str) -> re.Pattern[str]:
+    """A name's letters with any non-letters between them, at word boundaries: `S a m i`, `S.a.m.i`."""
+    letters = [c for c in name if c.isalnum()]
+    return re.compile(r"(?<!\w)" + r"[\W_]*".join(map(re.escape, letters)) + r"(?!\w)")
 
 
 def identifying_tokens(text: str, etype: EntityType) -> list[str]:
@@ -141,6 +161,8 @@ def classify(mention_text: str, etype: EntityType, payload: str) -> Outcome:
             return Outcome.LEAKED
     elif contains_word(norm_payload, normalize(mention_text)):
         return Outcome.LEAKED
+    if etype is EntityType.PERSON and _spread_out(normalize(mention_text)).search(norm_payload):
+        return Outcome.OBFUSCATED
     if any(contains_word(norm_payload, t) for t in identifying_tokens(mention_text, etype)):
         return Outcome.PARTIAL
     return Outcome.PROTECTED
@@ -156,8 +178,9 @@ def changed_ranges(original: str, payload: str) -> list[tuple[int, int]]:
     on-the-wire capture in S5. A placeholder like `PERSON_1` is one token, so it aligns cleanly.
     """
     a = list(_TOKEN.finditer(original))
-    b = _TOKEN.findall(payload)
-    matcher = difflib.SequenceMatcher(None, [m.group() for m in a], b, autojunk=False)
+    b = [t.casefold() for t in _TOKEN.findall(payload)]
+    # Case-insensitive: a system that only lowercases a word hasn't masked it (05 §6).
+    matcher = difflib.SequenceMatcher(None, [m.group().casefold() for m in a], b, autojunk=False)
     return [
         (a[i1].start(), a[i2 - 1].end())
         for tag, i1, i2, _, _ in matcher.get_opcodes()
@@ -260,6 +283,7 @@ class MentionResult:
     entity: str = ""
     ambiguous: bool = False
     placeholder: str | None = None  # what replaced the mention in the payload, if anything (`placeholders`)
+    listed: bool = False  # PERSON whose gold value has a gazetteer name: detection there is list overlap
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +299,7 @@ class Linking:
     wrong_merge: Rate  # entities sharing a placeholder with another entity / entities with a placeholder
     wrong_split: Rate  # entities under 2+ placeholders / entities with 2+ placed mentions
     ambiguity: Rate  # later mentions under a placeholder of their own / later placed mentions
+    partly_leaking: Rate = Rate(0, 0)  # placed mentions that also leak a part (`Chirine PERSON_1`) / placed
 
     def __add__(self, other: Linking) -> Linking:
         return Linking(
@@ -282,10 +307,11 @@ class Linking:
             self.wrong_merge + other.wrong_merge,
             self.wrong_split + other.wrong_split,
             self.ambiguity + other.ambiguity,
+            self.partly_leaking + other.partly_leaking,
         )
 
 
-NO_LINKING = Linking(Rate(0, 0), Rate(0, 0), Rate(0, 0), Rate(0, 0))
+NO_LINKING = Linking(Rate(0, 0), Rate(0, 0), Rate(0, 0), Rate(0, 0), Rate(0, 0))
 
 
 def link(mentions: Sequence[MentionResult]) -> Linking:
@@ -299,12 +325,22 @@ def link(mentions: Sequence[MentionResult]) -> Linking:
       entity's first placeholder nor one any other entity uses: an extra "person" for the model. ADR-0004
       gives an ambiguous mention its own placeholder; gold-ambiguous mentions are skipped, so this counts the
       mentions a human can resolve and the system couldn't. Every hit is also part of a wrong split.
+
+    A placed mention that also leaks part of the name (`Chirine PERSON_1`: the surname propagated, the first
+    name in clear) is counted in `partly_leaking` and left out of merge, split and ambiguity: its placeholder
+    covers only part of the mention, so it says little about linking, and counting it would credit the
+    linker for a detection gap.
     """
     scoped = [m for m in mentions if not m.public and not m.ambiguous]
     by_entity: dict[str, list[str]] = defaultdict(list)
+    partly = 0
     for m in scoped:
-        if m.placeholder is not None:
-            by_entity[m.entity].append(m.placeholder)
+        if m.placeholder is None:
+            continue
+        if m.outcome is Outcome.PARTIAL:
+            partly += 1
+            continue
+        by_entity[m.entity].append(m.placeholder)
     first = {e: labels[0] for e, labels in by_entity.items()}
     owners: dict[str, set[str]] = defaultdict(set)
     for e, labels in by_entity.items():
@@ -318,8 +354,15 @@ def link(mentions: Sequence[MentionResult]) -> Linking:
         claimed = {label for label, users in owners.items() if users - {e}}
         for label in labels[1:]:
             later += Rate(int(label != first[e] and label not in claimed), 1)
-    placed = sum(len(labels) for labels in by_entity.values())
-    return Linking(Rate(placed, len(scoped)), Rate(merged, len(by_entity)), Rate(split, len(multi)), later)
+    linked = sum(len(labels) for labels in by_entity.values())
+    placed = linked + partly
+    return Linking(
+        Rate(placed, len(scoped)),
+        Rate(merged, len(by_entity)),
+        Rate(split, len(multi)),
+        later,
+        Rate(partly, placed),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,10 +386,13 @@ def evaluate(conversation: Conversation, payloads: Sequence[str]) -> Conversatio
         for m, label in zip(turn.mentions, labels, strict=True):
             entity = conversation.entity(m.entity)
             outcome = classify(m.text, entity.type, payload)
+            listed = entity.type is EntityType.PERSON and bool(
+                canonical_tokens(entity.value) & GAZETTEER_NAMES
+            )
             mentions.append(
                 MentionResult(
                     conversation.id, i, turn.role, language, entity.type, entity.public, m.text, outcome,
-                    m.entity, m.ambiguous, label,
+                    m.entity, m.ambiguous, label, listed,
                 )
             )  # fmt: skip
         changed = changed_ranges(turn.text, payload)
@@ -397,17 +443,36 @@ class Report:
         ]
 
     @staticmethod
-    def rate(mentions: Sequence[MentionResult], outcome: Outcome = Outcome.LEAKED) -> Rate:
-        return Rate(sum(m.outcome is outcome for m in mentions), len(mentions))
+    def rate(mentions: Sequence[MentionResult], outcomes: Iterable[Outcome] = LEAKS) -> Rate:
+        wanted = frozenset(outcomes)
+        return Rate(sum(m.outcome in wanted for m in mentions), len(mentions))
 
     @property
     def headline(self) -> Rate:
-        """Leak rate on direct identifiers in user, system and tool turns. Public figures excluded."""
+        """Leak rate on direct identifiers in user, system and tool turns. Public figures excluded. Obfuscated
+        names count as leaks."""
         return self.rate(self.select())
 
     @property
     def partial(self) -> Rate:
-        return self.rate(self.select(), Outcome.PARTIAL)
+        return self.rate(self.select(), (Outcome.PARTIAL,))
+
+    @property
+    def obfuscated(self) -> Rate:
+        """Names spelled out with separators (part of the headline)."""
+        return self.rate(self.select(), (Outcome.OBFUSCATED,))
+
+    @property
+    def deleted(self) -> Rate:
+        """Mentions that neither leaked nor carry a placeholder: removed, or replaced by something the
+        alignment couldn't attribute. Deleting everything would give a perfect leak rate, so it shows here."""
+        scope = self.select()
+        return Rate(sum(m.outcome is Outcome.PROTECTED and m.placeholder is None for m in scope), len(scope))
+
+    @property
+    def held_out(self) -> Rate:
+        """PERSON leak rate on names that aren't in the gazetteer: detection, not list overlap (05 §4)."""
+        return self.rate([m for m in self.select(types=(EntityType.PERSON,)) if not m.listed])
 
     @property
     def assistant(self) -> Rate:

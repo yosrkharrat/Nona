@@ -42,6 +42,10 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not names or unknown:
         parser.error(f"unknown system(s) {unknown or names}; choose from: {', '.join(sorted(SYSTEMS))}")
     dataset: Path = args.data / f"{args.split}.jsonl"
+    if not dataset.is_file() and not args.data.is_absolute():
+        from nona.bench.runner import REPO_ROOT
+
+        dataset = REPO_ROOT / dataset  # run from anywhere inside a checkout
     if not dataset.is_file():
         print(f"error: no dataset file at {dataset}", file=sys.stderr)
         return 1

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from nona.bench.dataset import dumps_jsonl, load_jsonl
+from nona.bench.dataset import Conversation, dumps_jsonl, load_jsonl, parse_conversation
 from nona.bench.metrics import Rate
-from nona.bench.runner import run, summary
+from nona.bench.runner import causal_payloads, run, summary
 from nona.bench.systems import IdentitySystem, NonaSystem
 from nona.cli import main
 from nona.core import Entity, EntityType, Nona
@@ -149,7 +149,9 @@ def test_nona_links_people_consistently_on_dev() -> None:
     assert people.wrong_split.hits == 0
     linking = summary(r)["linking"]
     assert set(linking) == {"all", "PERSON"}
-    assert set(linking["PERSON"]) == {"mentions_with_placeholder", "wrong_merge", "wrong_split", "ambiguity"}
+    assert set(linking["PERSON"]) == {
+        "mentions_with_placeholder", "partly_leaking", "wrong_merge", "wrong_split", "ambiguity",
+    }  # fmt: skip
 
 
 def _touching(
@@ -185,3 +187,43 @@ def test_nona_never_gives_an_email_the_wrong_owner_on_dev() -> None:
                     assert owner in people.get(gold.owner, set()), (conv.id, m.text, owner)
                     correct += 1
     assert correct >= 8
+
+
+# --------------------------------------------------------------------------- harness validity (#58)
+
+
+def test_a_system_that_looks_ahead_gains_nothing() -> None:
+    """Turn `i` is computed from turns `0..i` only (ADR-0004): a system that masks `Sami` because a *later*
+    turn says it's a name can't use that for the earlier turn."""
+
+    class LooksAhead:
+        name = "looks-ahead"
+
+        def payloads(self, conversation: Conversation) -> list[str]:
+            told = any("NAME:" in t.text for t in conversation.turns)
+            return [t.text.replace("Sami", "PERSON_1") if told else t.text for t in conversation.turns]
+
+    conv = parse_conversation(
+        {
+            "id": "c", "languages": ["fr"], "source": "handwritten", "tags": [],
+            "entities": [{"id": "e1", "type": "PERSON", "value": "Sami"}],
+            "turns": [
+                {"role": "user", "text": "Sami arrive.",
+                 "mentions": [{"text": "Sami", "entity": "e1", "start": 0, "end": 4}]},
+                {"role": "user", "text": "NAME: Sami",
+                 "mentions": [{"text": "Sami", "entity": "e1", "start": 6, "end": 10}]},
+            ],
+        }
+    )  # fmt: skip
+    assert LooksAhead().payloads(conv)[0] == "PERSON_1 arrive."  # what it would send with hindsight
+    assert causal_payloads(LooksAhead(), conv) == ["Sami arrive.", "NAME: PERSON_1"]
+
+
+def test_the_summary_does_not_depend_on_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    r = run(IdentitySystem(), "dev", DEV)
+    s = summary(r)
+    assert s["dataset"]["path"] == "bench/data/dev.jsonl"
+    assert s["python"].count(".") == 1  # major.minor only

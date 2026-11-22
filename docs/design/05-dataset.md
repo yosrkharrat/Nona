@@ -110,10 +110,13 @@ Fake values must never be the real data of a real person.
 
 The benchmark captures the **payload sent upstream** for each turn (04 §F). For each gold mention:
 
-- **Normalization before comparing:** NFKC, casefold, Eastern Arabic digits → ASCII digits, collapse whitespace. For PHONE, IBAN, RIB, CARD and NATIONAL_ID, compare **digits and letters only** (`22.123.456` ≡ `22123456`).
+- **Normalization before comparing:** drop invisible format characters (Unicode Cf: zero-width spaces and joiners, soft hyphens), NFKC, casefold, Eastern Arabic digits → ASCII digits, collapse whitespace. For PHONE, IBAN, RIB, CARD and NATIONAL_ID, compare **digits and letters only** (`22.123.456` ≡ `22123456`).
 - **Leaked:** the normalized mention text appears in the normalized upstream payload of the same turn, at word boundaries (`Sami` does not match inside `Samir`).
+- **Obfuscated** (PERSON): not leaked as written, but its letters appear in order with only separators between them, at word boundaries (`S a m i`, `S.a.m.i`). A model reads it back, so the headline counts it as a leak, and the report shows its share.
 - **Partially leaked:** not leaked, but a token of 3+ characters from the mention (not an honorific) appears at word boundaries. For example, the surname got through.
-- **Over-masking:** a placeholder in the upstream payload whose range doesn't overlap any gold mention. Reported overall and on `distractors`.
+- **Over-masking:** a placeholder in the upstream payload whose range doesn't overlap any gold mention. Reported overall and on `distractors`. Tokens are compared case-insensitively: lowercasing a word doesn't mask it.
+- **Deleted:** a mention that neither leaked nor carries a placeholder. Deleting every name would give a perfect leak rate, so this rate sits next to it.
+- **Causal payloads:** turn `i`'s payload is computed from turns `0..i` only (the runner calls the system once per prefix), so a system can't use a later turn to mask an earlier one (ADR-0004).
 
 **Details fixed by the implementation** (`src/nona/bench/metrics.py`, unit and property tests in `tests/bench/test_metrics.py`):
 
@@ -121,8 +124,8 @@ The benchmark captures the **payload sent upstream** for each turn (04 §F). For
 - **Phones** also leak through their national number: `+216 22 123 456` counts as leaked if `22123456` reaches the upstream, and `+33 6 12 34 56 78` if `06 12 34 56 78` does.
 - **Partial leaks ignore tokens that identify no one:** honorifics, the name particles `ben`/`bin`/`bou`, phone country codes, the domain of an e-mail address, and the country-and-check head of an IBAN (`TN59`).
 - **Over-masking is measured black-box.** The original turn and the payload are split into tokens and aligned (`difflib`). A word token outside every gold mention that was replaced or removed counts as over-masked. Rate = over-masked tokens / non-PII word tokens. Distractors are reported apart: the share of distractors that were touched. This works the same for Nona, for baselines that don't report offsets, and for the on-the-wire capture (FR-21).
-- **Scopes:** the headline covers direct identifiers in `user`, `system` and `tool` turns. Restored `assistant` turns that the client re-sends get their own leak rate (ADR-0004).
-- **Linking (ADR-0004), also black-box.** The same alignment tells which payload text replaced each gold mention: its *placeholder* (`Mme Trabelsi` → `Mme PERSON_1` gives `PERSON_1`; a longer replaced stretch is cut into runs of mention and non-mention words and paired in order, so `M. Sami` → `Monsieur PERSON_1` and `Sami Ben Ali` → `PERSON_1 PERSON_2` both work). A mention gets none when it leaked in full, was deleted, or shares its replacement with another mention in a way that can't be split. A partial leak (`Ahmed PERSON_1`) keeps its placeholder and counts. Within each conversation and type, over non-public mentions that have a placeholder, skipping `ambiguous: true`:
+- **Scopes:** the headline covers direct identifiers in `user`, `system` and `tool` turns. Restored `assistant` turns that the client re-sends get their own leak rate (ADR-0004). A **held-out** PERSON leak rate covers only people with no name in the gazetteer, so it measures detection rather than list overlap.
+- **Linking (ADR-0004), also black-box.** The same alignment tells which payload text replaced each gold mention: its *placeholder* (`Mme Trabelsi` → `Mme PERSON_1` gives `PERSON_1`; a longer replaced stretch is cut into runs of mention and non-mention words and paired in order, so `M. Sami` → `Monsieur PERSON_1` and `Sami Ben Ali` → `PERSON_1 PERSON_2` both work). A mention gets none when it leaked in full, was deleted, or shares its replacement with another mention in a way that can't be split. A partial leak (`Ahmed PERSON_1`) keeps its placeholder but is reported apart (*partly leaking*) and left out of merge, split and ambiguity: its placeholder covers part of the mention only, and counting it would credit linking for a detection gap. Within each conversation and type, over non-public mentions that have a placeholder, skipping `ambiguous: true`:
   - **wrong merge** = entities that share a placeholder with another gold entity / entities with a placeholder;
   - **wrong split** = entities under 2+ placeholders / entities with 2+ masked mentions;
   - **ambiguity** = mentions after an entity's first masked one whose placeholder is neither that entity's first placeholder nor one any other entity uses (an extra "person") / such later mentions. Every ambiguity hit is also part of a wrong split.
@@ -131,7 +134,7 @@ The benchmark captures the **payload sent upstream** for each turn (04 §F). For
 
 The `identity` system (sends everything unchanged) must score 100% leaked and 0% over-masked. A property test also checks that a system replacing exactly the gold mentions scores 0% and 0%, on any seed of the generator.
 
-**Known limit:** a word-boundary substring check can count a coincidental match as a leak, e.g. a gold name `Nour` while the payload legitimately contains the word *nour*. This makes the leak rate slightly pessimistic, which is the safe direction. Cases are listed in the report rather than silently removed.
+**Known limits:** homoglyphs (a Cyrillic `a` inside a Latin name) aren't caught: NFKC doesn't map them, and folding confusables would also merge genuine Cyrillic or Greek text. And a word-boundary substring check can count a coincidental match as a leak, e.g. a gold name `Nour` while the payload legitimately contains the word *nour*. This makes the leak rate slightly pessimistic, which is the safe direction. Cases are listed in the report rather than silently removed.
 
 ## 7. Size and balance (v0.1)
 
@@ -145,7 +148,7 @@ The `identity` system (sends everything unchanged) must score 100% leaked and 0%
 
 | Part | Conversations | How it's made |
 |---|---|---|
-| v0 (`dev-0001`…`0080`) | 80, mostly single-turn | `generate --seed 1 --count 80` (S1). Committed before #34 changed phone formats, so today's generator gives slightly different values for it; the committed file is the source of truth |
+| v0 (`dev-0001`…`0080`) | 80, mostly single-turn | `generate --seed 20261120 --count 80 --prefix dev` (S1, regenerated in #34). A test checks that this command still gives the committed lines byte for byte |
 | multi-turn (`dev-0081`…`0120`) | 40, 4–5 turns each | `generate --set multi-turn --seed 2 --count 40 --start 81` (S3, #41) |
 
 The multi-turn set exists for linking (ADR-0004): a short name before the full one, two people sharing a first name with `ambiguous: true` references, honorifics, assistant turns that repeat restored names, lowercase Arabizi names, cities (LOCATION), name-like decoys (`amal`, `sana`, `3amel`, `3ali`), and no-PII controls. Most of its people come from the generator's `tn2` pool, which holds names that are **not** in the gazetteer (a test enforces it). That way the benchmark measures detection rather than list overlap: on v0 the gazetteer reaches 0% leaked because 76 of the generator's 98 v0 names are common enough to be listed, while on the multi-turn set 70% of names still leak.

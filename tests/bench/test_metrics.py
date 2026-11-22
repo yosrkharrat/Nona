@@ -185,16 +185,19 @@ def test_placeholders_keeps_bracketed_redactions() -> None:
 
 
 def _m(
-    entity: str, placeholder: str | None, *, ambiguous: bool = False, public: bool = False
+    entity: str,
+    placeholder: str | None,
+    *,
+    ambiguous: bool = False,
+    public: bool = False,
+    outcome: Outcome = Outcome.PROTECTED,
 ) -> MentionResult:
-    return MentionResult(
-        "c", 0, "user", "fr", P, public, entity, Outcome.PROTECTED, entity, ambiguous, placeholder
-    )
+    return MentionResult("c", 0, "user", "fr", P, public, entity, outcome, entity, ambiguous, placeholder)
 
 
 def test_link_of_consistent_placeholders_is_clean() -> None:
     result = link([_m("e1", "PERSON_1"), _m("e2", "PERSON_2"), _m("e1", "PERSON_1")])
-    assert result == Linking(Rate(3, 3), Rate(0, 2), Rate(0, 1), Rate(0, 1))
+    assert result == Linking(Rate(3, 3), Rate(0, 2), Rate(0, 1), Rate(0, 1), Rate(0, 3))
 
 
 def test_link_counts_a_wrong_merge_for_every_entity_involved() -> None:
@@ -234,7 +237,7 @@ def test_link_skips_ambiguous_public_and_unplaced_mentions() -> None:
             _m("e1", None),
         ]
     )
-    assert result == Linking(Rate(1, 2), Rate(0, 1), Rate(0, 0), Rate(0, 0))
+    assert result == Linking(Rate(1, 2), Rate(0, 1), Rate(0, 0), Rate(0, 0), Rate(0, 1))
 
 
 def test_report_links_within_a_conversation_and_a_type() -> None:
@@ -450,3 +453,59 @@ def test_one_placeholder_for_everything_merges_every_entity_with_company(seed: i
         == 1
     )
     assert linking.wrong_merge.total - linking.wrong_merge.hits == alone
+
+
+# --------------------------------------------------------------------------- harness validity (#58)
+
+
+@pytest.mark.parametrize("payload", ["S a m i a appelé", "S.a.m.i a appelé", "s-a-m-i"])
+def test_a_name_spelled_out_is_obfuscated(payload: str) -> None:
+    assert classify("Sami", P, payload) is Outcome.OBFUSCATED
+
+
+def test_zero_width_characters_dont_hide_a_name() -> None:
+    assert classify("Sami", P, "Sa\u200bmi a appelé") is Outcome.LEAKED
+
+
+def test_spelled_out_check_keeps_word_boundaries() -> None:
+    assert classify("Ali", P, "une totalisation") is Outcome.PROTECTED  # `ali` inside a word isn't the name
+
+
+def test_lowercasing_is_not_masking() -> None:
+    assert changed_ranges("Bonjour Monsieur", "bonjour monsieur") == []
+
+
+def test_a_partly_leaking_placed_mention_is_reported_apart() -> None:
+    # `Chirine PERSON_1`: the surname propagated, the first name in clear. It doesn't count as linking.
+    result = link([_m("e1", "PERSON_1"), _m("e1", "PERSON_2", outcome=Outcome.PARTIAL)])
+    assert result.partly_leaking == Rate(1, 2)
+    assert result.wrong_split == Rate(0, 0)  # the partial mention is left out, so no split
+
+
+def test_deleted_mentions_are_reported() -> None:
+    c = parse_conversation(
+        {
+            "id": "c", "languages": ["fr"], "source": "handwritten", "tags": [],
+            "entities": [{"id": "e1", "type": "PERSON", "value": "Sami"}],
+            "turns": [{"role": "user", "text": "Sami arrive.",
+                       "mentions": [{"text": "Sami", "entity": "e1", "start": 0, "end": 4}]}],
+        }
+    )  # fmt: skip
+    report = Report.from_results([evaluate(c, [" arrive."])])
+    assert report.headline == Rate(0, 1)
+    assert report.deleted == Rate(1, 1)
+
+
+def test_held_out_rate_counts_names_outside_the_gazetteer_only() -> None:
+    c = parse_conversation(
+        {
+            "id": "c", "languages": ["fr"], "source": "handwritten", "tags": [],
+            "entities": [{"id": "e1", "type": "PERSON", "value": "Sami Trabelsi"},
+                         {"id": "e2", "type": "PERSON", "value": "Chiheb Drira"}],
+            "turns": [{"role": "user", "text": "Sami Trabelsi et Chiheb Drira.",
+                       "mentions": [{"text": "Sami Trabelsi", "entity": "e1", "start": 0, "end": 13},
+                                    {"text": "Chiheb Drira", "entity": "e2", "start": 17, "end": 29}]}],
+        }
+    )  # fmt: skip
+    report = Report.from_results([evaluate(c, ["Sami Trabelsi et Chiheb Drira."])])
+    assert report.held_out == Rate(1, 1)

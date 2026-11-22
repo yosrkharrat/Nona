@@ -5,7 +5,7 @@ the gold labels are exact by construction: the generator knows where it put ever
 `parse_conversation`, so a generated conversation is held to the same rules as a hand-written one.
 
 Usage (`bench/data/dev.jsonl` is the v0 set followed by the multi-turn set):
-    python -m nona.bench.generate --seed 1 --count 80 --prefix dev > bench/data/dev.jsonl
+    python -m nona.bench.generate --seed 20261120 --count 80 --prefix dev > bench/data/dev.jsonl
     python -m nona.bench.generate --set multi-turn --seed 2 --count 40 --prefix dev --start 81 \
         >> bench/data/dev.jsonl
 
