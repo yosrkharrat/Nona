@@ -288,7 +288,6 @@ _DIGITS = "0123456789"
 Splits = dict[str, tuple[str, str]]  # glued token → (particles, word), from `glued_parts`
 
 
-@functools.lru_cache(maxsize=4096)
 def _handle_pieces(handle: str) -> tuple[str, ...]:
     """Letters of each piece of a local part or handle.
 
@@ -385,14 +384,10 @@ def handle_matches(
     `wassim.ferchichi` fits someone known as `Wassim`, while `sami.jlassi` doesn't fit `Sami Trabelsi`. At
     most 6 pieces are searched that way.
 
-    Pure, so cached: linking asks again after every message, and the proxy re-runs whole conversations.
+    Not cached across calls: the cache would keep email handles from every conversation in process memory.
+    The linker calls it once per (email, person version) instead (`core/linking.py`).
     """
-    return _handle_matches(handle, tokens, _freeze(tokens, splits), superset)
-
-
-@functools.lru_cache(maxsize=16384)
-def _handle_matches(handle: str, tokens: frozenset[str], splits: _FrozenSplits, superset: bool) -> bool:
-    prepared = _prepare(handle, tokens, splits)
+    prepared = _prepare(handle, tokens, _freeze(tokens, splits))
     if prepared is None:
         return False
     pieces, units = prepared
@@ -410,12 +405,7 @@ def _handle_matches(handle: str, tokens: frozenset[str], splits: _FrozenSplits, 
 
 def handle_names(handle: str, tokens: frozenset[str], splits: Splits | None = None) -> bool:
     """Whether one separated piece of the handle is a name part of this person, written in full."""
-    return _handle_names(handle, tokens, _freeze(tokens, splits))
-
-
-@functools.lru_cache(maxsize=16384)
-def _handle_names(handle: str, tokens: frozenset[str], splits: _FrozenSplits) -> bool:
-    prepared = _prepare(handle, tokens, splits)
+    prepared = _prepare(handle, tokens, _freeze(tokens, splits))
     if prepared is None:
         return False
     pieces, units = prepared

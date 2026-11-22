@@ -681,16 +681,23 @@ def _owner_conversation(size: int) -> list[str]:
     return [f"{firsts[i % 10]} {lasts[i // 10 % 10]} : contact{i}.x{i}@example.com" for i in range(size)]
 
 
-def test_owner_cost_grows_slower_than_cubic() -> None:
-    """A message, a new person and a new unowned email each: deciding every email against every person after
-    every message was cubic (#57). Doubling the conversation must cost far less than 8x."""
-    import time
+def test_owner_matching_grows_slower_than_cubic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A message, a new person and a new unowned email each: matching every email against every person after
+    every message was cubic (#57). Counted, not timed, so CI noise can't decide it."""
+    import nona.core.linking as linking
 
-    n = Nona()
-    timings = []
+    calls = 0
+    real = linking.handle_matches
+
+    def counting(*args: object, **kwargs: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(linking, "handle_matches", counting)
+    counts = []
     for size in (40, 80):
-        msgs = _owner_conversation(size)
-        start = time.perf_counter()
-        n.anonymize_messages(msgs)
-        timings.append(time.perf_counter() - start)
-    assert timings[1] < timings[0] * 5  # cubic would be ~8x; linear-ish is ~2-3x
+        calls = 0
+        Nona().anonymize_messages(_owner_conversation(size))
+        counts.append(calls)
+    assert counts[1] < counts[0] * 5  # quadratic is ~4x; cubic ~8x

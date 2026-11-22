@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nona.core import EntityType, Nona, normalize
+from nona.core import EntityType, Nona, NormalizedDoc, normalize
 from nona.core.recognizers import GazetteerRecognizer, gazetteer_data
 
 P, L = EntityType.PERSON, EntityType.LOCATION
@@ -244,12 +244,17 @@ def test_more_blessings_and_amounts(text: str) -> None:
 
 def test_city_matching_is_linear() -> None:
     """Each city match was compared with every earlier one (#57): 100k characters of cities took 7 s."""
-    small = "Tunis Sfax Sousse Gabès Paris et Nabeul, " * 100
-    large = small * 10
+    small = normalize("Tunis Sfax Sousse Gabès Paris et Nabeul, " * 200)
+    large = normalize("Tunis Sfax Sousse Gabès Paris et Nabeul, " * 2000)
     recognizer = GazetteerRecognizer()
-    timings = []
-    for text in (small, large):
-        start = time.perf_counter()
-        recognizer.detect(normalize(text))
-        timings.append(time.perf_counter() - start)
-    assert timings[1] < timings[0] * 30  # 10x the text; quadratic would be ~100x
+    recognizer.detect(small)  # compiles the city patterns once, outside the timing
+
+    def best(doc: NormalizedDoc) -> float:
+        runs = []
+        for _ in range(5):
+            start = time.perf_counter()
+            recognizer.detect(doc)
+            runs.append(time.perf_counter() - start)
+        return min(runs)
+
+    assert best(large) < best(small) * 30  # 10x the text; quadratic would be ~100x
