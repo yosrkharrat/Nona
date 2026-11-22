@@ -4,9 +4,9 @@ Templates are written by hand. The generator fills their slots with synthetic va
 the gold labels are exact by construction: the generator knows where it put every value. Output goes through
 `parse_conversation`, so a generated conversation is held to the same rules as a hand-written one.
 
-Usage (`bench/data/dev.jsonl` is the v0 set followed by the multi-turn set):
+Usage (`bench/data/dev.jsonl` is the v0 set followed by the multi-turn set, 19 templates three times each):
     python -m nona.bench.generate --seed 20261120 --count 80 --prefix dev > bench/data/dev.jsonl
-    python -m nona.bench.generate --set multi-turn --seed 2 --count 40 --prefix dev --start 81 \
+    python -m nona.bench.generate --set multi-turn --seed 2 --count 57 --prefix dev --start 81 \
         >> bench/data/dev.jsonl
 
 Slot syntax inside a template turn: `{name}` or `{name.form}`. Each slot name is declared once per template
@@ -17,9 +17,10 @@ value to person `p1` (deep dive B, step 6). A person kind may share another pers
 human can't tell which of the two is meant, so linking metrics skip it. Kinds starting with `~` are
 distractors: they look like personal data but aren't, and they're recorded for over-masking analysis.
 
-The `tn2` pool holds Tunisian names that are deliberately **not** in the gazetteer
-(`nona.core.recognizers.gazetteer_data`), so the benchmark measures detection, not list overlap (a test keeps
-it that way).
+The `tn2` and `ar2` pools hold Tunisian names, in Latin and Arabic script, that are deliberately **not** in
+the gazetteer (`nona.core.recognizers.gazetteer_data`), so the benchmark measures detection, not list overlap
+(a test keeps it that way). Templates that use listed names (`tn`, `ar`) say so in their name (`-listed`) or
+are in the v0 set, and the report's held-out rate leaves them out.
 
 Determinism: the same seed and the same templates give the same output on the same Python minor version.
 `random.Random` methods other than `random()` may change between Python versions, so the committed files,
@@ -69,6 +70,15 @@ FIRST_NAMES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
         "f": ("Chaima", "Khouloud", "Ranim", "Mayssa", "Chirine", "Islem", "Ahlem", "Rihem", "Nadhra",
               "Molka", "Yasmine", "Asmahen"),
     },
+    # Arabic script (#58): `ar` is in the gazetteer lists, `ar2` is held out like `tn2` (tests check both).
+    "ar": {
+        "m": ("أحمد", "محمد", "سامي", "يوسف", "ياسين", "هشام", "وليد", "طارق"),
+        "f": ("فاطمة", "مريم", "ليلى", "سلمى", "زينب", "سارة", "منى", "نادية"),
+    },
+    "ar2": {
+        "m": ("غيث", "معتز", "أشرف", "نضال", "ريان", "شهاب", "حازم", "زكرياء"),
+        "f": ("شيماء", "خلود", "رنيم", "ميساء", "شيرين", "إسلام", "أحلام", "ملك"),
+    },
 }  # fmt: skip
 SURNAMES: Mapping[str, tuple[str, ...]] = {
     "tn": ("Ben Salem", "Trabelsi", "Gharbi", "Mejri", "Ayari", "Sassi", "Dridi", "Khelifi", "Chaabane",
@@ -79,6 +89,8 @@ SURNAMES: Mapping[str, tuple[str, ...]] = {
     "en": ("Carter", "Hughes", "Bennett", "Foster", "Walsh", "Porter", "Reed", "Hayes", "Turner", "Collins"),
     "tn2": ("Bouhlel", "Chtioui", "Zghal", "Ben Hmida", "Ghariani", "Drira", "Kammoun", "Haddar", "Belkhodja",
             "Sellami", "Lahmar", "Mnif", "Ben Fraj", "Hachicha", "Jaouadi", "Ghorbel", "Boukadida"),
+    "ar": ("الطرابلسي", "الغربي", "الجلاصي", "المنصوري", "الخليفي", "الماجري"),
+    "ar2": ("بوهلال", "الشتيوي", "الزغل", "دريرة", "كمون", "الحشيشة", "الغرياني", "المنيف"),
 }  # fmt: skip
 # Cities for LOCATION values, some of them outside the gazetteer's list.
 CITIES: tuple[str, ...] = (
@@ -287,8 +299,21 @@ _DISTRACTORS: Mapping[str, tuple[str, Callable[[random.Random], str]]] = {
     "~word:3ali": ("ordinary word that is also a name (high)", lambda rng: "3ali"),
     "~word:sana": ("ordinary word that is also a name (year)", lambda rng: "sana"),
     "~word:3amel": ("ordinary word that is also a name (doing)", lambda rng: "3amel"),
+    # Over-masking controls (#58): words that fold to a name, Darija expressions, a brand after a cue, and
+    # Arabic expressions holding a name-like word.
+    "~word:marie": ("French word that folds to a name (married)", lambda rng: "marié"),
+    "~word:claire": ("French word that is also a name (clear)", lambda rng: "claire"),
+    "~word:pierre": ("French word that is also a name (stone)", lambda rng: "pierre"),
+    "~word:grace": ("French word that folds to a name (thanks to)", lambda rng: "Grâce"),
+    "~word:mabrouk": ("Darija expression that is also a name (congratulations)", lambda rng: "Mabrouk"),
+    "~word:sahbi": ("Darija word that is also a name (my friend)", lambda rng: "sahbi"),
+    "~word:saber": ("Darija word that is also a name (patient)", lambda rng: "saber"),
+    "~brand:ooredoo": ("brand after a Darija cue word (m3a)", lambda rng: "Ooredoo"),
+    "~word:karim-ar": ("Arabic word that is also a name (generous, in Ramadan kareem)", lambda rng: "كريم"),
+    "~word:amine-ar": ("Arabic word that is also a name (amen)", lambda rng: "آمين"),
+    "~word:amal-ar": ("Arabic word that is also a name (hope)", lambda rng: "أمل"),
 }
-_PERSON = re.compile(r"person:(tn2|tn|fr|en)(?::([mf]))?(?:=(\w+))?")
+_PERSON = re.compile(r"person:(tn2|tn|fr|en|ar2|ar)(?::([mf]))?(?:=(\w+))?")
 KINDS = (
     frozenset(_STRUCTURED)
     | frozenset(_DISTRACTORS)
@@ -529,7 +554,7 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
     _tpl("mt-fr-moved-city", "fr", {"p1": "person:tn2:m", "c1": "city", "rib": "rib@p1"},
          "{p1} a déménagé à {c1}, il faut mettre à jour son dossier.",
          (A, "D'accord. Quelle est la nouvelle adresse de {p1.first} à {c1} ?"),
-         "Rue de la République. Et voici son nouveau RIB : {rib}.",
+         "Il t'envoie l'adresse par mail. Et voici son nouveau RIB : {rib}.",
          (A, "Le dossier de {p1} est à jour, avec le RIB {rib}."),
          "Merci. Préviens {p1.first} quand c'est fait."),
     _tpl("mt-en-colleague", "en",
@@ -540,6 +565,15 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
          (A, "I've sent {p2.first} a reset link at {em}."),
          "Thanks. If anything else comes up, call me on {ph}."),
     _tpl("mt-mix-two-same-first-name", "aeb-Latn+fr",
+         {"p1": "person:tn2:m", "p2": "person:tn2:m=p1", "ph": "phone:tn@p1"},
+         "3andi rendez-vous m3a {p1} w {p2} lundi.",
+         (A, "D'accord, je note {p1} et {p2} pour lundi."),
+         "{p1.first?} 9alli bech yjib el contrat.",
+         (A, "Lequel, {p1} ou {p2} ?"),
+         "{p1}, nomrou {ph}.",
+         tags="ambiguous-reference"),
+    # The same with names from the gazetteer's lists: linking on names that are detected, reported apart.
+    _tpl("mt-mix-two-same-first-name-listed", "aeb-Latn+fr",
          {"p1": "person:tn:m", "p2": "person:tn:m=p1", "ph": "phone:tn@p1"},
          "3andi rendez-vous m3a {p1} w {p2} lundi.",
          (A, "D'accord, je note {p1} et {p2} pour lundi."),
@@ -547,6 +581,20 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
          (A, "Lequel, {p1} ou {p2} ?"),
          "{p1}, nomrou {ph}.",
          tags="ambiguous-reference"),
+    # Absorption with the short form detected (#58): a strong cue on a held-out first name, and a listed one.
+    _tpl("mt-fr-cue-then-full", "fr", {"p1": "person:tn2:f", "ph": "phone:tn@p1"},
+         "Mme {p1.first} a appelé ce matin.",
+         (A, "Que voulait Mme {p1.first} ?"),
+         "{p1} veut déplacer son rendez-vous. Son numéro est le {ph}.",
+         (A, "Je rappelle {p1} au {ph}."),
+         "Merci. Dis à {p1.first} que jeudi convient.",
+         tags="honorific"),
+    _tpl("mt-fr-listed-short-then-full", "fr", {"p1": "person:tn:m", "ph": "phone:tn@p1"},
+         "Rappelle {p1.first} demain matin, c'est urgent.",
+         (A, "D'accord, je rappellerai {p1.first} demain matin. Vous avez son numéro ?"),
+         "Oui, c'est {p1}, au {ph}.",
+         (A, "C'est noté : {p1}, au {ph}."),
+         "Et dis à {p1.first} que la réunion est déplacée à 15h."),
     _tpl("mt-fr-honorific-surname", "fr", {"p1": "person:tn2:f", "ph": "phone:tn-fixed@p1", "c1": "city"},
          "Mme {p1.last} attend une réponse pour son dossier.",
          (A, "Je m'en occupe. Pouvez-vous me rappeler son prénom ?"),
@@ -568,6 +616,48 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
          "Merci! And what does Main do in Java?",
          (A, "It's the entry point: the method the runtime calls first."),
          "Great, Thanks for the help."),
+    # Over-masking controls (#58): no personal data, only words that look like names.
+    _tpl("mt-fr-overmask-control", "fr",
+         {"w1": "~word:marie", "w2": "~word:claire", "w3": "~word:pierre", "w4": "~word:grace"},
+         "Je suis {w1} depuis deux ans et l'explication du notaire était {w2}.",
+         (A, "Félicitations ! Que puis-je faire pour vous ?"),
+         "On veut poser une {w3} gravée dans le jardin. C'est autorisé ?",
+         (A, "En général oui, mais vérifiez le règlement de votre commune."),
+         "{w4} à vous, c'est plus clair."),
+    _tpl("mt-aeb-overmask-control", "aeb-Latn",
+         {"w1": "~word:mabrouk", "w2": "~word:sahbi", "w3": "~brand:ooredoo", "w4": "~word:saber"},
+         "{w1} 3lik el bac ya {w2} !",
+         (A, "Merci, rabbi y5allik."),
+         "taw nemchi m3a {w3} nchri puce jdida.",
+         (A, "Behi, ken t7eb n3awnek fel offre."),
+         "la, lazem {w4} chwaya, el offre tetbadel ghodwa."),
+    # Arabic script (#58): clitics glued to names (لـ, وـ), an honorific, listed and held-out names.
+    _tpl("mt-aeb-arab-short-then-full", "aeb-Arab", {"p1": "person:ar2:m", "ph": "phone:tn@p1"},
+         "كلّم {p1.first} غدوة الصباح، الحكاية مستعجلة.",
+         (A, "باهي، شنوّة نومرو {p1.first}؟"),
+         "{p1}، النومرو متاعو {ph}.",
+         (A, "تسجّل: {p1}، {ph}."),
+         "وقلّو ل{p1.first} الاجتماع تأخّر للثلاثة.",
+         tags="clitic"),
+    _tpl("mt-ar-honorific", "ar", {"p1": "person:ar2:f", "ph": "phone:tn-fixed@p1"},
+         "السيدة {p1.last} تنتظر ردًّا على ملفها.",
+         (A, "سأتابع الأمر. ما اسمها الأول؟"),
+         "{p1.first}. رقمها المباشر {ph}.",
+         (A, "شكرًا، سأتصل بالسيدة {p1.last} على {ph}."),
+         tags="honorific"),
+    _tpl("mt-aeb-arab-listed", "aeb-Arab", {"p1": "person:ar:m", "ph": "phone:tn@p1"},
+         "عندي موعد مع {p1} نهار الاثنين.",
+         (A, "باهي، نسجّل موعد {p1.first}."),
+         "و{p1.first} قالي باش يجيب العقد، النومرو متاعو {ph}.",
+         (A, "تسجّل {p1} على {ph}."),
+         tags="clitic"),
+    _tpl("mt-ar-no-pii", "ar",
+         {"w1": "~word:karim-ar", "w2": "~word:amine-ar", "w3": "~word:amal-ar"},
+         "رمضان {w1} على الجميع!",
+         (A, "وعليكم، كل عام وأنتم بخير."),
+         "اللهم {w2}. عندي {w3} كبير في هذا المشروع.",
+         (A, "إن شاء الله يتحقق ما تتمناه."),
+         tags="common-word-name"),
 )  # fmt: skip
 
 TEMPLATE_SETS: Mapping[str, tuple[Template, ...]] = {"v0": TEMPLATES, "multi-turn": MULTI_TURN_TEMPLATES}

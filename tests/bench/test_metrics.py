@@ -550,3 +550,8 @@ def test_a_leak_in_any_copy_of_a_turn_counts() -> None:
     # masked when first sent, then sent again in clear in a later request
     result = evaluate(c, ["PERSON_1 arrive."], [["PERSON_1 arrive.", "Sami arrive."]])
     assert [m.outcome for m in result.mentions] == [Outcome.LEAKED]
+
+
+def test_a_glued_clitic_is_not_part_of_the_placeholder() -> None:
+    # `وسامي` is one token; the system keeps the clitic and masks the name: `وPERSON_1` is PERSON_1.
+    assert placeholders("وسامي قال", "وPERSON_1 قال", [(1, 5)]) == ["PERSON_1"]

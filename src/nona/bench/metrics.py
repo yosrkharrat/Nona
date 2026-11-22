@@ -273,7 +273,7 @@ def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) 
         if i2 - i1 == j2 - j1:
             for i, token in zip(range(i1, i2), replacement, strict=True):
                 if (k := owner[i]) is not None:
-                    parts[k].append(token)
+                    parts[k].append(_strip_outside(token, original, a[i], spans[k]))
             continue
         runs = [k for k, _ in itertools.groupby(owner[i1:i2])]
         named = [k for k in runs if k is not None]
@@ -295,6 +295,23 @@ def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) 
             for k in named:
                 lost[k] = True
     return [None if lost[k] or not parts[k] else " ".join(parts[k]) for k in range(len(spans))]
+
+
+def _strip_outside(token: str, original: str, tok: re.Match[str], span: tuple[int, int]) -> str:
+    """The replacement for the part of an original token that is the mention: a glued clitic before it, or
+    anything after it, kept as is by the system, isn't part of the placeholder (`وسامي` → `وPERSON_1` gives
+    `PERSON_1`)."""
+    before = original[tok.start() : max(tok.start(), span[0])]
+    after = original[min(tok.end(), span[1]) : tok.end()]
+    folded = token.casefold()
+    if (
+        (before or after)
+        and len(token) > len(before) + len(after)
+        and folded.startswith(before.casefold())
+        and folded.endswith(after.casefold())
+    ):
+        return token[len(before) : len(token) - len(after)]
+    return token
 
 
 # --------------------------------------------------------------------------- results

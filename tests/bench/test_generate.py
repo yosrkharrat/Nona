@@ -253,10 +253,17 @@ DEV_PATH = Path(__file__).resolve().parents[2] / "bench" / "data" / "dev.jsonl"
 
 
 def test_held_out_names_are_not_in_the_gazetteer() -> None:
-    """`tn2` measures detection, not list overlap: none of its names may be in the gazetteer."""
-    pool = [*FIRST_NAMES["tn2"]["m"], *FIRST_NAMES["tn2"]["f"], *SURNAMES["tn2"]]
-    leaked = [name for name in pool if canonical_tokens(name) & gazetteer.NAMES]
-    assert leaked == []
+    """`tn2` and `ar2` measure detection, not list overlap: none of their names may be in the gazetteer."""
+    for held_out in ("tn2", "ar2"):
+        pool = [*FIRST_NAMES[held_out]["m"], *FIRST_NAMES[held_out]["f"], *SURNAMES[held_out]]
+        leaked = [name for name in pool if canonical_tokens(name) & gazetteer.NAMES]
+        assert leaked == [], held_out
+
+
+def test_listed_arabic_names_are_in_the_gazetteer() -> None:
+    """`ar` is the listed counterpart of `ar2`: every one of its names is in the lists."""
+    pool = [*FIRST_NAMES["ar"]["m"], *FIRST_NAMES["ar"]["f"], *SURNAMES["ar"]]
+    assert [name for name in pool if not canonical_tokens(name) & gazetteer.NAMES] == []
 
 
 @settings(max_examples=30, deadline=None)
