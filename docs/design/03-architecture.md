@@ -119,6 +119,7 @@ whole history on every request and keeps nothing between requests (ADR-0002).
 nona/
 ├─ src/nona/
 │  ├─ core/            # walker, normalizer, recognizers/, resolver, linker, pseudonymizer, restorer
+│  ├─ bridges/         # work-platform bridges (§9, S9): adapter protocol, slack.py
 │  ├─ proxy/           # FastAPI app, upstream client, SSE handling
 │  │  ├─ telemetry.py  # OTel spans, Prometheus metrics, allowlisted attributes (ADR-0005)
 │  │  └─ sessions/     # SessionStore: memory, redis (ADR-0006)
@@ -152,6 +153,7 @@ nona/
 | Observability | OpenTelemetry (traces), Prometheus (metrics), structlog (JSON logs), Grafana LGTM for the demo | Vendor-neutral standards. Hand-written spans keep telemetry PII-free (ADR-0005) |
 | Session store | in-memory or Redis/Valkey, AES-256-GCM via `cryptography` | Shared state across replicas, unreadable without the session id (ADR-0006) |
 | Load testing | k6 | Scriptable, reports percentiles, runs in CI (NFR-15) |
+| Work-platform bridge (S9) | Slack Bolt for Python in Socket Mode, the official `anthropic` SDK, in the `slack` extra | Socket Mode needs no public URL, so the bridge runs on a laptop like the proxy (§9) |
 | Quality | ruff, pyright, pre-commit, GitHub Actions, CodeQL, pip-audit | — |
 | Release | release-please, PyPI Trusted Publishing, GHCR multi-arch, cosign, SLSA provenance, CycloneDX SBOM, OpenSSF Scorecard | Verifiable releases for a tool that sees every prompt (ADR-0007) |
 | Deployment | Docker, docker-compose, Helm | Local, demo, and Kubernetes sidecar |
@@ -169,3 +171,65 @@ nona/
 - Helm chart (`deploy/helm/nona`) for the sidecar or a shared gateway. Several replicas need the Redis session store for stateful mode (ADR-0006).
 - `docker compose -f deploy/compose/observability.yml up` starts Nona with Grafana, Prometheus and Tempo and a ready-made dashboard (ADR-0005).
 - Every release image is signed and attested. Verify it with `cosign verify` or `gh attestation verify` before running it (ADR-0007).
+
+## 9. Work-platform bridge (planned, S9)
+
+People already copy a Slack thread into Claude, then paste the answer back. The bridge does that round trip
+with Nona in the middle, so the thread's personal data never reaches the model.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    actor P as Person in Slack
+    participant S as Slack
+    participant B as Bridge (local)
+    participant K as core
+    participant M as Claude
+    P->>S: "Ask Claude (private)" on a message
+    S->>B: shortcut event (Socket Mode)
+    B->>S: read the thread
+    S-->>B: messages (real data)
+    B->>K: anonymize_messages(thread)
+    alt detector error
+        K-->>B: DetectorError
+        B-->>S: ephemeral error, nothing sent
+    end
+    K-->>B: placeholders + mapping (in memory)
+    B->>M: messages (placeholders only)
+    M-->>B: answer with placeholders
+    B->>K: restore(answer, mapping)
+    B->>S: ephemeral preview, only for P: Post / Edit / Discard
+    P->>S: Post
+    S->>B: action
+    B->>S: reply in the thread
+    Note over B: mapping dropped after the reply or the discard
+```
+
+### Components
+
+| Component | Responsibility | Key decision |
+|---|---|---|
+| **Platform adapter** | Reads a thread, shows a private preview, posts a reply. A small protocol (`read_thread`, `preview`, `post_reply`) | One adapter per platform. Slack first; Teams or Discord later without touching the rest |
+| **Slack adapter** | Message shortcut and mention, thread reading, ephemeral messages, buttons | Bolt for Python in Socket Mode: no public endpoint to expose |
+| **Bridge service** | Thread → conversation → `Nona.anonymize_messages` → Claude → `restore` → preview | The thread is one conversation, so causal linking applies as is (ADR-0004). Stateless: the thread is read again on every request, like the proxy (ADR-0002) |
+| **Model client** | Sends the anonymized conversation to Claude | The official `anthropic` SDK on the Messages API |
+
+### Rules
+
+- **A person approves every post.** The answer first appears as an ephemeral message seen only by whoever asked;
+  nothing goes into a channel without a click. The model can be wrong, and a restored answer holds real names.
+- **Trust boundary:** the Slack workspace already holds the data, so it is trusted like the client in §1. The
+  model provider is the honest-but-curious party, and the leak test measures the payload sent to it.
+- **Fail closed** (ADR-0003): a detector error shows an error to the asker, and nothing is sent.
+- **PII-free telemetry** (ADR-0005): logs and spans carry ids, counts and timings, never message text.
+- **Least privilege:** only the Slack scopes the flow needs (read the thread where it is invoked, write a reply,
+  shortcuts). Tokens and the API key come from the environment, never from `nona.yaml` in the repository.
+- **Synthetic data only during development:** a personal test workspace with generated threads. Installing the
+  bridge in a real workspace is that workspace's decision (admin approval, and the employer's for a work Slack).
+
+### Open choice (ADR-0009, at the start of S9)
+
+Should the bridge call `core` in-process and Claude directly, or go through the proxy, which would then need a Claude upstream? Proposal: **in-process**. `core` is already a library without I/O, the Anthropic SDK is the recommended
+way to call Claude, and the proxy stays OpenAI-compatible. The cost is that the bridge has to repeat the proxy's
+fail-closed and telemetry wiring, so that wiring should be shared code rather than copied.

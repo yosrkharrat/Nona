@@ -14,6 +14,7 @@ any detector, so every later change shows up as a measured difference instead of
 ```
 S1 benchmark ─► S2 structured PII ─► S3 linking ─► S4 GLiNER + frozen test set
      ─► S5 proxy + telemetry ─► S6 streaming ─► S7 baselines + perf ─► S8 v0.1 release
+     ─► S9 work-platform bridge (Slack first, after v0.1)
 ```
 
 ## 2. How we work
@@ -134,6 +135,23 @@ S1 benchmark ─► S2 structured PII ─► S3 linking ─► S4 GLiNER + froze
 - The README gets the results, the known failure modes, and how to verify a release.
 - Tag **v0.1.0**.
 
+### S9: Work-platform bridge, Slack first (~16 h, after v0.1)
+**Goal:** a Slack thread goes to Claude anonymized, and the answer comes back restored, after the asker approves it
+(03 §9). It replaces copying a thread into Claude and pasting the answer back.
+- First, ADR-0009: the bridge calls `core` in-process, or goes through the proxy (proposal: in-process, 03 §9).
+- 01 gets the bridge's requirements and a threat-model section: Slack tokens, where the bridge sees plain text,
+  approval before posting.
+- The platform adapter protocol, and the Slack adapter: message shortcut and mention, thread reading, ephemeral
+  preview with Post / Edit / Discard, Socket Mode. A `slack` extra (`nona-proxy[slack]`).
+- The bridge service and the Claude client (official `anthropic` SDK), with fail-closed and PII-free telemetry shared
+  with the proxy.
+- Tests: a fake platform adapter and a capturing fake model, so CI needs neither Slack nor an API key. A property
+  test: whatever the thread, the payload sent to the model holds no gold value the pipeline masks.
+- A demo in a personal test workspace with synthetic threads only.
+- **Exit:** the leak rate on Slack-style synthetic threads (the dev conversations rendered as threads), measured on
+  the payload sent to the model, equals the library's on the same conversations; 0 personal data in the bridge's logs
+  and spans (the FR-19 test); and no message is ever posted without an approval click (tested).
+
 ### After v0.1, in the order the benchmark suggests
 Stateful sessions with Redis (ADR-0006), tool calls (FR-13), ONNX int8, realistic surrogates (ADR-0001 option C), a
 Helm chart, a TypeScript client, an MCP server, and fine-tuning GLiNER on Darija and Arabizi. Each one starts only when
@@ -145,7 +163,8 @@ a number or a user need justifies it.
 |---|---|
 | The dataset takes longer than the code (the hidden cost) | Generator first, LLM drafts plus a review script, a fixed weekly budget |
 | GLiNER is weak on Arabizi | Gazetteer and context layers ship first (S3). Fine-tuning comes after v0.1 |
-| Scope creep from the post-v0.1 list | Nothing on that list starts before v0.1 ships |
+| Scope creep from the post-v0.1 list | Nothing on that list starts before v0.1 ships, S9 included |
+| The bridge touches real workplace data | Development and the demo use a personal workspace with synthetic threads only. Installing it elsewhere is that workspace's call, with its admin's approval |
 | Laptop runs out of memory | One heavy process at a time. Small local model for e2e |
 | PyPI name taken | Resolved in S0: `nona-proxy` (§5 Q1) |
 
