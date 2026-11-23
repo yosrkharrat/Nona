@@ -7,6 +7,7 @@ in the milestone that implements them, so the CLI never advertises something tha
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -57,7 +58,7 @@ def _models_pull(args: argparse.Namespace) -> int:
     print(f"ok: {folder}")
     if root.resolve() != models_dir().resolve():
         # Loading (`nona bench --systems nona-ner`, the proxy) looks in $NONA_MODELS_DIR or the default.
-        print(f"to use it, set NONA_MODELS_DIR={root}")
+        print(f"to use it, set NONA_MODELS_DIR={shlex.quote(str(root.resolve()))}")
     return 0
 
 

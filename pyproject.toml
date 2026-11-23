@@ -105,7 +105,7 @@ strict = ["src/nona/core"]  # NFR-10: strict typing on the core library
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not model"]  # `-m model` overrides it
+addopts = ["-ra", "--strict-markers", "--strict-config"]  # `model` tests: see tests/conftest.py
 xfail_strict = true
 markers = [
     "e2e: end-to-end tests that need a running upstream (Ollama)",

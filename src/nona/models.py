@@ -102,13 +102,13 @@ class ModelSet:
 PINNED = ModelSet()
 _PICKLES = {".bin", ".pt", ".pth", ".pkl", ".ckpt"}
 _INSTALL_HINT = (
-    "the NER model needs the `ner` extra: `uv sync --extra ner` in a checkout, or with pip, CPU-only torch "
-    "from its own index first, then the extra: `pip install torch --index-url "
-    "https://download.pytorch.org/whl/cpu && pip install 'nona-proxy[ner]'`"
+    "the NER model needs the `ner` extra: `uv sync --extra ner` in a checkout, or with pip, two steps: "
+    "first `pip install torch --index-url https://download.pytorch.org/whl/cpu` (CPU-only torch from its own "
+    "index), then `pip install 'nona-proxy[ner]'`"
 )
 _STALE_STAGING_S = 24 * 3600  # a `.pull-*` folder this old was left by a pull that was killed
 _HASHED_ON_LOAD_MAX = 16 << 20  # files up to this size (configs, tokenizer) are hashed on every load
-_went_offline = False  # whether `load_ner_model` switched this process offline (see `_go_offline`)
+_went_offline = False  # whether `load_ner_model` switched this process offline (see `_import_gliner_offline`)
 
 # (repo, filename, revision, folder) -> path of the downloaded file
 Downloader = Callable[[str, str, str, Path], Path]
@@ -167,12 +167,19 @@ def pull(
 
 
 def _remove_stale_staging(root: Path) -> None:
-    """Delete `.pull-*` folders left by a pull that was killed (they can hold most of 1.2 GB). Only old
-    ones: a pull running in another process right now keeps its folder."""
+    """Delete `.pull-*` folders left by a pull that was killed (they can hold most of 1.2 GB). Only ones in
+    which nothing changed for a day: a pull downloading in another process keeps writing to its folder.
+    Another pull removing the same folder at the same time is fine."""
     cutoff = time.time() - _STALE_STAGING_S
     for old in root.glob(".pull-*"):
-        if old.is_dir() and not old.is_symlink() and old.stat().st_mtime < cutoff:
-            shutil.rmtree(old, ignore_errors=True)
+        try:
+            if old.is_symlink() or not old.is_dir():
+                continue
+            newest = max((p.lstat().st_mtime for p in old.rglob("*")), default=old.lstat().st_mtime)
+            if max(newest, old.lstat().st_mtime) < cutoff:
+                shutil.rmtree(old)
+        except OSError:
+            continue
 
 
 def _fetch(download: Downloader, pinned: PinnedRepo, f: PinnedFile, staging: Path) -> Path:
@@ -205,46 +212,60 @@ def _fetch(download: Downloader, pinned: PinnedRepo, f: PinnedFile, staging: Pat
     return got
 
 
+def _verified_small_files(root: Path, models: ModelSet) -> dict[tuple[str, str], bytes]:
+    """The bytes of every small pinned file (configs, tokenizer), read once and checked against the pinned
+    hash. Loading uses these bytes, not a second read, so a file can't change between check and use."""
+    out: dict[tuple[str, str], bytes] = {}
+    changed: list[str] = []
+    for pinned in models.repos:
+        for f in pinned.files:
+            if f.size > _HASHED_ON_LOAD_MAX:
+                continue
+            data = (root / pinned.folder / f.name).read_bytes()
+            if len(data) != f.size or hashlib.sha256(data).hexdigest() != f.sha256:
+                changed.append(f"{pinned.folder}/{f.name}")
+            out[(pinned.repo, f.name)] = data
+    if changed:
+        raise ModelError(
+            f"{', '.join(changed)} in {root} no longer match their pinned hash: run `nona models pull`"
+        )
+    return out
+
+
 def check(root: Path | None = None, *, models: ModelSet = PINNED) -> Path:
     """The GLiNER folder, if every pinned file is in place and neither folder holds pickle weights.
 
     Small files (configs, tokenizer) are checked against their pinned hash every time: a config edited in a
     shared folder could change what loads. The 1.1 GB weights are checked by size here and by hash in
-    `pull`. Never writes."""
+    `pull`. Never writes. Any read error is a `ModelError`."""
     root = models_dir() if root is None else root
-    missing = [
-        f"{pinned.folder}/{f.name}"
-        for pinned in models.repos
-        for f in pinned.files
-        if not (root / pinned.folder / f.name).is_file()
-        or (root / pinned.folder / f.name).stat().st_size != f.size
-    ]
-    if missing:
-        raise ModelError(
-            f"the NER model isn't pulled into {root} ({', '.join(missing)}): run `nona models pull`"
-        )
-    changed = [
-        f"{pinned.folder}/{f.name}"
-        for pinned in models.repos
-        for f in pinned.files
-        if f.size <= _HASHED_ON_LOAD_MAX and _sha256(root / pinned.folder / f.name) != f.sha256
-    ]
-    if changed:
-        raise ModelError(
-            f"{', '.join(changed)} in {root} no longer match their pinned hash: run `nona models pull`"
-        )
-    for pinned in models.repos:
-        folder = root / pinned.folder
-        pickles = sorted(p.name for p in folder.iterdir() if p.suffix in _PICKLES)
-        if pickles:
+    try:
+        missing = [
+            f"{pinned.folder}/{f.name}"
+            for pinned in models.repos
+            for f in pinned.files
+            if not (root / pinned.folder / f.name).is_file()
+            or (root / pinned.folder / f.name).stat().st_size != f.size
+        ]
+        if missing:
             raise ModelError(
-                f"refusing to load next to pickle weights {pickles} in {folder}: safetensors only"
+                f"the NER model isn't pulled into {root} ({', '.join(missing)}): run `nona models pull`"
             )
+        _verified_small_files(root, models)
+        for pinned in models.repos:
+            folder = root / pinned.folder
+            pickles = sorted(p.name for p in folder.iterdir() if p.suffix in _PICKLES)
+            if pickles:
+                raise ModelError(
+                    f"refusing to load next to pickle weights {pickles} in {folder}: safetensors only"
+                )
+    except OSError as exc:
+        raise ModelError(f"can't read the NER model in {root}: {exc}") from exc
     return root / models.gliner.folder
 
 
 def _has_gliner() -> bool:
-    """Whether `import gliner` can work, without importing it (that would import transformers online)."""
+    """Whether `gliner` is installed, without importing it (that would import transformers online)."""
     if "gliner" in sys.modules:
         return sys.modules["gliner"] is not None  # None: imports of it are blocked
     try:
@@ -253,33 +274,52 @@ def _has_gliner() -> bool:
         return False
 
 
-def _go_offline() -> None:
-    """Make the Hub and transformers refuse the network **for the rest of the process** (NFR-3).
+_OFFLINE_VARS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY")
 
-    The variables are read when those libraries are imported, so this can't be scoped to one call: set them
-    first, and patch the Hub's constant if it is already imported (`pull` imports it). A later `pull` in
-    the same process then fails, and its error says to pull from a separate process.
+
+def _import_gliner_offline() -> Any:
+    """Import `gliner.GLiNER` with the Hub and transformers offline, **for the rest of the process** (NFR-3).
+
+    Those libraries read the setting when they are imported, so it can't be scoped to one call: the
+    variables are set first, and the Hub's constant is patched if `pull` already imported it. If the import
+    fails (the extra is missing, or torch is broken), everything is put back, so the process stays online
+    and a `pull` can still run in it. Once it succeeds, a later `pull` in the same process fails, and its
+    error says to pull from a separate process.
     """
     global _went_offline
-    _went_offline = True
+    if not _has_gliner():
+        raise ModelError(_INSTALL_HINT)
+    saved_env = {var: os.environ.get(var) for var in _OFFLINE_VARS}
+    constants = sys.modules.get("huggingface_hub.constants")
+    saved_constant = getattr(constants, "HF_HUB_OFFLINE", None) if constants is not None else None
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-    constants = sys.modules.get("huggingface_hub.constants")
     if constants is not None:
         setattr(constants, "HF_HUB_OFFLINE", True)  # noqa: B010 - a module attribute pyright can't see
+    try:
+        from gliner import GLiNER  # pyright: ignore[reportMissingImports] - `ner` extra
+    except Exception as exc:  # ImportError, or a broken torch raising anything while importing
+        for var, value in saved_env.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+        hub = sys.modules.get("huggingface_hub.constants")
+        if hub is not None:
+            setattr(hub, "HF_HUB_OFFLINE", bool(saved_constant))  # noqa: B010
+        raise ModelError(f"{_INSTALL_HINT} (importing it failed: {type(exc).__name__}: {exc})") from exc
+    _went_offline = True
+    return GLiNER
 
 
 def _link_or_copy(source: Path, target: Path) -> None:
-    """A symlink; a hard link where symlinks need privileges (Windows without Developer Mode); a copy as
-    the last resort (another volume)."""
+    """A symlink, or a copy where symlinks need privileges (Windows without Developer Mode). Never a hard
+    link: it shares the file's metadata, and temp-folder cleanup could then change the shared original."""
     try:
         target.symlink_to(source)
     except OSError:
-        try:
-            os.link(source, target)
-        except OSError:
-            shutil.copyfile(source, target)
+        shutil.copyfile(source, target)
 
 
 class GlinerModel:
@@ -311,29 +351,35 @@ class GlinerModel:
 def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> GlinerModel:
     """Load the pulled model, offline, without writing to the models folder.
 
-    GLiNER finds its encoder through `model_name` in its config, a Hub name. The config is rewritten in a
-    temporary folder, next to a link to the weights, with `model_name` set to the pinned encoder folder: so
-    nothing resolves by name, and a read-only or shared models folder works.
+    Both folders are rebuilt in a temporary folder that holds **only the pinned files**: the small ones
+    written from the bytes just verified, the weights linked (or copied). GLiNER's `model_name`, a Hub name,
+    is set to that encoder copy. So nothing resolves by name, a file dropped next to the pinned ones (a
+    `tokenizer.json`, which transformers would prefer) is never seen, nothing can change between the check
+    and the load, and a read-only or shared models folder works.
     """
     root = models_dir() if root is None else root
     folder = check(root, models=models)
-    if not _has_gliner():  # checked before going offline, which is for good
-        raise ModelError(_INSTALL_HINT)
-    _go_offline()
+    GLiNER = _import_gliner_offline()  # noqa: N806 - a class
     try:
-        from gliner import GLiNER  # pyright: ignore[reportMissingImports] - `ner` extra
-    except ImportError as exc:
-        raise ModelError(_INSTALL_HINT) from exc
-    try:
-        config = json.loads((folder / "gliner_config.json").read_text(encoding="utf-8"))
-        config["model_name"] = str((root / models.encoder.folder).resolve())
+        small = _verified_small_files(root, models)
         with tempfile.TemporaryDirectory(prefix="nona-gliner-") as tmp:
-            staged = Path(tmp)
-            (staged / "gliner_config.json").write_text(json.dumps(config), encoding="utf-8")
-            for f in models.gliner.files:
-                if f.name != "gliner_config.json":
-                    _link_or_copy((folder / f.name).resolve(), staged / f.name)
-            model = GLiNER.from_pretrained(str(staged), local_files_only=True, load_tokenizer=True)
+            staged = {repo: Path(tmp) / repo.folder for repo in models.repos}
+            for repo, target in staged.items():
+                target.mkdir()
+                for f in repo.files:
+                    if (repo.repo, f.name) in small:
+                        (target / f.name).write_bytes(small[(repo.repo, f.name)])
+                    else:
+                        _link_or_copy((root / repo.folder / f.name).resolve(), target / f.name)
+            config_path = staged[models.gliner] / "gliner_config.json"
+            config = json.loads(config_path.read_bytes())
+            config["model_name"] = str(staged[models.encoder])
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            model = GLiNER.from_pretrained(
+                str(staged[models.gliner]), local_files_only=True, load_tokenizer=True
+            )
+    except ModelError:
+        raise
     except Exception as exc:  # a broken file, an incompatible library: fail closed with the cause attached
         raise ModelError(f"loading the NER model from {folder} failed ({type(exc).__name__}: {exc})") from exc
     model.eval()

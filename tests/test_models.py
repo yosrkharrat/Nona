@@ -164,8 +164,12 @@ class _FakeGliner:
         if cls.error is not None:
             raise cls.error
         folder = Path(path)
+        config = json.loads((folder / "gliner_config.json").read_text())
+        encoder = Path(config["model_name"])
         cls.seen = {
-            "config": json.loads((folder / "gliner_config.json").read_text()),
+            "config": config,
+            "gliner_files": sorted(p.name for p in folder.iterdir()),
+            "encoder_files": {p.name: p.read_bytes() for p in encoder.iterdir()},
             "weights": (folder / "model.safetensors").read_bytes(),
             "kwargs": kwargs,
             "offline": (os.environ.get("HF_HUB_OFFLINE"), os.environ.get("TRANSFORMERS_OFFLINE")),
@@ -198,7 +202,12 @@ def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
         for p in tmp_path.rglob("*"):
             p.chmod(0o755 if p.is_dir() else 0o644)
     seen = fake_gliner.seen
-    assert seen["config"] == {"model_name": str((tmp_path / ENCODER_DIR).resolve()), "max_len": 384}
+    config = seen["config"]
+    assert isinstance(config, dict)
+    assert config["max_len"] == 384
+    assert not str(config["model_name"]).startswith(str(tmp_path)), "a staged copy, not the shared folder"
+    assert seen["gliner_files"] == ["gliner_config.json", "model.safetensors"]
+    assert seen["encoder_files"] == {n: d for (r, n), d in FILES.items() if r == "org/encoder"}
     assert seen["weights"] == FILES[("org/gliner", "model.safetensors")]
     assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True}
     assert seen["offline"] == ("1", "1")
@@ -283,9 +292,13 @@ def test_pull_removes_staging_left_by_a_killed_pull_but_not_a_running_one(tmp_pa
     old = tmp_path / ".pull-killed"
     (old / "x").mkdir(parents=True)
     (old / "x" / "model.safetensors").write_bytes(b"partial")
-    os.utime(old, (0, 0))
-    running = tmp_path / ".pull-running"
-    running.mkdir()
+    for p in (old / "x" / "model.safetensors", old / "x", old):
+        os.utime(p, (0, 0))
+    running = tmp_path / ".pull-running"  # its folders are old, but it is still writing the weights
+    (running / "x").mkdir(parents=True)
+    (running / "x" / "model.safetensors").write_bytes(b"growing")
+    for p in (running / "x", running):
+        os.utime(p, (0, 0))
     pull(tmp_path, download=FakeHub(), models=FAKE)
     assert not old.exists()
     assert running.exists()
@@ -308,20 +321,58 @@ def test_pull_after_a_load_says_to_use_another_process(
         pull(tmp_path, download=FakeHub(fail="spm.model"), models=FAKE)
 
 
-@pytest.mark.parametrize("fallback", ["hardlink", "copy"])
-def test_load_works_where_symlinks_are_not_allowed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner], fallback: str
+def test_load_copies_the_weights_where_symlinks_are_not_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
 ) -> None:
     pull(tmp_path, download=FakeHub(), models=FAKE)
 
     def refuse(*args: object, **kwargs: object) -> None:
         raise OSError("symbolic links need privileges")  # Windows without Developer Mode
 
+    def no_hard_links(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a hard link shares the original's metadata: never used")
+
     monkeypatch.setattr(Path, "symlink_to", refuse)
-    if fallback == "copy":
-        monkeypatch.setattr(os, "link", refuse)  # another volume
+    monkeypatch.setattr(os, "link", no_hard_links)
     load_ner_model(tmp_path, models=FAKE)
     assert fake_gliner.seen["weights"] == FILES[("org/gliner", "model.safetensors")]
+
+
+def test_a_file_dropped_next_to_the_pinned_encoder_is_never_seen_by_the_loader(
+    tmp_path: Path, fake_gliner: type[_FakeGliner]
+) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    (tmp_path / ENCODER_DIR / "tokenizer.json").write_text("{}")  # transformers would prefer it to spm.model
+    (tmp_path / GLINER_DIR / "tokenizer_config.json").write_text("{}")
+    load_ner_model(tmp_path, models=FAKE)
+    assert "tokenizer.json" not in fake_gliner.seen["encoder_files"]  # type: ignore[operator]
+    assert fake_gliner.seen["gliner_files"] == ["gliner_config.json", "model.safetensors"]
+
+
+def test_an_unreadable_file_is_a_model_error(tmp_path: Path) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    config = tmp_path / ENCODER_DIR / "config.json"
+    config.chmod(0o000)
+    try:
+        if os.access(config, os.R_OK):
+            pytest.skip("running as a user who can read anything")
+        with pytest.raises(ModelError, match="can't read the NER model"):
+            check(tmp_path, models=FAKE)
+    finally:
+        config.chmod(0o644)
+
+
+@pytest.mark.usefixtures("isolated_offline")
+def test_a_broken_gliner_import_leaves_the_process_online(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    monkeypatch.setitem(sys.modules, "gliner", types.ModuleType("gliner"))  # installed, but no GLiNER in it
+    with pytest.raises(ModelError, match="importing it failed"):
+        load_ner_model(tmp_path, models=FAKE)
+    assert "HF_HUB_OFFLINE" not in os.environ
+    assert "TRANSFORMERS_OFFLINE" not in os.environ
+    assert models._went_offline is False
 
 
 def test_cli_pull_into_another_folder_says_how_to_use_it(
@@ -329,8 +380,11 @@ def test_cli_pull_into_another_folder_says_how_to_use_it(
 ) -> None:
     monkeypatch.setattr(models, "pull", lambda root: root / "gliner")
     monkeypatch.delenv("NONA_MODELS_DIR", raising=False)
-    assert main(["models", "pull", "--dir", str(tmp_path)]) == 0
-    assert f"set NONA_MODELS_DIR={tmp_path}" in capsys.readouterr().out
+    spaced = tmp_path / "my models"
+    spaced.mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert main(["models", "pull", "--dir", "my models"]) == 0  # relative: printed absolute, and quoted
+    assert f"set NONA_MODELS_DIR='{spaced.resolve()}'" in capsys.readouterr().out
     monkeypatch.setenv("NONA_MODELS_DIR", str(tmp_path))
     assert main(["models", "pull", "--dir", str(tmp_path)]) == 0
     assert "NONA_MODELS_DIR" not in capsys.readouterr().out
