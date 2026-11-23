@@ -28,7 +28,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The NER model (ADR-0008). Heavy (torch), so optional: `pip install 'nona-proxy[ner]'`, then `nona models pull`.
+# The NER model (ADR-0008). Heavy (torch), so optional: `uv sync --extra ner`, then `nona models pull`. With pip,
+# add `--extra-index-url https://download.pytorch.org/whl/cpu`, or Linux gets the CUDA wheels.
 ner = [
     "gliner==0.2.30",
     "torch>=2.4",

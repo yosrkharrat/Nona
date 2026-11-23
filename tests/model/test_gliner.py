@@ -6,6 +6,7 @@ Run with `uv run --extra ner pytest -m model`. CI runs them in their own job wit
 from __future__ import annotations
 
 import importlib.util
+from unittest import mock
 
 import pytest
 
@@ -30,9 +31,15 @@ if importlib.util.find_spec("gliner") is None or not _pulled():
 from nona.models import load_ner_model  # noqa: E402
 
 
+def _refuse(*args: object, **kwargs: object) -> None:
+    raise OSError("the network was used while loading the model (NFR-3)")
+
+
 @pytest.fixture(scope="module")
 def recognizer() -> NerRecognizer:
-    return NerRecognizer(load_ner_model())
+    # Loading must never reach the network: any connection attempt fails the whole module.
+    with mock.patch("socket.socket.connect", _refuse), mock.patch("socket.create_connection", _refuse):
+        return NerRecognizer(load_ner_model())
 
 
 def test_the_pinned_model_loads_offline(recognizer: NerRecognizer) -> None:

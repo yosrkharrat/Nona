@@ -7,8 +7,10 @@ hashes. Loading never touches the network. Everything lives in one folder (`NONA
     gliner_multi-v2.1@443d26d654e0/    gliner_config.json, model.safetensors
     mdeberta-v3-base@a0484667b223/     config.json, spm.model, tokenizer_config.json
 
-GLiNER finds its encoder's config and tokenizer through `model_name` in `gliner_config.json`, by Hub name.
-`pull` points it at the pinned encoder folder instead, so nothing resolves through a cache's `main`.
+The files are stored exactly as published. GLiNER finds its encoder's config and tokenizer through
+`model_name` in `gliner_config.json`, by Hub name; loading points it at the pinned encoder folder instead
+(`load_ner_model`), so nothing resolves through a cache's `main`, and the models folder is never written to
+after `pull`.
 
 Only safetensors weights are fetched or accepted: a pickle (`pytorch_model.bin`) can run code when loaded,
 and Nona sits in the path of every prompt (ADR-0008).
@@ -22,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
@@ -89,14 +91,18 @@ class ModelSet:
     gliner: PinnedRepo = GLINER
     encoder: PinnedRepo = ENCODER
 
-    def local_name(self, repo: PinnedRepo, f: PinnedFile) -> str:
-        """Where a pinned file is kept: GLiNER's config under `_ORIGINAL_CONFIG` (see `_link_encoder`)."""
-        return _ORIGINAL_CONFIG if repo is self.gliner and f.name == "gliner_config.json" else f.name
+    @property
+    def repos(self) -> tuple[PinnedRepo, PinnedRepo]:
+        return (self.gliner, self.encoder)
 
 
 PINNED = ModelSet()
-# `pull` rewrites `model_name` in GLiNER's config; the pinned original is kept next to it, under this name.
-_ORIGINAL_CONFIG = "gliner_config.pinned.json"
+_PICKLES = {".bin", ".pt", ".pth", ".pkl", ".ckpt"}
+_INSTALL_HINT = (
+    "the NER model needs the `ner` extra: `uv sync --extra ner` in a checkout, or "
+    "`pip install 'nona-proxy[ner]' --extra-index-url https://download.pytorch.org/whl/cpu` "
+    "(CPU-only torch; without the index, Linux gets several GB of CUDA libraries)"
+)
 
 # (repo, filename, revision, folder) -> path of the downloaded file
 Downloader = Callable[[str, str, str, Path], Path]
@@ -115,6 +121,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_pinned(path: Path, f: PinnedFile) -> bool:
+    return path.is_file() and path.stat().st_size == f.size and _sha256(path) == f.sha256
+
+
 def _hub_download(repo: str, filename: str, revision: str, folder: Path) -> Path:
     try:
         from huggingface_hub import hf_hub_download  # pyright: ignore[reportMissingImports] - `ner` extra
@@ -123,71 +133,88 @@ def _hub_download(repo: str, filename: str, revision: str, folder: Path) -> Path
     return Path(hf_hub_download(repo, filename, revision=revision, local_dir=folder))
 
 
-_INSTALL_HINT = "the NER model needs the `ner` extra: pip install 'nona-proxy[ner]'"
-
-
 def pull(
     root: Path | None = None, *, download: Downloader = _hub_download, models: ModelSet = PINNED
 ) -> Path:
-    """Download every pinned file that is missing or wrong, check its hash, and link GLiNER to its encoder.
+    """Download every pinned file that is missing or wrong, and install them once all their hashes match.
 
-    Returns the GLiNER folder. Idempotent: files already in place with the right hash aren't fetched again.
+    Files are fetched into a staging folder and moved into place only when every file of both repos has
+    its pinned size and hash, so a failed pull leaves what was installed before untouched. Idempotent: files
+    already in place aren't fetched again. Returns the GLiNER folder.
     """
     root = models_dir() if root is None else root
-    root.mkdir(parents=True, exist_ok=True)
-    for pinned in (models.gliner, models.encoder):
-        folder = root / pinned.folder
-        folder.mkdir(exist_ok=True)
-        for f in pinned.files:
-            target = folder / models.local_name(pinned, f)
-            if target.is_file() and target.stat().st_size == f.size and _sha256(target) == f.sha256:
-                continue
-            with tempfile.TemporaryDirectory(dir=folder, prefix=".pull-") as tmp:
-                got = download(pinned.repo, f.name, pinned.revision, Path(tmp))
-                size, digest = got.stat().st_size, _sha256(got)
-                if size != f.size or digest != f.sha256:
-                    raise ModelError(
-                        f"{pinned.repo}@{pinned.revision[:12]}/{f.name}: got {size} bytes, "
-                        f"sha256 {digest[:12]}…; expected {f.size} bytes, sha256 {f.sha256[:12]}…. "
-                        "Nothing was installed."
-                    )
-                shutil.move(got, target)
-    _link_encoder(root, models)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        todo = [(p, f) for p in models.repos for f in p.files if not _is_pinned(root / p.folder / f.name, f)]
+        if todo:
+            with tempfile.TemporaryDirectory(dir=root, prefix=".pull-") as tmp:
+                staged = [(p, f, _fetch(download, p, f, Path(tmp))) for p, f in todo]
+                for p, f, path in staged:
+                    (root / p.folder).mkdir(exist_ok=True)
+                    os.replace(path, root / p.folder / f.name)
+    except OSError as exc:
+        raise ModelError(f"can't write the model into {root}: {exc}") from exc
     return root / models.gliner.folder
 
 
-def _link_encoder(root: Path, models: ModelSet) -> None:
-    """Write GLiNER's config with `model_name` set to the pinned encoder folder (absolute, so the working
-    directory doesn't matter). Rewritten on load too, in case the folder was moved."""
-    folder = root / models.gliner.folder
-    config = json.loads((folder / _ORIGINAL_CONFIG).read_text(encoding="utf-8"))
-    config["model_name"] = str((root / models.encoder.folder).resolve())
-    target = folder / "gliner_config.json"
-    text = json.dumps(config, indent=2, sort_keys=True) + "\n"
-    if not target.is_file() or target.read_text(encoding="utf-8") != text:
-        target.write_text(text, encoding="utf-8")
+def _fetch(download: Downloader, pinned: PinnedRepo, f: PinnedFile, staging: Path) -> Path:
+    where = f"{pinned.repo}@{pinned.revision[:12]}/{f.name}"
+    folder = (
+        staging / f"{pinned.folder}-{f.name.replace('/', '_')}"
+    )  # one per file: the Hub client adds its own
+    folder.mkdir()  # metadata next to what it downloads
+    try:
+        got = download(pinned.repo, f.name, pinned.revision, folder)
+    except ModelError:
+        raise
+    except Exception as exc:  # network, missing revision or file, rate limits: any download failure
+        raise ModelError(
+            f"downloading {where} failed ({type(exc).__name__}: {exc}). Nothing was installed."
+        ) from exc
+    size, digest = got.stat().st_size, _sha256(got)
+    if size != f.size or digest != f.sha256:
+        raise ModelError(
+            f"{where}: got {size} bytes, sha256 {digest[:12]}…; expected {f.size} bytes, "
+            f"sha256 {f.sha256[:12]}…. Nothing was installed."
+        )
+    return got
 
 
 def check(root: Path | None = None, *, models: ModelSet = PINNED) -> Path:
-    """The GLiNER folder, if every pinned file is in place with its pinned size and no pickle sits next to
-    the weights. Hashes are checked by `pull`, not on every load (1.1 GB)."""
+    """The GLiNER folder, if every pinned file is in place with its pinned size and neither folder holds
+    pickle weights. Hashes are checked by `pull`, not on every load (1.1 GB). Never writes."""
     root = models_dir() if root is None else root
-    missing = []
-    for pinned in (models.gliner, models.encoder):
-        for f in pinned.files:
-            name = models.local_name(pinned, f)
-            path = root / pinned.folder / name
-            if not path.is_file() or path.stat().st_size != f.size:
-                missing.append(f"{pinned.folder}/{name}")
+    missing = [
+        f"{pinned.folder}/{f.name}"
+        for pinned in models.repos
+        for f in pinned.files
+        if not (root / pinned.folder / f.name).is_file()
+        or (root / pinned.folder / f.name).stat().st_size != f.size
+    ]
     if missing:
         raise ModelError(
             f"the NER model isn't pulled into {root} ({', '.join(missing)}): run `nona models pull`"
         )
-    folder = root / models.gliner.folder
-    pickles = sorted(p.name for p in folder.iterdir() if p.suffix in {".bin", ".pt", ".pth", ".pkl", ".ckpt"})
-    if pickles:
-        raise ModelError(f"refusing to load next to pickle weights {pickles} in {folder}: safetensors only")
-    return folder
+    for pinned in models.repos:
+        folder = root / pinned.folder
+        pickles = sorted(p.name for p in folder.iterdir() if p.suffix in _PICKLES)
+        if pickles:
+            raise ModelError(
+                f"refusing to load next to pickle weights {pickles} in {folder}: safetensors only"
+            )
+    return root / models.gliner.folder
+
+
+def _go_offline() -> None:
+    """Make the Hub and transformers refuse the network for the rest of the process (NFR-3). The variables
+    are read when those libraries are imported, so set them first, and patch the Hub's constant if it is
+    already imported (`pull` imports it)."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        setattr(constants, "HF_HUB_OFFLINE", True)  # noqa: B010 - a module attribute pyright can't see
 
 
 class GlinerModel:
@@ -217,16 +244,31 @@ class GlinerModel:
 
 
 def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> GlinerModel:
-    """Load the pulled model, offline. Raises `ModelError` with what to do if it's missing."""
+    """Load the pulled model, offline, without writing to the models folder.
+
+    GLiNER finds its encoder through `model_name` in its config, a Hub name. The config is rewritten in a
+    temporary folder, next to a link to the weights, with `model_name` set to the pinned encoder folder: so
+    nothing resolves by name, and a read-only or shared models folder works.
+    """
     root = models_dir() if root is None else root
     folder = check(root, models=models)
-    _link_encoder(root, models)
+    _go_offline()
     try:
         from gliner import GLiNER  # pyright: ignore[reportMissingImports] - `ner` extra
     except ImportError as exc:
         raise ModelError(_INSTALL_HINT) from exc
-    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-    model = GLiNER.from_pretrained(str(folder), local_files_only=True, load_tokenizer=True)
+    try:
+        config = json.loads((folder / "gliner_config.json").read_text(encoding="utf-8"))
+        config["model_name"] = str((root / models.encoder.folder).resolve())
+        with tempfile.TemporaryDirectory(prefix="nona-gliner-") as tmp:
+            staged = Path(tmp)
+            (staged / "gliner_config.json").write_text(json.dumps(config), encoding="utf-8")
+            for f in models.gliner.files:
+                if f.name != "gliner_config.json":
+                    (staged / f.name).symlink_to((folder / f.name).resolve())
+            model = GLiNER.from_pretrained(str(staged), local_files_only=True, load_tokenizer=True)
+    except Exception as exc:  # a broken file, an incompatible library: fail closed with the cause attached
+        raise ModelError(f"loading the NER model from {folder} failed ({type(exc).__name__}: {exc})") from exc
     model.eval()
     max_words = int(getattr(model.config, "max_len", 384))
     return GlinerModel(model, f"{models.gliner.repo}@{models.gliner.revision}", max_words)

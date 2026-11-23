@@ -96,6 +96,9 @@ def test_predictions_outside_the_window_are_ignored() -> None:
         ("السيدة كنزة", "السيدة كنزة", "كنزة"),
         ("M. Ben Salem", "M. Ben Salem", "Ben Salem"),
         ("Mme  Dr Islem", "Mme  Dr Islem", "Islem"),
+        ("le Dr.Sami Haddad", "Dr.Sami Haddad", "Sami Haddad"),
+        ("vu M.Ahmed", "M.Ahmed", "Ahmed"),
+        ("Mme, Islem", "Mme, Islem", "Islem"),
     ],
 )
 def test_leading_honorifics_are_trimmed_from_person_spans(text: str, predicted: str, found: str) -> None:

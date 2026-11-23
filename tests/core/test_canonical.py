@@ -284,7 +284,8 @@ def test_merged_list_spellings_agree_on_being_ordinary_words() -> None:
 
 @pytest.mark.parametrize(
     ("word", "expected"),
-    [("Mme", True), ("Dr.", True), ("M.", True), ("السيدة", True), ("khalti", True), ("MONSIEUR", True),
+    [("Mme", True), ("Dr.", True), ("Mme,", True), ("M.", True), ("السيدة", True), ("khalti", True),
+     ("MONSIEUR", True),
      ("Islem", False), ("Ben", False), ("12", False), ("بالسيدة", False)],
 )  # fmt: skip
 def test_is_honorific(word: str, expected: bool) -> None:

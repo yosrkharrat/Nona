@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
+import types
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -35,12 +38,15 @@ FAKE = ModelSet(_pinned("org/gliner", "a" * 40), _pinned("org/encoder", "b" * 40
 
 
 class FakeHub:
-    def __init__(self, tamper: str | None = None) -> None:
+    def __init__(self, tamper: str | None = None, fail: str | None = None) -> None:
         self.calls: list[tuple[str, str, str]] = []
         self._tamper = tamper
+        self._fail = fail
 
     def __call__(self, repo: str, filename: str, revision: str, folder: Path) -> Path:
         self.calls.append((repo, filename, revision))
+        if filename == self._fail:
+            raise ConnectionError("no route to huggingface.co")
         data = FILES[(repo, filename)]
         if filename == self._tamper:
             data = data + b"!"
@@ -49,15 +55,23 @@ class FakeHub:
         return path
 
 
-def test_pull_fetches_every_pinned_file_at_its_revision_and_links_the_encoder(tmp_path: Path) -> None:
+GLINER_DIR = "gliner@aaaaaaaaaaaa"
+ENCODER_DIR = "encoder@bbbbbbbbbbbb"
+
+
+def _installed(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+
+
+def test_pull_fetches_every_pinned_file_at_its_revision_and_stores_it_as_published(tmp_path: Path) -> None:
     hub = FakeHub()
     folder = pull(tmp_path, download=hub, models=FAKE)
-    assert folder == tmp_path / "gliner@aaaaaaaaaaaa"
+    assert folder == tmp_path / GLINER_DIR
     assert sorted(hub.calls) == sorted((r, n, ("a" if r == "org/gliner" else "b") * 40) for r, n in FILES)
-    config = json.loads((folder / "gliner_config.json").read_text())
-    assert config["model_name"] == str((tmp_path / "encoder@bbbbbbbbbbbb").resolve())
-    assert config["max_len"] == 384
-    assert (folder / "gliner_config.pinned.json").read_bytes() == CONFIG, "the pinned original is kept"
+    assert (folder / "gliner_config.json").read_bytes() == CONFIG
+    assert _installed(tmp_path) == sorted(
+        f"{GLINER_DIR if r == 'org/gliner' else ENCODER_DIR}/{n}" for r, n in FILES
+    ), "nothing else: no staging folder, no Hub metadata"
     assert check(tmp_path, models=FAKE) == folder
 
 
@@ -68,11 +82,24 @@ def test_pull_is_idempotent(tmp_path: Path) -> None:
     assert again.calls == []
 
 
-def test_a_file_with_the_wrong_hash_is_refused_and_not_installed(tmp_path: Path) -> None:
-    with pytest.raises(ModelError, match=r"model\.safetensors.*Nothing was installed"):
-        pull(tmp_path, download=FakeHub(tamper="model.safetensors"), models=FAKE)
-    assert not (tmp_path / "gliner@aaaaaaaaaaaa" / "model.safetensors").exists()
-    assert not list((tmp_path / "gliner@aaaaaaaaaaaa").glob(".pull-*")), "no temporary download left behind"
+@pytest.mark.parametrize("bad", ["gliner_config.json", "model.safetensors", "spm.model"])
+def test_a_file_with_the_wrong_hash_means_nothing_is_installed(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(ModelError, match=rf"{bad}.*Nothing was installed"):
+        pull(tmp_path, download=FakeHub(tamper=bad), models=FAKE)
+    assert _installed(tmp_path) == []
+
+
+def test_a_failed_download_is_a_model_error_and_installs_nothing(tmp_path: Path) -> None:
+    with pytest.raises(ModelError, match=r"spm\.model failed \(ConnectionError.*Nothing was installed"):
+        pull(tmp_path, download=FakeHub(fail="spm.model"), models=FAKE)
+    assert _installed(tmp_path) == []
+
+
+def test_a_folder_that_cant_be_written_is_a_model_error(tmp_path: Path) -> None:
+    blocked = tmp_path / "file"
+    blocked.write_text("not a folder")
+    with pytest.raises(ModelError, match="can't write the model"):
+        pull(blocked / "models", download=FakeHub(), models=FAKE)
 
 
 def test_a_corrupted_file_is_fetched_again(tmp_path: Path) -> None:
@@ -88,9 +115,10 @@ def test_check_says_how_to_pull_when_files_are_missing(tmp_path: Path) -> None:
         check(tmp_path, models=FAKE)
 
 
-def test_pickle_weights_next_to_the_model_are_refused(tmp_path: Path) -> None:
-    folder = pull(tmp_path, download=FakeHub(), models=FAKE)
-    (folder / "pytorch_model.bin").write_bytes(b"pickle")
+@pytest.mark.parametrize("where", [GLINER_DIR, ENCODER_DIR])
+def test_pickle_weights_in_either_folder_are_refused(tmp_path: Path, where: str) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    (tmp_path / where / "pytorch_model.bin").write_bytes(b"pickle")
     with pytest.raises(ModelError, match="safetensors only"):
         check(tmp_path, models=FAKE)
 
@@ -98,20 +126,74 @@ def test_pickle_weights_next_to_the_model_are_refused(tmp_path: Path) -> None:
 def test_load_needs_the_ner_extra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pull(tmp_path, download=FakeHub(), models=FAKE)
     monkeypatch.setitem(sys.modules, "gliner", None)  # makes `import gliner` fail
-    with pytest.raises(ModelError, match=r"nona-proxy\[ner\]"):
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(var, raising=False)
+    with pytest.raises(ModelError, match=r"uv sync --extra ner.*download\.pytorch\.org/whl/cpu"):
         load_ner_model(tmp_path, models=FAKE)
 
 
-def test_load_relinks_the_encoder_when_the_folder_moved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+class _FakeGliner:
+    """Stands in for `gliner.GLiNER`: records what `from_pretrained` sees, or raises."""
+
+    seen: ClassVar[dict[str, object]] = {}
+    error: ClassVar[Exception | None] = None
+
+    def __init__(self) -> None:
+        self.config = types.SimpleNamespace(max_len=384)
+
+    @classmethod
+    def from_pretrained(cls, path: str, **kwargs: object) -> _FakeGliner:
+        if cls.error is not None:
+            raise cls.error
+        folder = Path(path)
+        cls.seen = {
+            "config": json.loads((folder / "gliner_config.json").read_text()),
+            "weights": (folder / "model.safetensors").read_bytes(),
+            "kwargs": kwargs,
+            "offline": (os.environ.get("HF_HUB_OFFLINE"), os.environ.get("TRANSFORMERS_OFFLINE")),
+        }
+        return cls()
+
+    def eval(self) -> None:
+        pass
+
+
+@pytest.fixture
+def fake_gliner(monkeypatch: pytest.MonkeyPatch) -> type[_FakeGliner]:
+    monkeypatch.setitem(sys.modules, "gliner", types.SimpleNamespace(GLiNER=_FakeGliner))
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
+        monkeypatch.delenv(var, raising=False)  # monkeypatch restores what load sets
+    monkeypatch.setattr(_FakeGliner, "error", None)
+    return _FakeGliner
+
+
+def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
+    tmp_path: Path, fake_gliner: type[_FakeGliner]
 ) -> None:
-    pull(tmp_path / "old", download=FakeHub(), models=FAKE)
-    (tmp_path / "old").rename(tmp_path / "new")
-    monkeypatch.setitem(sys.modules, "gliner", None)
-    with pytest.raises(ModelError):
-        load_ner_model(tmp_path / "new", models=FAKE)
-    config = json.loads((tmp_path / "new" / "gliner@aaaaaaaaaaaa" / "gliner_config.json").read_text())
-    assert config["model_name"] == str((tmp_path / "new" / "encoder@bbbbbbbbbbbb").resolve())
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    for p in tmp_path.rglob("*"):
+        p.chmod(0o555 if p.is_dir() else 0o444)  # a read-only models folder (a container image)
+    try:
+        model = load_ner_model(tmp_path, models=FAKE)
+    finally:
+        for p in tmp_path.rglob("*"):
+            p.chmod(0o755 if p.is_dir() else 0o644)
+    seen = fake_gliner.seen
+    assert seen["config"] == {"model_name": str((tmp_path / ENCODER_DIR).resolve()), "max_len": 384}
+    assert seen["weights"] == FILES[("org/gliner", "model.safetensors")]
+    assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True}
+    assert seen["offline"] == ("1", "1")
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert model.identity == f"org/gliner@{'a' * 40}"
+    assert model.max_words == 384
+
+
+def test_a_load_failure_is_a_model_error(tmp_path: Path, fake_gliner: type[_FakeGliner]) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    fake_gliner.error = ValueError("unexpected key in state dict")
+    with pytest.raises(ModelError, match=r"loading the NER model .* failed .*ValueError"):
+        load_ner_model(tmp_path, models=FAKE)
 
 
 def test_the_real_pins_are_safetensors_only_and_full_hashes() -> None:

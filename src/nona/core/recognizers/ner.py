@@ -41,7 +41,9 @@ LABELS: Mapping[str, EntityType] = {
 # GLiNER's whitespace splitter: a word is a run of word characters (joined by `-` or `_`), or one other
 # non-space character. Windows count words this way so they fit what the model reads.
 _MODEL_WORD = re.compile(r"\w+(?:[-_]\w+)*|\S")
-_WORD = re.compile(r"\S+")
+# A leading word for honorific trimming: up to a space, or up to and including dots and punctuation, so a
+# glued `Dr.Sami` or `M.Ahmed` gives `Dr.` then `Sami`, and `Mme,` is one word.
+_LEADING_WORD = re.compile(r"[^\s.,;:]+[.,;:]*|[.,;:]+")
 
 
 class NerPrediction(NamedTuple):
@@ -134,7 +136,7 @@ def windows(text: str, max_words: int, overlap: int) -> list[tuple[int, int]]:
 
 def _skip_honorifics(text: str, start: int, end: int) -> int:
     """Move `start` past leading honorifics (`Mme`, `Dr.`) and the spaces after them."""
-    for m in _WORD.finditer(text, start, end):
+    for m in _LEADING_WORD.finditer(text, start, end):
         if not is_honorific(m.group()):
             return m.start()
     return end

@@ -230,8 +230,8 @@ def _glued(surface: str) -> tuple[tuple[str, str, str], ...]:
 
 
 def is_honorific(word: str) -> bool:
-    """Whether one written word is an honorific or kinship cue (`Mme`, `Dr.`, `السيد`, `khalti`)."""
-    return _fold(word).strip("." + "-" + _APOSTROPHES) in HONORIFICS
+    """Whether one written word is an honorific or kinship cue (`Mme`, `Dr.`, `Mme,`, `السيد`, `khalti`)."""
+    return _fold(word).strip(".,;:-" + _APOSTROPHES) in HONORIFICS
 
 
 def canonical_tokens(surface: str) -> frozenset[str]:
