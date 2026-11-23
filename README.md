@@ -3,7 +3,7 @@
 **A local proxy that strips personal data before it reaches an LLM, and puts it back in the answer.**
 Built for messy, mixed-language text: French, English, Arabic, Tunisian Darija, Arabizi.
 
-> 🚧 **Status: early development.** Design done, repo skeleton and CI in place (M0). Detection and the proxy are next.
+> 🚧 **Status: early development.** The core library is in: structured PII, multi-turn entity linking and the benchmark (S0–S3, hardened in S3.1). NER and the proxy are next.
 
 ```
 You type:        "3andi rendez-vous m3a Sami Trabelsi ghodwa, a3tih 22 123 456"

@@ -13,7 +13,9 @@ Exploit the fact that the Chat Completions API is stateless: the client resends 
 Nona re-anonymizes the **entire** message list on every request with a fresh, deterministic mapping
 (placeholders numbered by order of first appearance) and keeps nothing afterwards.
 
-A detection cache (spans only, keyed by message hash, in memory, with a TTL) keeps the cost of re-processing low.
+A detection cache (spans only, in memory, with a TTL) keeps the cost of re-processing low. It's keyed by
+`sha256(fingerprint + message text)`, the fingerprint covering the nona version and the detection config
+(03 §4, ADR-0004).
 
 A stateful mode (`X-Nona-Session`) is deferred to v0.2, for clients that truncate history.
 

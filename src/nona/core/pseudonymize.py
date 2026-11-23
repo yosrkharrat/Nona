@@ -7,7 +7,9 @@ conversation; `pseudonymize()` is the one-message case.
 
 Restoration is tolerant, as models mangle placeholders (`person 1`, `PERSON 1`), but it only touches numbers
 that were actually issued. Numbers that already appear in the input (a user who literally wrote `PERSON_1`)
-are never issued, so restoring can't rewrite what the user typed.
+are never issued, so restoring can't rewrite what the user typed. A placeholder typed *after* its number was
+issued (`PHONE_1` in message 3) can't be reserved any more: it becomes an entity whose value is the literal
+text, goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactly what the user wrote.
 """
 
 from __future__ import annotations

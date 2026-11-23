@@ -91,7 +91,7 @@ Errors use the OpenAI error shape (`{"error": {"message", "type", "code"}}`) so 
 // response
 { "text": "3andi rendez-vous m3a PERSON_1 ghodwa, a3tih PHONE_1",
   "entities": [
-    { "placeholder": "PERSON_1", "type": "PERSON", "start": 21, "end": 35,
+    { "placeholder": "PERSON_1", "type": "PERSON", "start": 22, "end": 35,
       "value": "Sami Trabelsi", "score": 0.91, "detector": "gliner+gazetteer" },
     { "placeholder": "PHONE_1",  "type": "PHONE",  "start": 50, "end": 60,
       "value": "22 123 456", "score": 1.0, "detector": "regex:phone_tn" } ],
@@ -118,7 +118,7 @@ nona = Nona.from_config("nona.yaml")          # loads the models once
 
 result = nona.anonymize("Appelle Ahmed Ben Salem au +216 22 123 456")
 result.text          # "Appelle PERSON_1 au PHONE_1"
-result.entities      # list[Entity]
+result.entities      # tuple[Entity, ...]
 result.mapping       # Mapping (opaque; never serialized by default)
 
 nona.restore("PERSON_1 confirme.", result.mapping)   # "Ahmed Ben Salem confirme."

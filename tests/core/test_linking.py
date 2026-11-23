@@ -427,7 +427,7 @@ conversation = st.lists(message, min_size=1, max_size=6)
 @settings(max_examples=200, deadline=None)
 @given(conversation, st.integers(min_value=0, max_value=6))
 def test_prefix_stability(msgs: list[str], k: int) -> None:
-    """ADR-0004: anonymize(msgs[:k]) == anonymize(msgs)[:k]. Earlier placeholders never change."""
+    """ADR-0004: prefix stability of the texts. Earlier placeholders never change."""
     n = nona(blind_to=["relancé"])
     assert n.anonymize_messages(msgs[:k]).texts == n.anonymize_messages(msgs).texts[:k]
 

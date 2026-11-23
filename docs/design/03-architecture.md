@@ -44,8 +44,8 @@ flowchart TB
 | **Normalizer** | NFKC, folds case, Eastern Arabic digits to ASCII, strips Arabic tatweel and diacritics, and keeps an exact offset map back to the original text (`core/normalize.py`). The **Arabizi digit map** (`3→ع, 7→ح, 9→ق, 5→خ, 2→ء`) is a second view for name recognizers (S4): applied to the same view it would turn phone numbers into letters | Detection runs on the normalized view, replacement on the original text |
 | **Detection engine** | Runs recognizers and returns candidate `Span`s with scores | Plugin interface (`Recognizer` protocol). Union of recognizers, because recall comes first |
 | **Span resolver** | Resolves overlaps (longest span wins, then type priority, then score), applies the score threshold and the allow/deny lists (`core/resolver.py`). Denylist terms become `CUSTOM` spans | Deterministic: the result doesn't depend on recognizer order (property-tested), a requirement for ADR-0002 |
-| **Entity linker** | Groups mentions into entities (`Ahmed` ≈ `Ahmed Ben Salem` ≈ `ahmed.bs@…`) | Conservative: only merges when unambiguous (deep dive B) |
-| **Pseudonymizer** | Assigns `TYPE_n` in order of first appearance and applies the per-type policy: `pseudonymize`, `redact` (`[CARD]`, irreversible) or `keep` (`core/pseudonymize.py`). Placeholder-like text already in the input (`PERSON_1`, `person 2`) keeps its number reserved, so it is never issued and restoring can't rewrite it | Format chosen in ADR-0001 |
+| **Entity linker** | Groups mentions into entities (`Ahmed` ≈ `Ahmed Ben Salem`). An email that spells a name (`ahmed.bs@…`) stays its own `EMAIL_n` entity and records that person as its `owner` | Conservative: only merges when unambiguous (deep dive B) |
+| **Pseudonymizer** | Assigns `TYPE_n` in order of first appearance and applies the per-type policy: `pseudonymize`, `redact` (`[CARD]`, irreversible) or `keep` (`core/pseudonymize.py`). Placeholder-like text already in the input (`PERSON_1`, `person 2`) keeps its number reserved, so it is never issued and restoring can't rewrite it. If the user types a placeholder whose number was already issued (`PHONE_1` in message 3), it becomes an entity whose value is the literal text: it goes upstream as a fresh placeholder (`PHONE_2`) and comes back exactly as typed | Format chosen in ADR-0001 |
 | **Upstream client** | Forwards the request and streams the response | Shared `httpx.AsyncClient` with connection pooling |
 | **Restorer** | Replaces issued placeholders in the output, both in full responses and token streams | Streaming finite-state machine (deep dive D) |
 
@@ -61,7 +61,7 @@ sequenceDiagram
     participant U as Upstream LLM
     C->>A: POST /chat/completions (real data, stream=true)
     A->>K: anonymize_messages(messages)
-    Note over K: normalize → detect → resolve → link → pseudonymize<br/>(detection cache keyed by message hash)
+    Note over K: normalize → detect → resolve → link → pseudonymize<br/>(detection cache keyed by fingerprint + message hash)
     alt detector error / timeout
         K-->>A: error
         A-->>C: 503 nona_detector_unavailable (nothing forwarded)
@@ -87,17 +87,18 @@ whole history on every request and keeps nothing between requests (ADR-0002).
 
 - **Consistency** comes from determinism plus **causal linking** ([ADR-0004](../adr/0004-causal-entity-linking.md)): each message
   is linked using only itself and the messages before it, and earlier decisions are frozen. So adding a new message never
-  renumbers earlier ones (`anonymize(msgs[:k]) == anonymize(msgs)[:k]`, a property test), which also keeps the provider's
+  renumbers earlier ones (`anonymize_messages(msgs[:k]).texts == anonymize_messages(msgs).texts[:k]`, a property test), which also keeps the provider's
   prompt cache warm.
 - **Forward propagation**: once a name is known, every later occurrence of the same text is masked even if the NER misses it.
   This is what stops restored assistant answers, which the client sends back, from leaking on the next turn.
 - **Cost**: re-running NER on the whole history. Mitigation: an in-process LRU cache of *detection results* keyed by
-  `sha256(model revision + detection config + message text)`, so a model or config change never serves stale spans (ADR-0004). It holds spans and offsets only. The hash of PII is still sensitive, so the cache lives in
+  `sha256(fingerprint + message text)`, the fingerprint covering the nona version, the detection config and (from S4) the model revision, so an upgrade or a config change never serves stale spans (ADR-0004). It holds spans and offsets only. The hash of PII is still sensitive, so the cache lives in
   memory only and has a TTL. Implemented in #40 ([`core/cache.py`](../../src/nona/core/cache.py)): it caches what the
-  recognizers find in each message. Forward propagation, the denylist, the resolver and look-ahead depend on the
-  conversation and run on every request. The fingerprint covers each recognizer's type and configuration (a
+  recognizers find in each message. Forward propagation, the resolver and look-ahead depend on the conversation, so they
+  run on every request. The denylist runs after the cache too, not because it depends on the conversation but because
+  it's a setting: changing it must not require new cache keys. The fingerprint covers each recognizer's type and configuration (a
   recognizer without one, or a subclass that doesn't define its own, shares with nothing else). LRU of 4,096
-  messages, one-hour TTL, expired entries swept on any access. Replaying `dev` the way
+  messages, one-hour TTL; expired entries are swept on access, at most every quarter of the TTL. Replaying `dev` the way
   the proxy sees it (every prefix of every conversation), detection runs drop from 698 to 245.
 - **Stateful mode** (v0.2, `X-Nona-Session`) is for clients that truncate history or use server-side conversation state.
   A `SessionStore` holds the mapping: in memory for one process, or Redis/Valkey for several replicas, encrypted per

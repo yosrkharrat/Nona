@@ -9,7 +9,8 @@ Entries are written as people write them. Spelling variants that `core/canonical
 (`Mohammed` → `mohamed`, `3ali` → `ali`, Arabic `سامي` → `sami`) need only one entry.
 
 `COMMON_WORDS` are names that are also ordinary words (`Amal` = hope, `Nour` = light, `Anis` = anise,
-`Gharbi` = western). They fire only with a capital letter in the middle of a sentence, or after a cue.
+`Gharbi` = western). They fire only with a capital letter (0.6 mid-sentence, 0.5 at the start of a sentence,
+which the default threshold still masks), or after a cue.
 """
 
 from __future__ import annotations
