@@ -17,6 +17,9 @@ FORBIDDEN = {
     "aiohttp", "asyncio.subprocess", "ftplib", "http", "httpx", "requests", "smtplib",
     "socket", "ssl", "subprocess", "urllib", "urllib3", "websockets",
     "nona.proxy",  # core must not depend on the layer above it
+    # Model runtimes and downloads live in `nona.models`; core takes a model object (NerModel), so it stays
+    # light, importable without the `ner` extra, and testable with a fake.
+    "gliner", "huggingface_hub", "torch", "transformers",
 }  # fmt: skip
 
 

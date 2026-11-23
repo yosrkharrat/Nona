@@ -21,11 +21,12 @@ Runtime dependencies, including the ones the NER model needs directly. Everythin
 | Package | Used for | License |
 |---|---|---|
 | [`phonenumbers`](https://pypi.org/project/phonenumbers/) | Phone validation and formatting | Apache-2.0 |
-| [`gliner`](https://pypi.org/project/gliner/) (optional `ner` extra, from #72) | Running the NER model | Apache-2.0 |
-| [`torch`](https://pypi.org/project/torch/) (via `gliner`) | Model runtime | BSD-3-Clause, with bundled parts under Apache-2.0, MIT, BSD-2-Clause, BSL-1.0, ISC and Zlib |
+| [`gliner`](https://pypi.org/project/gliner/) (optional `ner` extra) | Running the NER model | Apache-2.0 |
+| [`huggingface-hub`](https://pypi.org/project/huggingface-hub/) (`ner` extra) | `nona models pull` | Apache-2.0 |
+| [`torch`](https://pypi.org/project/torch/) (`ner` extra; CPU-only wheels on Linux) | Model runtime | BSD-3-Clause, with bundled parts under Apache-2.0, MIT, BSD-2-Clause, BSL-1.0, ISC and Zlib |
 | [`transformers`](https://pypi.org/project/transformers/) (via `gliner`) | Tokenizer and encoder | Apache-2.0 |
 | [`sentencepiece`](https://pypi.org/project/sentencepiece/) (via `gliner`) | The mDeBERTa tokenizer | Apache-2.0 |
-| [`protobuf`](https://pypi.org/project/protobuf/) (to be declared in the `ner` extra: `gliner` doesn't pull it in) | Reading the mDeBERTa tokenizer with transformers 5 | BSD-3-Clause |
+| [`protobuf`](https://pypi.org/project/protobuf/) (`ner` extra: `gliner` doesn't pull it in) | Reading the mDeBERTa tokenizer with transformers 5 | BSD-3-Clause |
 
 ## Data
 

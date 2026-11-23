@@ -42,7 +42,7 @@ flowchart TB
 |---|---|---|
 | **Payload walker** | Visits every user-controlled string in an OpenAI request (02 §1 table) and writes the replacements back | Pure function over pydantic models, so it is easy to test against OpenAI fixtures |
 | **Normalizer** | NFKC, folds case, Eastern Arabic digits to ASCII, strips Arabic tatweel and diacritics, and keeps an exact offset map back to the original text (`core/normalize.py`). The **Arabizi digit map** (`3→ع, 7→ح, 9→ق, 5→خ, 2→ء`) is a second view for name recognizers (S4): applied to the same view it would turn phone numbers into letters | Detection runs on the normalized view, replacement on the original text |
-| **Detection engine** | Runs recognizers and returns candidate `Span`s with scores | Plugin interface (`Recognizer` protocol). Union of recognizers, because recall comes first |
+| **Detection engine** | Runs recognizers and returns candidate `Span`s with scores | Plugin interface (`Recognizer` protocol). Union of recognizers, because recall comes first. The NER recognizer takes an injected model (`NerModel`); `nona.models` pulls and loads the pinned weights, so `core/` never imports torch (ADR-0008) |
 | **Span resolver** | Resolves overlaps (longest span wins, then type priority, then score), applies the score threshold and the allow/deny lists (`core/resolver.py`). Denylist terms become `CUSTOM` spans | Deterministic: the result doesn't depend on recognizer order (property-tested), a requirement for ADR-0002 |
 | **Entity linker** | Groups mentions into entities (`Ahmed` ≈ `Ahmed Ben Salem`). An email that spells a name (`ahmed.bs@…`) stays its own `EMAIL_n` entity and records that person as its `owner` | Conservative: only merges when unambiguous (deep dive B) |
 | **Pseudonymizer** | Assigns `TYPE_n` in order of first appearance and applies the per-type policy: `pseudonymize`, `redact` (`[CARD]`, irreversible) or `keep` (`core/pseudonymize.py`). Placeholder-like text already in the input (`PERSON_1`, `person 2`) keeps its number reserved, so it is never issued and restoring can't rewrite it. If the user types a placeholder whose number was already issued (`PHONE_1` in message 3), it becomes an entity whose value is the literal text: it goes upstream as a fresh placeholder (`PHONE_2`) and comes back exactly as typed | Format chosen in ADR-0001 |
@@ -125,6 +125,7 @@ nona/
 │  │  ├─ telemetry.py  # OTel spans, Prometheus metrics, allowlisted attributes (ADR-0005)
 │  │  └─ sessions/     # SessionStore: memory, redis (ADR-0006)
 │  ├─ cli.py
+│  ├─ models.py      # `nona models pull`, the pinned NER weights, offline loading (ADR-0008)
 │  └─ config.py
 ├─ bench/
 │  ├─ data/            # synthetic dataset (jsonl), generator scripts, DATASHEET.md

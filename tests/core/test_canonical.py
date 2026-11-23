@@ -11,6 +11,7 @@ from nona.core.canonical import (
     glued_parts,
     handle_matches,
     handle_names,
+    is_honorific,
     name_words,
 )
 
@@ -279,3 +280,14 @@ def test_merged_list_spellings_agree_on_being_ordinary_words() -> None:
     pairs = [(v, c) for v, c in VARIANTS.items() if v in listed and c in listed]
     assert pairs  # the check covers something
     assert [(v, c) for v, c in pairs if (v in common) != (c in common)] == []
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [("Mme", True), ("Dr.", True), ("Mme,", True), ("M.", True), ("السيدة", True), ("khalti", True),
+     ("MONSIEUR", True),
+     ("Islem", False), ("Ben", False), ("12", False), ("بالسيدة", False)],
+)  # fmt: skip
+def test_is_honorific(word: str, expected: bool) -> None:
+    """One written word. A glued clitic (`بالسيدة`) isn't recognized: the word is just not trimmed."""
+    assert is_honorific(word) is expected

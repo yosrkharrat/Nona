@@ -55,5 +55,12 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       # Audit exactly what uv.lock pins (with hashes), without letting pip resolve anything.
-      - run: uv export --locked --format requirements-txt --no-emit-project > requirements-audit.txt
+      # --all-extras: the optional `ner` extra (torch, transformers) runs on every prompt too.
+      # On Linux, torch comes from the PyTorch CPU index as `2.15.0+cpu`, a local build of the public release
+      # that PyPI doesn't list. Strip the local label so it's audited under its public version.
+      - run: |
+          set -o pipefail
+          uv export --locked --all-extras --format requirements-txt --no-emit-project \
+            | sed -E 's/^([A-Za-z0-9_.-]+==[^ ;+]+)\+[A-Za-z0-9.]+/\1/' > requirements-audit.txt
+          grep -q '^torch==' requirements-audit.txt
       - run: uvx pip-audit==2.10.1 --strict --disable-pip -r requirements-audit.txt
