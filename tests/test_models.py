@@ -123,13 +123,31 @@ def test_pickle_weights_in_either_folder_are_refused(tmp_path: Path, where: str)
         check(tmp_path, models=FAKE)
 
 
-def test_load_needs_the_ner_extra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def isolated_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo everything `_go_offline` changes, so no later test inherits an offline process."""
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
+        monkeypatch.setenv(var, "unset")  # registers the original state (absent or not) for undo
+        monkeypatch.delenv(var)
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        monkeypatch.setattr(constants, "HF_HUB_OFFLINE", constants.HF_HUB_OFFLINE)
+    monkeypatch.setattr(models, "_went_offline", False)
+
+
+@pytest.mark.usefixtures("isolated_offline")
+def test_load_needs_the_ner_extra_and_stays_online_without_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     pull(tmp_path, download=FakeHub(), models=FAKE)
     monkeypatch.setitem(sys.modules, "gliner", None)  # makes `import gliner` fail
-    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-        monkeypatch.delenv(var, raising=False)
-    with pytest.raises(ModelError, match=r"uv sync --extra ner.*download\.pytorch\.org/whl/cpu"):
+    with pytest.raises(
+        ModelError, match=r"uv sync --extra ner.*--index-url https://download\.pytorch\.org/whl/cpu"
+    ):
         load_ner_model(tmp_path, models=FAKE)
+    assert "HF_HUB_OFFLINE" not in os.environ, "a failed load must not switch the process offline"
+    assert models._went_offline is False
+    assert "--extra-index-url" not in models._INSTALL_HINT, "pip would pick torch from either index"
 
 
 class _FakeGliner:
@@ -159,10 +177,10 @@ class _FakeGliner:
 
 
 @pytest.fixture
-def fake_gliner(monkeypatch: pytest.MonkeyPatch) -> type[_FakeGliner]:
-    monkeypatch.setitem(sys.modules, "gliner", types.SimpleNamespace(GLiNER=_FakeGliner))
-    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
-        monkeypatch.delenv(var, raising=False)  # monkeypatch restores what load sets
+def fake_gliner(monkeypatch: pytest.MonkeyPatch, isolated_offline: None) -> type[_FakeGliner]:
+    module = types.ModuleType("gliner")
+    module.GLiNER = _FakeGliner  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner", module)
     monkeypatch.setattr(_FakeGliner, "error", None)
     return _FakeGliner
 
@@ -244,3 +262,75 @@ def test_bench_with_the_ner_system_and_no_model_says_how_to_pull(
     monkeypatch.setenv("NONA_MODELS_DIR", str(tmp_path))
     assert main(["bench", "--systems", "nona-ner", "--out", str(tmp_path / "out")]) == 1
     assert "nona models pull" in capsys.readouterr().err
+
+
+def test_a_small_file_edited_after_pull_is_refused_on_load(tmp_path: Path) -> None:
+    folder = pull(tmp_path, download=FakeHub(), models=FAKE)
+    config = folder / "gliner_config.json"
+    config.write_bytes(CONFIG.replace(b"384", b"999"))  # same size, different content
+    with pytest.raises(ModelError, match=r"gliner_config\.json .*no longer match their pinned hash"):
+        check(tmp_path, models=FAKE)
+
+
+def test_pull_reports_pickles_instead_of_saying_ok(tmp_path: Path) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    (tmp_path / ENCODER_DIR / "pytorch_model.bin").write_bytes(b"pickle")
+    with pytest.raises(ModelError, match="safetensors only"):
+        pull(tmp_path, download=FakeHub(), models=FAKE)
+
+
+def test_pull_removes_staging_left_by_a_killed_pull_but_not_a_running_one(tmp_path: Path) -> None:
+    old = tmp_path / ".pull-killed"
+    (old / "x").mkdir(parents=True)
+    (old / "x" / "model.safetensors").write_bytes(b"partial")
+    os.utime(old, (0, 0))
+    running = tmp_path / ".pull-running"
+    running.mkdir()
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    assert not old.exists()
+    assert running.exists()
+
+
+def test_a_downloader_that_returns_no_file_is_named_in_the_error(tmp_path: Path) -> None:
+    def lost(repo: str, filename: str, revision: str, folder: Path) -> Path:
+        return folder / "elsewhere" / filename
+
+    with pytest.raises(ModelError, match=r"downloading org/gliner@aaaaaaaaaaaa/.* gave no file"):
+        pull(tmp_path, download=lost, models=FAKE)
+    assert _installed(tmp_path) == []
+
+
+def test_pull_after_a_load_says_to_use_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models, "_went_offline", True)
+    with pytest.raises(ModelError, match="pull from a separate process"):
+        pull(tmp_path, download=FakeHub(fail="spm.model"), models=FAKE)
+
+
+@pytest.mark.parametrize("fallback", ["hardlink", "copy"])
+def test_load_works_where_symlinks_are_not_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner], fallback: str
+) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("symbolic links need privileges")  # Windows without Developer Mode
+
+    monkeypatch.setattr(Path, "symlink_to", refuse)
+    if fallback == "copy":
+        monkeypatch.setattr(os, "link", refuse)  # another volume
+    load_ner_model(tmp_path, models=FAKE)
+    assert fake_gliner.seen["weights"] == FILES[("org/gliner", "model.safetensors")]
+
+
+def test_cli_pull_into_another_folder_says_how_to_use_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(models, "pull", lambda root: root / "gliner")
+    monkeypatch.delenv("NONA_MODELS_DIR", raising=False)
+    assert main(["models", "pull", "--dir", str(tmp_path)]) == 0
+    assert f"set NONA_MODELS_DIR={tmp_path}" in capsys.readouterr().out
+    monkeypatch.setenv("NONA_MODELS_DIR", str(tmp_path))
+    assert main(["models", "pull", "--dir", str(tmp_path)]) == 0
+    assert "NONA_MODELS_DIR" not in capsys.readouterr().out

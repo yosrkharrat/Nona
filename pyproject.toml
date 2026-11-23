@@ -29,7 +29,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # The NER model (ADR-0008). Heavy (torch), so optional: `uv sync --extra ner`, then `nona models pull`. With pip,
-# add `--extra-index-url https://download.pytorch.org/whl/cpu`, or Linux gets the CUDA wheels.
+# install CPU-only torch first with `--index-url https://download.pytorch.org/whl/cpu` (not `--extra-index-url`,
+# which lets pip pick a package from either index), or Linux gets the CUDA wheels.
 ner = [
     "gliner==0.2.30",
     "torch>=2.4",
@@ -104,7 +105,7 @@ strict = ["src/nona/core"]  # NFR-10: strict typing on the core library
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--strict-config"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not model"]  # `-m model` overrides it
 xfail_strict = true
 markers = [
     "e2e: end-to-end tests that need a running upstream (Ollama)",

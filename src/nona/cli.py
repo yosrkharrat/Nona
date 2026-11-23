@@ -55,6 +55,9 @@ def _models_pull(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"ok: {folder}")
+    if root.resolve() != models_dir().resolve():
+        # Loading (`nona bench --systems nona-ner`, the proxy) looks in $NONA_MODELS_DIR or the default.
+        print(f"to use it, set NONA_MODELS_DIR={root}")
     return 0
 
 
