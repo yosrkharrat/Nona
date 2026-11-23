@@ -7,6 +7,8 @@ in the milestone that implements them, so the CLI never advertises something tha
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -44,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def shell_quote(value: str, *, windows: bool = os.name == "nt") -> str:
+    """Quote a value for the user's shell: double quotes on Windows (cmd keeps single ones as part of the
+    value), POSIX quoting elsewhere."""
+    return f'"{value}"' if windows else shlex.quote(value)
+
+
 def _models_pull(args: argparse.Namespace) -> int:
     from nona.models import GLINER, ModelError, models_dir, pull
 
@@ -55,6 +63,9 @@ def _models_pull(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"ok: {folder}")
+    if root.resolve() != models_dir().resolve():
+        # Loading (`nona bench --systems nona-ner`, the proxy) looks in $NONA_MODELS_DIR or the default.
+        print(f"to use it, set NONA_MODELS_DIR={shell_quote(str(root.resolve()))}")
     return 0
 
 

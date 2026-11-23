@@ -123,13 +123,31 @@ def test_pickle_weights_in_either_folder_are_refused(tmp_path: Path, where: str)
         check(tmp_path, models=FAKE)
 
 
-def test_load_needs_the_ner_extra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def isolated_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo everything `_go_offline` changes, so no later test inherits an offline process."""
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
+        monkeypatch.setenv(var, "unset")  # registers the original state (absent or not) for undo
+        monkeypatch.delenv(var)
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        monkeypatch.setattr(constants, "HF_HUB_OFFLINE", constants.HF_HUB_OFFLINE)
+    monkeypatch.setattr(models, "_went_offline", False)
+
+
+@pytest.mark.usefixtures("isolated_offline")
+def test_load_needs_the_ner_extra_and_stays_online_without_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     pull(tmp_path, download=FakeHub(), models=FAKE)
     monkeypatch.setitem(sys.modules, "gliner", None)  # makes `import gliner` fail
-    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-        monkeypatch.delenv(var, raising=False)
-    with pytest.raises(ModelError, match=r"uv sync --extra ner.*download\.pytorch\.org/whl/cpu"):
+    with pytest.raises(
+        ModelError, match=r"uv sync --extra ner.*--index-url https://download\.pytorch\.org/whl/cpu"
+    ):
         load_ner_model(tmp_path, models=FAKE)
+    assert "HF_HUB_OFFLINE" not in os.environ, "a failed load must not switch the process offline"
+    assert models._went_offline is False
+    assert "--extra-index-url" not in models._INSTALL_HINT, "pip would pick torch from either index"
 
 
 class _FakeGliner:
@@ -146,8 +164,12 @@ class _FakeGliner:
         if cls.error is not None:
             raise cls.error
         folder = Path(path)
+        config = json.loads((folder / "gliner_config.json").read_text())
+        encoder = Path(config["model_name"])
         cls.seen = {
-            "config": json.loads((folder / "gliner_config.json").read_text()),
+            "config": config,
+            "gliner_files": sorted(p.name for p in folder.iterdir()),
+            "encoder_files": {p.name: p.read_bytes() for p in encoder.iterdir()},
             "weights": (folder / "model.safetensors").read_bytes(),
             "kwargs": kwargs,
             "offline": (os.environ.get("HF_HUB_OFFLINE"), os.environ.get("TRANSFORMERS_OFFLINE")),
@@ -159,10 +181,10 @@ class _FakeGliner:
 
 
 @pytest.fixture
-def fake_gliner(monkeypatch: pytest.MonkeyPatch) -> type[_FakeGliner]:
-    monkeypatch.setitem(sys.modules, "gliner", types.SimpleNamespace(GLiNER=_FakeGliner))
-    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
-        monkeypatch.delenv(var, raising=False)  # monkeypatch restores what load sets
+def fake_gliner(monkeypatch: pytest.MonkeyPatch, isolated_offline: None) -> type[_FakeGliner]:
+    module = types.ModuleType("gliner")
+    module.GLiNER = _FakeGliner  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gliner", module)
     monkeypatch.setattr(_FakeGliner, "error", None)
     return _FakeGliner
 
@@ -180,7 +202,12 @@ def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
         for p in tmp_path.rglob("*"):
             p.chmod(0o755 if p.is_dir() else 0o644)
     seen = fake_gliner.seen
-    assert seen["config"] == {"model_name": str((tmp_path / ENCODER_DIR).resolve()), "max_len": 384}
+    config = seen["config"]
+    assert isinstance(config, dict)
+    assert config["max_len"] == 384
+    assert not str(config["model_name"]).startswith(str(tmp_path)), "a staged copy, not the shared folder"
+    assert seen["gliner_files"] == ["gliner_config.json", "model.safetensors"]
+    assert seen["encoder_files"] == {n: d for (r, n), d in FILES.items() if r == "org/encoder"}
     assert seen["weights"] == FILES[("org/gliner", "model.safetensors")]
     assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True}
     assert seen["offline"] == ("1", "1")
@@ -244,3 +271,135 @@ def test_bench_with_the_ner_system_and_no_model_says_how_to_pull(
     monkeypatch.setenv("NONA_MODELS_DIR", str(tmp_path))
     assert main(["bench", "--systems", "nona-ner", "--out", str(tmp_path / "out")]) == 1
     assert "nona models pull" in capsys.readouterr().err
+
+
+def test_a_small_file_edited_after_pull_is_refused_on_load(tmp_path: Path) -> None:
+    folder = pull(tmp_path, download=FakeHub(), models=FAKE)
+    config = folder / "gliner_config.json"
+    config.write_bytes(CONFIG.replace(b"384", b"999"))  # same size, different content
+    with pytest.raises(ModelError, match=r"gliner_config\.json .*no longer match their pinned hash"):
+        check(tmp_path, models=FAKE)
+
+
+def test_pull_reports_pickles_instead_of_saying_ok(tmp_path: Path) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    (tmp_path / ENCODER_DIR / "pytorch_model.bin").write_bytes(b"pickle")
+    with pytest.raises(ModelError, match="safetensors only"):
+        pull(tmp_path, download=FakeHub(), models=FAKE)
+
+
+def test_pull_removes_staging_left_by_a_killed_pull_but_not_a_running_one(tmp_path: Path) -> None:
+    old = tmp_path / ".pull-killed"
+    (old / "x").mkdir(parents=True)
+    (old / "x" / "model.safetensors").write_bytes(b"partial")
+    for p in (old / "x" / "model.safetensors", old / "x", old):
+        os.utime(p, (0, 0))
+    running = tmp_path / ".pull-running"  # its folders are old, but it is still writing the weights
+    (running / "x").mkdir(parents=True)
+    (running / "x" / "model.safetensors").write_bytes(b"growing")
+    for p in (running / "x", running):
+        os.utime(p, (0, 0))
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    assert not old.exists()
+    assert running.exists()
+
+
+def test_a_downloader_that_returns_no_file_is_named_in_the_error(tmp_path: Path) -> None:
+    def lost(repo: str, filename: str, revision: str, folder: Path) -> Path:
+        return folder / "elsewhere" / filename
+
+    with pytest.raises(ModelError, match=r"downloading org/gliner@aaaaaaaaaaaa/.* gave no file"):
+        pull(tmp_path, download=lost, models=FAKE)
+    assert _installed(tmp_path) == []
+
+
+def test_pull_after_a_load_says_to_use_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models, "_went_offline", True)
+    with pytest.raises(ModelError, match="pull from a separate process"):
+        pull(tmp_path, download=FakeHub(fail="spm.model"), models=FAKE)
+
+
+def test_load_copies_the_weights_where_symlinks_are_not_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("symbolic links need privileges")  # Windows without Developer Mode
+
+    def no_hard_links(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a hard link shares the original's metadata: never used")
+
+    monkeypatch.setattr(Path, "symlink_to", refuse)
+    monkeypatch.setattr(os, "link", no_hard_links)
+    load_ner_model(tmp_path, models=FAKE)
+    assert fake_gliner.seen["weights"] == FILES[("org/gliner", "model.safetensors")]
+
+
+def test_a_file_dropped_next_to_the_pinned_encoder_is_never_seen_by_the_loader(
+    tmp_path: Path, fake_gliner: type[_FakeGliner]
+) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    (tmp_path / ENCODER_DIR / "tokenizer.json").write_text("{}")  # transformers would prefer it to spm.model
+    (tmp_path / GLINER_DIR / "tokenizer_config.json").write_text("{}")
+    load_ner_model(tmp_path, models=FAKE)
+    assert "tokenizer.json" not in fake_gliner.seen["encoder_files"]  # type: ignore[operator]
+    assert fake_gliner.seen["gliner_files"] == ["gliner_config.json", "model.safetensors"]
+
+
+def test_an_unreadable_file_is_a_model_error(tmp_path: Path) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    config = tmp_path / ENCODER_DIR / "config.json"
+    config.chmod(0o000)
+    try:
+        if os.access(config, os.R_OK):
+            pytest.skip("running as a user who can read anything")
+        with pytest.raises(ModelError, match="can't read the NER model"):
+            check(tmp_path, models=FAKE)
+    finally:
+        config.chmod(0o644)
+
+
+@pytest.mark.usefixtures("isolated_offline")
+def test_a_broken_gliner_import_leaves_the_process_online(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    monkeypatch.setitem(sys.modules, "gliner", types.ModuleType("gliner"))  # installed, but no GLiNER in it
+    with pytest.raises(ModelError, match="importing it failed"):
+        load_ner_model(tmp_path, models=FAKE)
+    assert "HF_HUB_OFFLINE" not in os.environ
+    assert "TRANSFORMERS_OFFLINE" not in os.environ
+    assert models._went_offline is False
+
+
+def test_cli_pull_into_another_folder_says_how_to_use_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(models, "pull", lambda root: root / "gliner")
+    monkeypatch.delenv("NONA_MODELS_DIR", raising=False)
+    spaced = tmp_path / "my models"
+    spaced.mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert main(["models", "pull", "--dir", "my models"]) == 0  # relative: printed absolute, and quoted
+    assert f"set NONA_MODELS_DIR='{spaced.resolve()}'" in capsys.readouterr().out
+    monkeypatch.setenv("NONA_MODELS_DIR", str(tmp_path))
+    assert main(["models", "pull", "--dir", str(tmp_path)]) == 0
+    assert "NONA_MODELS_DIR" not in capsys.readouterr().out
+
+
+def test_an_oversized_small_file_is_refused_without_reading_it_all(tmp_path: Path) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    spm = tmp_path / ENCODER_DIR / "spm.model"
+    spm.write_bytes(b"x" * 10_000_000)
+    with pytest.raises(ModelError, match=r"spm\.model"):
+        check(tmp_path, models=FAKE)
+
+
+@pytest.mark.parametrize(("windows", "expected"), [(True, '"D:\\my models"'), (False, "'D:\\my models'")])
+def test_the_hint_quotes_for_the_shell_in_use(windows: bool, expected: str) -> None:
+    from nona.cli import shell_quote
+
+    assert shell_quote("D:\\my models", windows=windows) == expected
