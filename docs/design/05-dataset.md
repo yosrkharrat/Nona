@@ -144,14 +144,16 @@ The `identity` system (sends everything unchanged) must score 100% leaked and 0%
 - About 50 hand-written hard cases, tagged.
 - Split: about 40% dev, 60% test, stratified by language and source.
 
-### Current `dev` (S3)
+### Current `dev` (S3.1)
 
 | Part | Conversations | How it's made |
 |---|---|---|
 | v0 (`dev-0001`…`0080`) | 80, mostly single-turn | `generate --seed 20261120 --count 80 --prefix dev` (S1, regenerated in #34). A test checks that this command still gives the committed lines byte for byte |
-| multi-turn (`dev-0081`…`0120`) | 40, 4–5 turns each | `generate --set multi-turn --seed 2 --count 40 --start 81` (S3, #41) |
+| multi-turn (`dev-0081`…`0137`) | 57, 4–5 turns each | `generate --set multi-turn --seed 2 --count 57 --prefix dev --start 81`: 19 templates, three times each (S3 #41, extended in #58) |
 
-The multi-turn set exists for linking (ADR-0004): a short name before the full one, two people sharing a first name with `ambiguous: true` references, honorifics, assistant turns that repeat restored names, lowercase Arabizi names, cities (LOCATION), name-like decoys (`amal`, `sana`, `3amel`, `3ali`), and no-PII controls. Most of its people come from the generator's `tn2` pool, which holds names that are **not** in the gazetteer (a test enforces it). That way the benchmark measures detection rather than list overlap: on v0 the gazetteer reaches 0% leaked because 76 of the generator's 98 v0 names are common enough to be listed, while on the multi-turn set 70% of names still leak.
+The multi-turn set exists for linking (ADR-0004): a short name before the full one, with the short form detected (`Mme Islem`, or a listed first name) so absorption is measured; two people sharing a first name with `ambiguous: true` references (held-out names, and a `-listed` copy); honorifics; assistant turns that repeat restored names; lowercase Arabizi names; cities (LOCATION); Arabic-script conversations (`ar`, `aeb-Arab`) with clitics glued to names (`لـ`, `وـ`); and no-PII controls with name-like words: `amal`, `sana`, `3amel`, `3ali`, French words that fold to names (`marié`, `claire`, `pierre`, `Grâce`), Darija expressions (`Mabrouk 3lik`, `ya sahbi`, `lazem saber`), a brand after a cue (`m3a Ooredoo`), and Arabic expressions (`رمضان كريم`, `اللهم آمين`, `أمل`).
+
+Most of its people come from the generator's `tn2` and `ar2` pools, which hold names that are **not** in the gazetteer (a test enforces it), so the benchmark measures detection rather than list overlap. The report's **held-out** PERSON rate keeps only those people: 75.0% of their mentions leak (72/96), while on v0, whose names are all at least partly listed, PERSON leaks 0%. The street in `mt-fr-moved-city` was an unlabelled LOCATION; the turn was reworded in #58.
 
 ## 8. Open questions for review
 

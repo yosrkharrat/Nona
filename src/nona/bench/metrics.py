@@ -294,7 +294,32 @@ def placeholders(original: str, payload: str, spans: Sequence[tuple[int, int]]) 
         else:
             for k in named:
                 lost[k] = True
+    for k, span in enumerate(spans):
+        _strip_glued(parts[k], original, a, span)
     return [None if lost[k] or not parts[k] else " ".join(parts[k]) for k in range(len(spans))]
+
+
+def _strip_glued(parts: list[str], original: str, tokens: list[re.Match[str]], span: tuple[int, int]) -> None:
+    """Remove from a span's replacement what the system kept of its first and last original tokens outside
+    the mention: a glued clitic before it (`وسامي` → `وPERSON_1` gives `PERSON_1`), or letters after it.
+
+    Compared exactly, as a system keeps glued text as written. A suffix is only removed when it holds a
+    letter: `Ali1` → `PERSON_1` must stay `PERSON_1`, not lose its digit.
+    """
+    inside = [t for t in tokens if t.start() < span[1] and span[0] < t.end()]
+    if not parts or not inside:
+        return
+    before = original[inside[0].start() : max(inside[0].start(), span[0])]
+    after = original[min(inside[-1].end(), span[1]) : inside[-1].end()]
+    if before and parts[0].startswith(before) and len(parts[0]) > len(before):
+        parts[0] = parts[0][len(before) :]
+    if (
+        after
+        and any(c.isalpha() for c in after)
+        and parts[-1].endswith(after)
+        and len(parts[-1]) > len(after)
+    ):
+        parts[-1] = parts[-1][: -len(after)]
 
 
 # --------------------------------------------------------------------------- results

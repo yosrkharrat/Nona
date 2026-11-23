@@ -104,6 +104,26 @@ Over all types: 0/170 merged, 0/51 split, 0/73 ambiguous. The 8 gold-`ambiguous`
 
 **Found while measuring:** in `Chirine. Chirine Boukadida…` (4 dev conversations), both `Chirine` leak. The full name isn't detected: only `Boukadida` is masked, propagated from an earlier message. That's a detection gap, left to S4. #48 added the look-ahead that masks the lone first name once a detector does find the full name; it doesn't move the dev numbers yet.
 
+### Re-measured (S3.1, #58)
+
+`dev` was extended to 137 conversations (370 turns; 57 multi-turn), so these numbers aren't comparable with the table above. The changes: the shared-first-name template uses held-out names (with a listed copy), absorption cases where the short form *is* detected, Arabic-script conversations with clitics, and over-masking controls. The harness also changed: every copy of a turn is scored (one per request), and placed mentions that leak part of the name (`PERSON_1 Boukadida`) are reported apart and left out of merge, split and ambiguity.
+
+| PERSON | all of `dev` | multi-turn part |
+|---|---|---|
+| Mentions with a placeholder | 54.0% (141/261) | 42.9% (90/210) |
+| of which partly leaking (left out below) | 10.6% (15/141) | 16.7% (15/90) |
+| Wrong merge (entities) | 0% (0/65) | 0% (0/24) |
+| Wrong split (entities with 2+ masked mentions) | 0% (0/32) | 0% (0/24) |
+| Ambiguity (later mentions) | 0% (0/61) | 0% (0/51) |
+
+Over all types: 0/184 merged, 0/68 split, 0/97 ambiguous. Of the 9 gold-`ambiguous` mentions, Nona gave 3 their own placeholder and missed 6.
+
+- **Absorption**, now measured: with a listed first name, `Hamza`, then `Hamza Khelifi`, is one placeholder throughout. With a held-out one, `Mme Islem` is detected, and `Islem Boukadida` later links to the same placeholder, but `Boukadida` leaks: the linking is right, and the surname is a detection gap for S4.
+- **Arabic script:** the first measurement showed 3 wrong splits, all from the metric. `وسامي` became `وPERSON_1`, and the clitic was read as part of the placeholder. The metric now strips text glued outside the mention, and the splits are gone.
+- **Re-sent assistant turns** leak 38.8% (54/139). None belongs to an entity Nona had masked earlier, so the claim under *Consequences* still holds on `dev`.
+
+#59 rewrites *Why Accepted* in light of these numbers.
+
 ## Consequences
 
 - ➕ **Prefix stability is a property that can be tested.** For any conversation `msgs` and any `k`, `anonymize(msgs[:k]) == anonymize(msgs)[:k]`. This becomes a Hypothesis property test next to the round-trip test of FR-8.
