@@ -107,6 +107,8 @@ This is the most important deliverable after the proxy itself, so the method has
 | Partial leak rate | Share where some token of the value leaks (e.g. the surname) |
 | Over-masking rate | Share of non-PII tokens that were replaced (this degrades utility) |
 | Utility loss | Answer quality, raw vs through Nona, on 3 tasks: (1) extract the appointment {who, when, phone}, scored exactly against gold, (2) draft a reply, scored by an LLM judge comparing pairs with positions swapped, (3) summarize. Reported with 95% bootstrap confidence intervals |
+| Re-sent assistant turns | Leak rate on restored answers the client sends back (ADR-0004) |
+| Wrong merge / wrong split / ambiguity | Linking consistency over the mentions that got a placeholder: two gold entities under one placeholder, one entity under several, an extra placeholder for a later mention (05 §6, ADR-0004) |
 | Restoration failure rate | Deep dive D |
 | Overhead | p50/p95 latency added |
 

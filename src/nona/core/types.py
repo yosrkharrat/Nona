@@ -68,7 +68,7 @@ class Entity:
     id: int
     type: EntityType
     mentions: tuple[Span, ...]
-    canonical: str  # longest surface form seen so far; what a placeholder is restored to (ADR-0004)
+    canonical: str  # longest surface form in the conversation; what its placeholder restores to (ADR-0004)
     owner: str | None = None  # placeholder of the person an email belongs to (deep dive B, step 6); metadata
 
     def __post_init__(self) -> None:

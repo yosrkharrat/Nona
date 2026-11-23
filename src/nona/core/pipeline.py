@@ -146,10 +146,11 @@ class Nona:
         """Look-ahead (ADR-0004, step 4): the forms to search for in this message, and each PERSON seeds.
 
         A confident detection gives its full form and its name words: a bare first name before the full name
-        is caught too. Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are left
-        to the gazetteer's context rules, which decide on them alone. In a script without capitals (Arabic), a
-        word has no capital to vouch for it, so only listed names spread: `محمد الثاني` must not make every
-        `الثاني` ("the second") a name.
+        is caught too. Names that are also ordinary words (`Mabrouk`, congratulations; `Amal`, hope) are never
+        spread by look-ahead: the gazetteer's context rules decide on each occurrence (a capitalized one is
+        masked anyway, at 0.5 at the start of a sentence). In a script without capitals (Arabic), a word has
+        no capital to vouch for it, so only listed names spread: `محمد الثاني` must not make every `الثاني`
+        ("the second") a name.
         """
 
         def spreadable(word: str) -> bool:
