@@ -55,5 +55,6 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       # Audit exactly what uv.lock pins (with hashes), without letting pip resolve anything.
-      - run: uv export --locked --format requirements-txt --no-emit-project > requirements-audit.txt
+      # --all-extras: the optional `ner` extra (torch, transformers) runs on every prompt too.
+      - run: uv export --locked --all-extras --format requirements-txt --no-emit-project > requirements-audit.txt
       - run: uvx pip-audit==2.10.1 --strict --disable-pip -r requirements-audit.txt

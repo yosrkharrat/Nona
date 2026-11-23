@@ -20,7 +20,7 @@ Nona **reduces exposure**. It does not guarantee anonymity. Its leak rate will b
 4. [Deep dives](docs/design/04-deep-dives.md): multilingual detection, entity linking, streaming restoration, tool calls, benchmark method
 5. [Benchmark dataset](docs/design/05-dataset.md): schema, labelling guidelines, synthetic value rules, how leaks are counted
 6. [Build plan](docs/design/06-build-plan.md): measured vertical slices from here to v0.1, definition of done, risks
-7. Decisions: [ADR-0001 placeholder format](docs/adr/0001-placeholder-format.md) · [ADR-0002 stateless by default](docs/adr/0002-stateless-by-default.md) · [ADR-0003 fail closed](docs/adr/0003-fail-closed.md) · [ADR-0004 causal entity linking](docs/adr/0004-causal-entity-linking.md) · [ADR-0005 observability](docs/adr/0005-observability.md) · [ADR-0006 encrypted session store](docs/adr/0006-encrypted-session-store.md) · [ADR-0007 signed releases](docs/adr/0007-release-supply-chain.md)
+7. Decisions: [ADR-0001 placeholder format](docs/adr/0001-placeholder-format.md) · [ADR-0002 stateless by default](docs/adr/0002-stateless-by-default.md) · [ADR-0003 fail closed](docs/adr/0003-fail-closed.md) · [ADR-0004 causal entity linking](docs/adr/0004-causal-entity-linking.md) · [ADR-0005 observability](docs/adr/0005-observability.md) · [ADR-0006 encrypted session store](docs/adr/0006-encrypted-session-store.md) · [ADR-0007 signed releases](docs/adr/0007-release-supply-chain.md) · [ADR-0008 NER model](docs/adr/0008-ner-model.md)
 
 ## Roadmap
 Built in measured vertical slices: each one works end to end and moves a benchmark number. Details, estimates and
@@ -48,6 +48,16 @@ uv run pytest --cov          # tests (unit + property-based)
 uv run ruff format . && uv run ruff check .
 uv run pyright               # strict on src/nona/core
 uv run nona --version
+```
+
+The NER model is optional and heavy (torch): install the `ner` extra, then pull the pinned weights once. Loading
+never touches the network ([ADR-0008](docs/adr/0008-ner-model.md), proposed).
+
+```bash
+uv sync --extra ner
+uv run nona models pull                              # ~1.2 GB into ~/.cache/nona/models, hashes checked
+uv run nona bench --systems nona,nona-ner --split dev
+uv run pytest -m model                               # tests against the real model
 ```
 
 Benchmark (all data synthetic, see [05](docs/design/05-dataset.md)):

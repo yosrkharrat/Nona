@@ -14,12 +14,13 @@ from nona.core import Nona
 
 
 class NonaSystem:
-    def __init__(self, nona: Nona | None = None) -> None:
+    def __init__(self, nona: Nona | None = None, *, name: str = "nona") -> None:
         self._nona = nona or Nona()
+        self._name = name
 
     @property
     def name(self) -> str:
-        return "nona"
+        return self._name
 
     def payloads(self, conversation: Conversation) -> Sequence[str]:
         return list(self._nona.anonymize_messages([turn.text for turn in conversation.turns]).texts)

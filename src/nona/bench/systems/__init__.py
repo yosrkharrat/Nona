@@ -28,9 +28,20 @@ class System(Protocol):
         ...
 
 
+def _nona_ner() -> System:
+    """Nona's default pipeline plus the NER model (ADR-0008). Needs the `ner` extra and `nona models pull`;
+    not the default `nona` system until #72 meets ADR-0008's conditions."""
+    from nona.core import Nona
+    from nona.core.recognizers import NerRecognizer, default_recognizers
+    from nona.models import load_ner_model
+
+    return NonaSystem(Nona([*default_recognizers(), NerRecognizer(load_ner_model())]), name="nona-ner")
+
+
 SYSTEMS: Mapping[str, Callable[[], System]] = {
     "identity": IdentitySystem,
     "nona": NonaSystem,
+    "nona-ner": _nona_ner,
 }
 
 __all__ = ["SYSTEMS", "IdentitySystem", "NonaSystem", "System"]

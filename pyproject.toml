@@ -27,6 +27,15 @@ dependencies = [
     "phonenumbers>=8.13",
 ]
 
+[project.optional-dependencies]
+# The NER model (ADR-0008). Heavy (torch), so optional: `pip install 'nona-proxy[ner]'`, then `nona models pull`.
+ner = [
+    "gliner==0.2.30",
+    "torch>=2.4",
+    "protobuf>=5",  # transformers 5 needs it to read the mDeBERTa tokenizer; gliner doesn't pull it in
+    "huggingface-hub>=0.30",  # `nona models pull`
+]
+
 [project.scripts]
 nona = "nona.cli:main"
 
@@ -38,6 +47,20 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
 ]
+
+[tool.uv]
+# Dependency age rule (ADR-0008): only releases at least two weeks old at lock time. A fixed date keeps the lock
+# reproducible; move it forward on purpose when updating dependencies.
+exclude-newer = "2026-11-09T00:00:00Z"
+
+# CPU-only torch on Linux (NFR-8): the default wheels pull in several GB of CUDA libraries.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["hatchling>=1.26"]
@@ -84,6 +107,7 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
 markers = [
     "e2e: end-to-end tests that need a running upstream (Ollama)",
+    "model: tests that load the real NER model (`nona models pull` first); run with `-m model`",
 ]
 
 [tool.coverage.run]

@@ -161,7 +161,7 @@ class Recognizer(Protocol):
 nona serve   [--config nona.yaml] [--port 8787] [--upstream https://api.openai.com/v1]
 nona scan    <file|->  [--format text|json|html]        # anonymize a file, print a diff
 nona bench   [--systems nona,presidio,llmguard] [--split test] [--out results/]
-nona models  pull                                        # explicit model download (NFR-3)
+nona models  pull   [--dir ~/.cache/nona/models]        # explicit, pinned, hash-checked download (NFR-3)
 ```
 
 ## 5. Configuration (`nona.yaml`)
@@ -176,8 +176,8 @@ server:
   inspection_api: true
 detection:
   languages: [fr, en, ar, aeb]            # aeb = Tunisian Arabic (ISO 639-3)
-  ner_model: urchade/gliner_multi-v2.1    # pinned revision in lockfile
-  ner_threshold: 0.35                     # low on purpose: recall first (NFR-5)
+  ner_model: urchade/gliner_multi-v2.1    # revision and file hashes pinned in nona.models (ADR-0008)
+  ner_threshold: 0.5                      # ADR-0008: 0.4 finds 2 more names but doubles touched distractors
   detector_timeout_ms: 2000
   custom_recognizers:
     - name: client_ref

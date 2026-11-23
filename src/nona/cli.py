@@ -29,7 +29,33 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--split", default="dev", help="dataset split, read from <data>/<split>.jsonl")
     bench.add_argument("--data", type=Path, default=Path("bench/data"), help="dataset directory")
     bench.add_argument("--out", type=Path, default=Path("results"), help="output directory")
+
+    models = commands.add_parser("models", help="manage the NER model (needs the `ner` extra)")
+    models_commands = models.add_subparsers(dest="models_command", metavar="<action>", required=True)
+    pull = models_commands.add_parser(
+        "pull", help="download the pinned NER model (the only command that fetches weights, NFR-3)"
+    )
+    pull.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        help="models folder (default: $NONA_MODELS_DIR or ~/.cache/nona/models)",
+    )
     return parser
+
+
+def _models_pull(args: argparse.Namespace) -> int:
+    from nona.models import GLINER, ModelError, models_dir, pull
+
+    root = args.dir or models_dir()
+    print(f"pulling {GLINER.repo}@{GLINER.revision[:12]} into {root} (about 1.2 GB)")
+    try:
+        folder = pull(root)
+    except ModelError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"ok: {folder}")
+    return 0
 
 
 def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
@@ -50,10 +76,12 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not dataset.is_file():
         print(f"error: no dataset file at {dataset}", file=sys.stderr)
         return 1
+    from nona.models import ModelError
+
     for i, name in enumerate(names):
         try:
             result = run(SYSTEMS[name](), args.split, dataset)
-        except DatasetError as exc:
+        except (DatasetError, ModelError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if i:
@@ -72,6 +100,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "bench":
         return _bench(parser, args)
+    if args.command == "models":
+        return _models_pull(args)
     parser.print_help()
     return 0
 

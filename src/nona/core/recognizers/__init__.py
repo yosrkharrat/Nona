@@ -15,6 +15,7 @@ from nona.core.recognizers.email import EmailRecognizer
 from nona.core.recognizers.financial import CardRecognizer, IbanRecognizer, RibRecognizer
 from nona.core.recognizers.gazetteer import GazetteerRecognizer
 from nona.core.recognizers.ip import IpRecognizer
+from nona.core.recognizers.ner import NerModel, NerPrediction, NerRecognizer
 from nona.core.recognizers.phone import PhoneRecognizer
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -51,6 +52,9 @@ __all__ = [
     "GazetteerRecognizer",
     "IbanRecognizer",
     "IpRecognizer",
+    "NerModel",
+    "NerPrediction",
+    "NerRecognizer",
     "PhoneRecognizer",
     "Recognizer",
     "RibRecognizer",

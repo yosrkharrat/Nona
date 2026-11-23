@@ -229,6 +229,11 @@ def _glued(surface: str) -> tuple[tuple[str, str, str], ...]:
     return tuple(out)
 
 
+def is_honorific(word: str) -> bool:
+    """Whether one written word is an honorific or kinship cue (`Mme`, `Dr.`, `السيد`, `khalti`)."""
+    return _fold(word).strip("." + "-" + _APOSTROPHES) in HONORIFICS
+
+
 def canonical_tokens(surface: str) -> frozenset[str]:
     """The canonical token set of one PERSON mention."""
     return frozenset(token for token, _, _ in _glued(surface))

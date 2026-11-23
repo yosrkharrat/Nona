@@ -77,6 +77,15 @@ The model brings the leak rate from 25.4% to about 2%, but it can't ship as meas
 
 Pinned too: the tokenizer from `microsoft/mdeberta-v3-base` (MIT) at `a0484667b22365f84929a935b5e50a51f71f159d`. GLiNER loads it by name, which offline resolves through the cache's `refs/main`; the spike checks that this is the pinned revision, and #72 loads it from the pinned snapshot path instead. It needs `sentencepiece` and `protobuf`. transformers 5 warns about a "Mistral regex" when loading it; tokenization looks right, and #72 checks it with a test.
 
+## Implementation (#72, part 1)
+
+- [`core/recognizers/ner.py`](../../src/nona/core/recognizers/ner.py): `NerRecognizer` takes any `NerModel` (identity, `max_words`, `predict`), so `nona.core` never imports torch and tests use a fake. It reads the original text, cuts long texts into windows of at most `max_words` model words overlapping by 32 (the model ignores everything past 384 words: a name in a 600-word email's signature leaked without windows, and is found with them), trims leading honorifics from names, and keeps the model's score. Its fingerprint carries the model id and revision.
+- [`nona/models.py`](../../src/nona/models.py) and `nona models pull`: the GLiNER and mDeBERTa revisions and every file's SHA-256 are pinned in code. A file with the wrong hash is refused and nothing is installed. Only safetensors are fetched, and loading refuses a folder with pickle weights in it. GLiNER's config is pointed at the pinned encoder folder, so nothing resolves by Hub name. Loading is offline.
+- Packaging: the optional `ner` extra (`gliner`, `torch`, `protobuf`, `huggingface-hub`), CPU-only torch wheels on Linux (NFR-8), and the dependency age rule as `exclude-newer` in `pyproject.toml`. The audit job covers the extras.
+- `nona bench --systems nona-ner` runs it; `pytest -m model` tests the real model. It is **not** in the default pipeline.
+
+On `dev` (`nona-ner`): direct leak 2.1%, held-out PERSON 6.2%, over-masked tokens 5.4% (honorific trimming, from 6.3%), PERSON wrong split 26.2%, ambiguity 18.6%. A real-model test records the Arabizi case behind conditions 1 and 2: in `3andi rendez-vous m3a Mootez Jaouadi ghodwa` the model calls the name a place at 0.38, and with a final period takes `Mootez Jaouadi ghodwa` as one location at 0.59.
+
 ## Consequences
 
 - ➕ The leak rate drops by an order of magnitude on every language, including Arabic script.
