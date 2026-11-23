@@ -87,7 +87,7 @@ whole history on every request and keeps nothing between requests (ADR-0002).
 
 - **Consistency** comes from determinism plus **causal linking** ([ADR-0004](../adr/0004-causal-entity-linking.md)): each message
   is linked using only itself and the messages before it, and earlier decisions are frozen. So adding a new message never
-  renumbers earlier ones (`anonymize(msgs[:k]) == anonymize(msgs)[:k]`, a property test), which also keeps the provider's
+  renumbers earlier ones (`anonymize_messages(msgs[:k]).texts == anonymize_messages(msgs).texts[:k]`, a property test), which also keeps the provider's
   prompt cache warm.
 - **Forward propagation**: once a name is known, every later occurrence of the same text is masked even if the NER misses it.
   This is what stops restored assistant answers, which the client sends back, from leaking on the next turn.
