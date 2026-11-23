@@ -177,7 +177,7 @@ def _remove_stale_staging(root: Path) -> None:
                 continue
             newest = max((p.lstat().st_mtime for p in old.rglob("*")), default=old.lstat().st_mtime)
             if max(newest, old.lstat().st_mtime) < cutoff:
-                shutil.rmtree(old)
+                shutil.rmtree(old, ignore_errors=True)  # best effort: remove all it can
         except OSError:
             continue
 
@@ -221,7 +221,8 @@ def _verified_small_files(root: Path, models: ModelSet) -> dict[tuple[str, str],
         for f in pinned.files:
             if f.size > _HASHED_ON_LOAD_MAX:
                 continue
-            data = (root / pinned.folder / f.name).read_bytes()
+            with (root / pinned.folder / f.name).open("rb") as fh:
+                data = fh.read(f.size + 1)  # never more than one byte past the pinned size
             if len(data) != f.size or hashlib.sha256(data).hexdigest() != f.sha256:
                 changed.append(f"{pinned.folder}/{f.name}")
             out[(pinned.repo, f.name)] = data
@@ -314,8 +315,9 @@ def _import_gliner_offline() -> Any:
 
 
 def _link_or_copy(source: Path, target: Path) -> None:
-    """A symlink, or a copy where symlinks need privileges (Windows without Developer Mode). Never a hard
-    link: it shares the file's metadata, and temp-folder cleanup could then change the shared original."""
+    """A symlink, or a copy where symlinks need privileges (Windows without Developer Mode, which NFR-8
+    doesn't list as supported: there every load copies the 1.1 GB weights into the temp folder). Never a
+    hard link: it shares the file's metadata, and temp-folder cleanup could change the shared original."""
     try:
         target.symlink_to(source)
     except OSError:
@@ -354,8 +356,9 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
     Both folders are rebuilt in a temporary folder that holds **only the pinned files**: the small ones
     written from the bytes just verified, the weights linked (or copied). GLiNER's `model_name`, a Hub name,
     is set to that encoder copy. So nothing resolves by name, a file dropped next to the pinned ones (a
-    `tokenizer.json`, which transformers would prefer) is never seen, nothing can change between the check
-    and the load, and a read-only or shared models folder works.
+    `tokenizer.json`, which transformers would prefer) is never seen, the small files can't change between
+    the check and the load, and a read-only or shared models folder works. The weights are read through
+    the link: checked by size here, by hash only in `pull` (hashing 1.1 GB on every start is too slow).
     """
     root = models_dir() if root is None else root
     folder = check(root, models=models)

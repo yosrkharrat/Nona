@@ -388,3 +388,18 @@ def test_cli_pull_into_another_folder_says_how_to_use_it(
     monkeypatch.setenv("NONA_MODELS_DIR", str(tmp_path))
     assert main(["models", "pull", "--dir", str(tmp_path)]) == 0
     assert "NONA_MODELS_DIR" not in capsys.readouterr().out
+
+
+def test_an_oversized_small_file_is_refused_without_reading_it_all(tmp_path: Path) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    spm = tmp_path / ENCODER_DIR / "spm.model"
+    spm.write_bytes(b"x" * 10_000_000)
+    with pytest.raises(ModelError, match=r"spm\.model"):
+        check(tmp_path, models=FAKE)
+
+
+@pytest.mark.parametrize(("windows", "expected"), [(True, '"D:\\my models"'), (False, "'D:\\my models'")])
+def test_the_hint_quotes_for_the_shell_in_use(windows: bool, expected: str) -> None:
+    from nona.cli import shell_quote
+
+    assert shell_quote("D:\\my models", windows=windows) == expected
