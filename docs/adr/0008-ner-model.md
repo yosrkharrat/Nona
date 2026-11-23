@@ -17,7 +17,7 @@ The gazetteer and context rules (S3) only find names that are in the lists: on `
 
 ## Method
 
-[`bench/spike_gliner.py`](../../bench/spike_gliner.py) (and [`spike_gliner_variants.py`](../../bench/spike_gliner_variants.py) for the label and trimming variants under *Conditions*) adds one model as a recognizer next to Nona's recognizers and scores it with the benchmark harness, so these are the numbers `nona bench` prints. Labels `person`, `location`, `organization`; the model reads the **original** text (the normalized view is case-folded, and capitals are its best cue). Each model runs in its own process (16 GB machine). The model is called once per distinct message, and the threshold sweep filters those predictions. `gliner` 0.2.30, torch 2.15.0 and transformers 5.22.2 on CPU (resolved with `--exclude-newer 2026-11-09`, ADR-0007), an M-series Mac with another heavy process running, so latencies are an upper bound.
+[`bench/spike_gliner.py`](../../bench/spike_gliner.py) (and [`spike_gliner_variants.py`](../../bench/spike_gliner_variants.py) for the label and trimming variants under *Conditions*) adds one model as a recognizer next to Nona's recognizers and scores it with the benchmark harness, so these are the numbers `nona bench` prints. Labels `person`, `location`, `organization`; the model reads the **original** text (the normalized view is case-folded, and capitals are its best cue). Each model runs in its own process (16 GB machine). The model is called once per distinct message, and the threshold sweep filters those predictions. `gliner` 0.2.30, torch 2.15.0 and transformers 5.22.2 on CPU (resolved with `--exclude-newer 2026-11-09`: no release younger than two weeks, a rule #72 keeps for the `ner` extra), on an M-series Mac. Another session's render jobs were loading the CPU during the first runs, so latency is given for both conditions.
 
 `dev` is 137 conversations (370 turns). The per-language held-out samples are small (6 to 45 mentions) and LOCATION/ORGANIZATION has 6: a difference of one or two mentions is noise.
 
@@ -43,8 +43,12 @@ No configuration makes a wrong merge. Held-out PERSON by language, at 0.5 (leake
 
 | | v2.1 | pii-v1 |
 |---|---|---|
-| Latency per message, p50 / p95 | 289 / 550 ms | 378 / 615 ms |
-| RSS: peak while loading / steady after | 2.29 GB / 1.64 GB | 2.16 GB / not measured |
+| Latency per message, p50 / p95 (load average ≈ 3) | 44 / 50 ms | 45 / 52 ms |
+| Latency per message, p50 / p95 (render job running, load ≈ 7) | 289 / 550 ms | 378 / 615 ms |
+| RSS steady after loading | 1.64 GB | 1.94 GB |
+| RSS peak while loading (varies between runs) | 2.29–2.74 GB | 2.16–2.75 GB |
+
+The longest `dev` message is 25 words, so the latencies are for short messages.
 
 The model alone (structured recognizers, no gazetteer) leaks 3.5% (v2.1) and 4.6% (pii-v1) at 0.5: the gazetteer still adds recall.
 
@@ -54,7 +58,7 @@ The model alone (structured recognizers, no gazetteer) leaks 3.5% (v2.1) and 4.6
 
 - **Arabic.** v2.1 leaks 0 of 9 held-out Arabic names; pii-v1 leaks 3 of 9, consistent with its training languages. Arabic and Darija are why Nona exists.
 - **Over-masking.** At equal threshold, v2.1 replaces 6.3% of non-PII tokens, pii-v1 10.0%.
-- **Supply chain.** v2.1 ships safetensors. pii-v1 ships only a pickle, which runs code on load; ADR-0007 doesn't let that into the path of every prompt.
+- **Supply chain.** v2.1 ships safetensors. pii-v1 ships only a pickle, which can run code when it's loaded. Nona sits in the path of every prompt, so this ADR sets a rule: **model weights are loaded from safetensors only**. #72 enforces it in the loader.
 - **0.5 over 0.4.** 0.4 catches two more held-out names (4.2% vs 6.2%) but touches 24.6% of distractors instead of 14.5%. Revisit once #72 has cut over-masking.
 - pii-v1 did better on re-sent assistant turns (0% vs 3.6%) and LOCATION/ORGANIZATION (0 of 6 vs 2 of 6). Both are small samples; #72 reports them again.
 
@@ -67,10 +71,11 @@ The model brings the leak rate from 25.4% to about 2%, but it can't ship as meas
    - **ADR-0004's two-entity rule**, now reached: `Jaouadi`, then `Mootez`, then `Mootez Jaouadi` gives an ambiguous placeholder, which hindsight would merge. ADR-0004 accepted this as rare; with a model it isn't. If it stays frequent after the type fix, ADR-0004 is reopened, as it says.
    - Arabic bare first names after a full name (`سامي` after `سامي الجلاصي`) sometimes get a new placeholder. Not diagnosed yet.
 2. **Over-masking** comes from span edges and Arabizi. The model includes honorifics (`Mme`, `Dr`, `السيدة`; trimming them takes tokens from 6.3% to 5.4%) and tags pronouns (`I`, `Il`, `Je`) and Darija words (`3al`, `nomrou`, `behi`, `rabbi`). The de-Arabizi'd view (deep dive A) hasn't been tried; it may help here or hurt.
-3. **NFR-7 (≤ 1.5 GB).** Steady RSS is 1.64 GB in fp32, and loading peaks at 2.29 GB. Two thirds of the parameters are the multilingual embedding table (192M). Dynamic int8 quantization of the linear layers made RSS larger, and an fp16 embedding breaks inference. The likely path is ONNX with int8 weights (already the v0.2 lever in 03 §5), or trimming the embedding vocabulary to the scripts we need. Loading from safetensors with memory mapping should cut the peak.
-4. **NFR-6.** 289 ms p50 is above the 80–120 ms in 03 §5's budget, measured on short messages with another heavy process running. Re-measure on an idle machine; the ONNX path addresses both.
+3. **NFR-7 (≤ 1.5 GB).** Steady RSS is 1.64 GB in fp32, and loading peaks at 2.3–2.7 GB. Two thirds of the parameters are the multilingual embedding table (192M). In a one-off check (not in the spike scripts), dynamic int8 quantization of the linear layers made RSS larger (2.56 GB: it keeps a copy), and an fp16 embedding breaks inference. The likely path is ONNX with int8 weights (already the v0.2 lever in 03 §5), or trimming the embedding vocabulary to the scripts we need. Loading from safetensors with memory mapping should cut the peak.
+4. **NFR-6 (added overhead p95 ≤ 150 ms for a 300-token message).** On short messages (at most 25 words) the model takes 50 ms at p95 on a lightly loaded machine, but 550 ms while a render job loads the CPU. Nothing here measures a 300-token message. #72 measures one, on an idle machine and under load, through the whole pipeline.
+5. **Long messages.** GLiNER reads at most `max_len` = 384 words and ignores the rest. Every `dev` message is shorter, so these numbers don't cover long prompts: a name in the signature of a pasted 600-word email would leak. #72 splits long texts into overlapping windows and tests it.
 
-Pinned too: the tokenizer from `microsoft/mdeberta-v3-base` (MIT) at `a0484667b22365f84929a935b5e50a51f71f159d`, which GLiNER loads by name. It needs `sentencepiece` and `protobuf`. transformers 5 warns about a "Mistral regex" when loading it; tokenization looks right, and #72 checks it with a test.
+Pinned too: the tokenizer from `microsoft/mdeberta-v3-base` (MIT) at `a0484667b22365f84929a935b5e50a51f71f159d`. GLiNER loads it by name, which offline resolves through the cache's `refs/main`; the spike checks that this is the pinned revision, and #72 loads it from the pinned snapshot path instead. It needs `sentencepiece` and `protobuf`. transformers 5 warns about a "Mistral regex" when loading it; tokenization looks right, and #72 checks it with a test.
 
 ## Consequences
 

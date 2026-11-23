@@ -19,7 +19,7 @@ import spike_gliner as sg
 
 from nona.bench.runner import run
 from nona.core import EntityType, Nona
-from nona.core.canonical import canonical_tokens
+from nona.core.canonical import HONORIFICS, _fold  # spike only: the same folding as linking
 from nona.core.normalize import NormalizedDoc
 from nona.core.recognizers import default_recognizers
 from nona.core.types import Span
@@ -54,9 +54,9 @@ class Variant:
             if score < self.threshold or (self.person_only and label != "person"):
                 continue
             s = start
-            if self.trim:  # drop leading words that carry no name token (honorifics, titles)
+            if self.trim and label == "person":  # leading honorifics only: `Mme`, `Dr.`
                 for w in WORD.finditer(doc.original[start:end]):
-                    if canonical_tokens(w.group()):
+                    if _fold(w.group()).strip(".-'") not in HONORIFICS:
                         break
                     s = start + w.end()
                 while s < end and doc.original[s].isspace():

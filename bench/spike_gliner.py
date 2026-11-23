@@ -15,9 +15,12 @@ Writes `<dir>/<model>.json` (every configuration) and prints a compact table.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
+import os
 import resource
 import statistics
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -41,9 +44,21 @@ THRESHOLDS = (0.3, 0.4, 0.5, 0.6)
 DATA = Path(__file__).resolve().parent / "data" / "dev.jsonl"
 
 
-def rss_mb() -> float:
+# GLiNER loads its encoder's tokenizer and config by name; pinned too (ADR-0008, THIRD_PARTY.md).
+TOKENIZER = "microsoft/mdeberta-v3-base"
+TOKENIZER_REVISION = "a0484667b22365f84929a935b5e50a51f71f159d"
+
+
+def peak_rss_mb() -> float:
+    """The highest RSS so far (`ru_maxrss`): it never goes down, so after loading it is the load peak."""
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak / 2**20 if sys.platform == "darwin" else peak / 2**10  # bytes on macOS, KiB on Linux
+
+
+def current_rss_mb() -> float:
+    """The resident size now, from `ps` (macOS and Linux): what NFR-7 is about once the model is loaded."""
+    out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())])  # noqa: S603, S607
+    return int(out) / 1024
 
 
 def snapshot(model: str, revision: str) -> Path:
@@ -54,6 +69,11 @@ def snapshot(model: str, revision: str) -> Path:
     local = Path(HF_HUB_CACHE) / f"models--{model.replace('/', '--')}" / "snapshots" / revision
     if not (local / "gliner_config.json").is_file():
         raise SystemExit(f"model not pulled: {local}")
+    # Offline, the encoder's tokenizer resolves through the cache's `refs/main`: check it is the pinned one.
+    ref = Path(HF_HUB_CACHE) / f"models--{TOKENIZER.replace('/', '--')}" / "refs" / "main"
+    found = ref.read_text().strip() if ref.is_file() else "missing"
+    if found != TOKENIZER_REVISION:
+        raise SystemExit(f"{TOKENIZER} resolves to {found}, not the pinned {TOKENIZER_REVISION}")
     return local
 
 
@@ -61,7 +81,7 @@ class CachedModel:
     """Predictions per distinct text, at the floor threshold, with the time each first call took."""
 
     def __init__(self, model: Any) -> None:
-        self._model = model
+        self.model = model
         self._memo: dict[str, list[tuple[int, int, str, float]]] = {}
         self.latencies_ms: list[float] = []
 
@@ -69,11 +89,15 @@ class CachedModel:
         hit = self._memo.get(text)
         if hit is None:
             t0 = time.perf_counter()
-            found = self._model.predict_entities(text, list(LABELS), threshold=FLOOR, flat_ner=True)
+            found = self.model.predict_entities(text, list(LABELS), threshold=FLOOR, flat_ner=True)
             self.latencies_ms.append((time.perf_counter() - t0) * 1000)
             hit = [(e["start"], e["end"], e["label"], float(e["score"])) for e in found]
             self._memo[text] = hit
         return hit
+
+    @property
+    def texts(self) -> list[str]:
+        return list(self._memo)
 
 
 @dataclass(frozen=True)
@@ -141,11 +165,13 @@ def main() -> int:
     from gliner import GLiNER
 
     local = snapshot(args.model, args.revision)
-    before = rss_mb()
+    before = current_rss_mb()
     t0 = time.perf_counter()
     model = CachedModel(GLiNER.from_pretrained(str(local), local_files_only=True))
     load_s = time.perf_counter() - t0
-    loaded = rss_mb()
+    gc.collect()
+    steady = current_rss_mb()
+    load_peak = peak_rss_mb()
     tag = args.model.rsplit("/", 1)[-1]
 
     structured = [r for r in default_recognizers() if not isinstance(r, GazetteerRecognizer)]
@@ -173,9 +199,13 @@ def main() -> int:
         "revision": args.revision,
         "load_seconds": round(load_s, 1),
         "rss_mb_before_load": round(before),
-        "rss_mb_after_load": round(loaded),
-        "rss_mb_peak": round(rss_mb()),
+        "rss_mb_peak_while_loading": round(load_peak),
+        "rss_mb_steady_after_load": round(steady),
+        "rss_mb_after_run": round(current_rss_mb()),
         "messages": len(lat),
+        # GLiNER truncates past `max_len` words (384): these numbers only cover messages shorter than that.
+        "longest_message_words": max(len(t.split()) for t in model.texts),
+        "max_len": getattr(getattr(model.model, "config", None), "max_len", None),
         "latency_ms_p50": round(statistics.median(lat), 1),
         "latency_ms_p95": round(lat[int(0.95 * (len(lat) - 1))], 1),
     }
