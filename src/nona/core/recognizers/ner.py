@@ -120,7 +120,7 @@ _SPEECH_AFTER = re.compile(
 # greetings), and `with`, `avec`, `مع` ("with": a meeting is with someone). Matched on the folded text.
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
-RULES_VERSION = 3  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 4  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -202,8 +202,8 @@ class NerRecognizer:
                         continue
                     # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
                     parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
-                    if low:  # an unsure span needs a capital to look like a name; then it is kept whole
-                        parts = [x for x in parts if any(map(_capitalized, _SPAN_WORD.findall(text, *x)))]
+                    if low:  # an unsure span must look like a name; then it is kept whole
+                        parts = [x for x in parts if _name_shaped(text, *x)]
                     for a, b in parts:
                         if low:
                             key, score = (a, b, EntityType.PERSON), self._threshold
@@ -225,7 +225,7 @@ def _join_cued(
     cued: set[tuple[int, int, EntityType]],
     pieces: set[tuple[int, int, EntityType]],
 ) -> list[tuple[tuple[int, int, EntityType], float]]:
-    """Spans sorted, with each cued span joined to the capitalized PERSON span right after it, spaces only
+    """Spans sorted, with each cued span joined to the name-shaped PERSON span right after it, spaces only
     between: a cue introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and
     0.42). `pieces` (low, uncued) are only kept when joined that way."""
     joined: list[tuple[tuple[int, int, EntityType], float]] = []
@@ -238,7 +238,7 @@ def _join_cued(
                 and key[2] is EntityType.PERSON
                 and key[0] > b
                 and _GAP.fullmatch(text, b, key[0])
-                and _capitalized(text[key[0] : key[1]])
+                and _name_shaped(text, key[0], key[1])
             ):
                 joined[-1] = ((a, key[1], EntityType.PERSON), max(prev, score))
                 cued.add(joined[-1][0])
@@ -426,10 +426,13 @@ def _listed_first_name(surface: str) -> bool:
     )
 
 
-def _capitalized(surface: str) -> bool:
-    """Every word starts with a capital, in scripts that have them: what a name looks like when the model is
-    unsure. Arabic has no capitals, so an Arabic word always passes."""
-    return all(not _cased(w) or w[0].isupper() for w in _SPAN_WORD.findall(surface))
+def _name_shaped(text: str, start: int, end: int) -> bool:
+    """What a name looks like when the model is unsure: a word with letters that starts with a capital, or is
+    in a script without capitals (Arabic). `Hazem y7ki` passes; `bureau 3` and `montaser` don't."""
+    return any(
+        any(c.isalpha() for c in w) and (not _cased(w) or w[0].isupper())
+        for w in _SPAN_WORD.findall(text, start, end)
+    )
 
 
 def _speech_after(text: str, end: int) -> bool:

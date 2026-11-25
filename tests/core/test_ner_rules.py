@@ -201,6 +201,34 @@ def test_every_speech_verb_is_a_never_name(verb: str) -> None:
     assert never_name(verb)
 
 
+def test_two_people_found_apart_keep_two_placeholders() -> None:
+    nona = per_message(
+        {
+            "Sami w Ali jew": [("Sami", "person", 0.9), ("Ali", "person", 0.9)],
+            "Ali kallamni": [("Ali", "person", 0.9)],
+        }
+    )
+    assert nona.anonymize_messages(["Sami w Ali jew", "Ali kallamni"]).texts == (
+        "PERSON_1 w PERSON_2 jew",
+        "PERSON_2 kallamni",
+    )
+
+
+def test_one_span_holding_two_people_is_one_placeholder() -> None:
+    """The accepted limit (ADR-0008, #82): a merge, never a leak. Cutting at `y7eb` would unmask name parts
+    elsewhere (`Na3ima ka3bi Ben Salah`). Change this test when #82 is fixed."""
+    nona = per_message(
+        {
+            "Sami y7eb Ali barcha": [("Sami y7eb Ali", "person", 0.95)],
+            "Ali kallamni": [("Ali", "person", 0.9)],
+        }
+    )
+    assert nona.anonymize_messages(["Sami y7eb Ali barcha", "Ali kallamni"]).texts == (
+        "PERSON_1 barcha",
+        "PERSON_1 kallamni",
+    )
+
+
 def test_a_digit_name_is_masked_through_the_pipeline() -> None:
     nona = pipeline({"Na3ima Ka3bi": ("person", 0.95)})
     assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == ("Rdv m3a PERSON_1 ghodwa",)
@@ -292,6 +320,18 @@ def test_a_cue_joins_the_pieces_of_one_name() -> None:
     found = detect({"Mootez": ("location", 0.25), "Jaouadi": ("location", 0.42)}, text)
     assert found == [("Mootez Jaouadi", EntityType.PERSON, 0.5)]
     assert detect({"Jaouadi": ("location", 0.42)}, text) == []  # an uncued piece alone
+
+
+@pytest.mark.parametrize("rest", ["Jaouadi y7ki", "Jaouadi ben salah"])
+def test_a_cue_joins_a_piece_with_a_lowercase_word(rest: str) -> None:
+    text = f"Rdv m3a Mootez {rest}"
+    found = detect({"Mootez": ("person", 0.25), rest: ("person", 0.42)}, text)
+    assert found == [(f"Mootez {rest}", EntityType.PERSON, 0.5)]
+
+
+@pytest.mark.parametrize(("text", "predicted"), [("Rdv m3a bureau 3", "bureau 3"), ("m3a 15h", "15h")])
+def test_a_low_span_without_a_capitalized_word_is_dropped(text: str, predicted: str) -> None:
+    assert detect({predicted: ("person", 0.3)}, text) == []
 
 
 def test_below_the_cued_threshold_nothing_is_kept() -> None:
