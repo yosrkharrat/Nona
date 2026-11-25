@@ -98,6 +98,7 @@ _ALNUM_RUN = re.compile(r"[^\W_]+")
 
 _NEVER_NAMES = frozenset(normalize(w).text for w in gazetteer_data.NEVER_NAMES)
 _CITIES = frozenset(unaccent(normalize(c).text) for c in gazetteer_data.CITIES)
+_COMMON_CITIES = frozenset(unaccent(normalize(c).text) for c in gazetteer_data.COMMON_CITIES)
 _NAME_PARTICLES = PARTICLES | ABD_PREFIXES
 # Streets, districts and organizations are named after people (`rue Mohamed Ali`, `Clinique Ahmed Ben Salem`,
 # `شارع الحبيب بورقيبة`): a span that starts with one of these words, or comes right after one, keeps the
@@ -128,7 +129,7 @@ _WORD_JOINERS = re.compile(r"['\u2019-]")
 # French and English ordinals (`2eme`, `2nd`): not Arabizi. Not `er`, `em`, `rd` or `nd` after a 3, which
 # Darija words are (`5er`, `3em`, `3rd` "offer", `3nd` "at").
 _ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|ndes?)|2nds?|[579]ths?", re.IGNORECASE)
-RULES_VERSION = 11  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 12  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -207,6 +208,13 @@ class NerRecognizer:
                     if etype is EntityType.PERSON
                     else _split_at_cities(text, start, end, places or [])
                 )
+                if etype is EntityType.ORGANIZATION and not any(  # split only to free a person
+                    retype(text, *x, etype, places or [], cue_at=start) is EntityType.PERSON
+                    for a, b, city in segments
+                    if not city
+                    for x in clean(text, a, b, person=False)
+                ):
+                    segments = [(start, end, False)]
                 for piece, city in (
                     (x, city)
                     for a, b, city in segments
@@ -217,6 +225,8 @@ class NerRecognizer:
                         if city
                         else retype(text, *piece, etype, places or [], cue_at=start)
                     )
+                    if t is None and len(segments) > 1:  # what a city was cut from stays masked
+                        t = etype
                     if low and t is not None and _place(text, *piece, places or []):
                         # A name after a place's own name: `m3a Pharmacie 7ouma Mootez` → `Mootez`.
                         tail = _after_head_name(text, *piece)
@@ -473,7 +483,9 @@ def _split_at_cities(
 
 
 def _city_word(word: str) -> bool:
-    return unaccent(normalize(word).text) in _CITIES
+    """A listed city; one that is also a word (`Nice`, `Douz`) only with a capital, as in the gazetteer."""
+    folded = unaccent(normalize(word).text)
+    return folded in _CITIES and (folded not in _COMMON_CITIES or word[:1].isupper())
 
 
 def _after_head_name(text: str, start: int, end: int) -> tuple[int, int] | None:

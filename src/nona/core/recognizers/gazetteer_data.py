@@ -123,6 +123,7 @@ NEVER_NAMES: tuple[str, ...] = (
     "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
     # function and question words
     "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3and", "3nd", "3andi",
+    "5ater", "5atr",
     "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "wa9tech", "9adech",
     "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
     # time
@@ -133,8 +134,8 @@ NEVER_NAMES: tuple[str, ...] = (
     "marhba", "rabbi", "inchallah", "nchallah", "hamdoulah", "sahit", "y3aychek", "ya3tik", "y5allik",
     "3aslema",
     "باهي", "برشا", "يزي", "زادة", "إيه", "اي", "اهلا", "مرحبا", "ربي", "إنشاء", "يعيشك", "يعطيك",
-    # people
-    "rajel", "mra", "راجل", "مرا",
+    # people and places of everyday life
+    "rajel", "mra", "راجل", "مرا", "5ouya", "5outi", "3ayla", "7ouma", "9ahwa",
     # things people ask for
     "nomrou", "noumrou", "numrou", "nmrou", "rendez", "rdv", "mail", "contrat", "flous",
     "نومرو", "النومرو", "رقم", "الرقم", "موعد", "العقد", "فلوس",

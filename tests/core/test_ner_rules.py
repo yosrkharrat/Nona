@@ -14,7 +14,7 @@ from nona.core.canonical import ABD_PREFIXES, PARTICLES, canonical_tokens
 from nona.core.recognizers import NerPrediction, NerRecognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES
 from nona.core.recognizers.gazetteer_data import NEVER_NAMES, SPEECH_VERBS
-from nona.core.recognizers.ner import arabizi, clean, model_view, never_name
+from nona.core.recognizers.ner import _city_word, arabizi, clean, model_view, never_name
 from nona.core.resolver import resolve
 from nona.core.types import Span
 from tests.core.test_ner import FakeModel
@@ -268,6 +268,32 @@ def test_a_span_is_cut_at_a_listed_city(text: str, predicted: tuple[str, str, fl
 def test_a_lowercase_city_is_cut_out_and_masked() -> None:
     nona = per_message({"nemchi l sfax 5ater": [("sfax 5ater", "location", 0.9)]})
     assert nona.anonymize_messages(["nemchi l sfax 5ater"]).texts == ("nemchi l LOCATION_1 5ater",)
+
+
+@pytest.mark.parametrize("name", ["mootez trabelsi", "na3ima ka3bi"])
+def test_a_lowercase_name_cut_from_a_city_stays_masked(name: str) -> None:
+    text = f"ena w {name} Sfax"
+    nona = per_message({text: [(f"{name} Sfax", "location", 0.9)]})
+    assert name not in nona.anonymize_messages([text]).texts[0]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("Radio Sfax", "Radio Sfax", [("Radio Sfax", "ORGANIZATION")]),  # no person to free
+        ("Espérance de Tunis", "Espérance de Tunis", [("Espérance de Tunis", "ORGANIZATION")]),
+    ],
+)
+def test_what_a_city_does_not_split(text: str, predicted: str, found: list[tuple[str, str]]) -> None:
+    label = found[0][1].lower()
+    assert [(f, t.value) for f, t, _ in detect({predicted: (label, 0.9)}, text)] == found
+
+
+def test_a_city_that_is_also_a_word_needs_a_capital() -> None:
+    assert _city_word("Douz")
+    assert _city_word("sfax")
+    assert not _city_word("douz")
+    assert not _city_word("nice")
 
 
 def test_a_person_span_is_never_cut_at_a_city_whatever_the_order() -> None:
