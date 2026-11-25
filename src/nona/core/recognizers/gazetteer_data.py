@@ -115,8 +115,9 @@ SPEECH_VERBS: tuple[str, ...] = (
 # cut at them. Pronouns, function and question words, and frequent words of requests and replies. Arabizi
 # words with digits need an entry too: a span is also cut at an unlisted one, but names are written with
 # digits (`Mo3ez`), so that word is masked again on its own (`ner.py`); only a listed word stays in clear.
-# French and English stopwords are the gazetteer's `STOPWORDS`. Words that are also given names are left out, since a model span is cut at these
-# whatever its score: `wala` (Walaa), `bahi`, `rani`, `yesser`, `يسر` (Yosr), `ken`, `mel`, `win`, `ama`.
+# French and English stopwords are the gazetteer's `STOPWORDS`. Words that are also given names are left out,
+# since a model span is cut at these whatever its score: `wala` (Walaa), `bahi`, `rani`, `yesser`, `يسر`
+# (Yosr), `ken`, `mel`, `win`, `ama`.
 NEVER_NAMES: tuple[str, ...] = (
     # pronouns
     "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa",
