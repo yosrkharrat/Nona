@@ -103,6 +103,13 @@ CITIES: tuple[str, ...] = (
 # Cities that are also words or names: matched only with a capital letter (deep dive A).
 COMMON_CITIES: tuple[str, ...] = ("Nice", "Douz", "Korba", "Ennasr", "Lac 2", "Carthage")
 
+# Speech and contact verbs right after a name, which #50 uses as cues (`Hazem 9alli`, `Aymen kallamni`,
+# `سامي قالي`); never names themselves. `ner.py` adds `said` and `a dit`: `said` is also a name (Saïd).
+SPEECH_VERBS: tuple[str, ...] = (
+    "9alli", "9al", "9alet", "9alt", "kallamni", "kallemni", "3ayetli", "3ayatli", "b3athli",
+    "قالي", "قال", "قالت", "كلمني", "عيطلي", "بعثلي",
+)  # fmt: skip
+
 # Darija words that are never a name, in Latin letters and Arabic script (ADR-0008, condition 2). The NER
 # model takes them into names or tags them alone (`nomrou Zakaria`, `Behi`, `Aymen 9alli`), so a model span is
 # cut at them. Pronouns, function and question words, and frequent words of requests and replies. Arabizi
@@ -115,7 +122,7 @@ NEVER_NAMES: tuple[str, ...] = (
     "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa",
     "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
     # function and question words
-    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3la", "3and", "3andi",
+    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3and", "3andi",
     "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "wa9tech", "9adech",
     "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
     # time
@@ -131,9 +138,9 @@ NEVER_NAMES: tuple[str, ...] = (
     # things people ask for
     "nomrou", "noumrou", "numrou", "nmrou", "rendez", "rdv", "mail", "contrat", "flous",
     "نومرو", "النومرو", "رقم", "الرقم", "موعد", "العقد", "فلوس",
-    # speech and contact verbs, which #50 uses as cues around a name
-    "kallem", "kallamt", "kallemt", "kallamni", "9alli", "9al", "9alet", "ja", "jet", "mcha", "mchet",
-    "قالي", "قال", "قالت", "كلم", "كلمني", "عيطلي", "جا", "جات", "مشى", "مشات",
+    # speech, contact and movement verbs
+    *SPEECH_VERBS, "kallem", "kallamt", "kallemt", "ja", "jet", "mcha", "mchet",
+    "كلم", "جا", "جات", "مشى", "مشات",
     # sending and doing, in requests (`ab3athli el mail`, `3malt rdv`)
     "ab3ath", "ab3athli", "ab3athlou", "ab3athtlou", "ab3atht", "b3atht", "3malt", "3mel", "3melt",
 )  # fmt: skip

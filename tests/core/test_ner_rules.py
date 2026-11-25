@@ -13,7 +13,7 @@ from nona.core import EntityType, Nona, normalize
 from nona.core.canonical import ABD_PREFIXES, PARTICLES, canonical_tokens
 from nona.core.recognizers import NerPrediction, NerRecognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES
-from nona.core.recognizers.gazetteer_data import NEVER_NAMES
+from nona.core.recognizers.gazetteer_data import NEVER_NAMES, SPEECH_VERBS
 from nona.core.recognizers.ner import arabizi, clean, model_view, never_name
 from nona.core.resolver import resolve
 from nona.core.types import Span
@@ -130,6 +130,7 @@ def test_clean(span: str, pieces: list[str]) -> None:
 # Every word cleaning may remove is in one of these (closed lists), never an open rule.
 _LIST_WORDS = ["Mme", "Dr", "بالسيدة", "I", "Je", "el", "nomrou", "Behi", "9alli", "mta3", "y3aychek", "باهي"]
 _OPEN_WORDS = ["Mo3ez", "Mo7sen", "Na3ima", "Ka3bi", "Bel7aj", "3li", "yfar7ek", "7attli", "Zorgati", "Xqwv"]
+_PARTICLES = PARTICLES | ABD_PREFIXES
 
 
 @given(st.lists(st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, "Sami", "Hamza", "سامي", "Ben"]), max_size=6))
@@ -138,13 +139,16 @@ def test_cleaning_removes_only_closed_list_words(words: list[str]) -> None:
     kept = {(m.start(), m.end()) for m in re.finditer(r"\S+", span)}
     for a, b in clean(span, 0, len(span)):
         kept -= {(s, e) for s, e in kept if a <= s and e <= b}
-    removed = [span[s:e] for s, e in kept]
-    # A trailing particle is dropped too (`Hamza el`, `Sami Ben`): also a closed list.
-    assert all(never_name(w) or normalize(w).text in _PARTICLES for w in removed)
-    assert not any(w in _OPEN_WORDS for w in removed)
-
-
-_PARTICLES = PARTICLES | ABD_PREFIXES
+    for s, e in kept:
+        word, i = span[s:e], [m.start() for m in re.finditer(r"\S+", span)].index(s)
+        # A trailing particle is dropped too (`Hamza el`, `Sami Ben`): also a closed list.
+        if never_name(word) or normalize(word).text in _PARTICLES:
+            continue
+        # The one open case: a lowercase Arabizi word between two capitalized words (`Sami y7eb Ali`).
+        assert word[0].islower(), word
+        assert arabizi(word), word
+        assert words[i - 1][0].isupper(), span
+        assert words[i + 1][0].isupper(), span
 
 
 @pytest.mark.parametrize(
@@ -159,6 +163,41 @@ _PARTICLES = PARTICLES | ABD_PREFIXES
 )
 def test_a_name_written_with_digits_is_masked_whole(text: str, predicted: str, found: list[str]) -> None:
     assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == found
+
+
+def test_a_verb_between_two_names_still_separates_them() -> None:
+    assert [f for f, _, _ in detect({"Sami y7eb Ali": ("person", 0.95)}, "Sami y7eb Ali barcha")] == [
+        "Sami",
+        "Ali",
+    ]
+    nona = per_message(
+        {
+            "Sami y7eb Ali barcha": [("Sami y7eb Ali", "person", 0.95)],
+            "Sami w Ali jew": [("Sami", "person", 0.9), ("Ali", "person", 0.9)],
+        }
+    )
+    texts = nona.anonymize_messages(["Sami y7eb Ali barcha", "Sami w Ali jew"]).texts
+    assert texts == ("PERSON_1 y7eb PERSON_2 barcha", "PERSON_1 w PERSON_2 jew")
+    # Not between two capitalized words: it may be a name, so it stays masked.
+    assert [f for f, _, _ in detect({"Na3ima ka3bi": ("person", 0.95)}, "Na3ima ka3bi")] == ["Na3ima ka3bi"]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("Rdv m3a Hazem y7ki", "Hazem y7ki", "Hazem"),  # an unlisted lowercase word in a low span
+        ("Hazem 3ayetli el bera7", "Hazem 3ayetli", "Hazem"),  # a speech verb inside the span
+        ("Hazem b3athli el mail", "Hazem b3athli", "Hazem"),
+        ("Hazem 9alt", "Hazem 9alt", "Hazem"),
+    ],
+)
+def test_a_low_span_keeps_its_capitalized_name(text: str, predicted: str, found: str) -> None:
+    assert detect({predicted: ("location", 0.3)}, text) == [(found, EntityType.PERSON, 0.5)]
+
+
+@pytest.mark.parametrize("verb", SPEECH_VERBS)
+def test_every_speech_verb_is_a_never_name(verb: str) -> None:
+    assert never_name(verb)
 
 
 def test_a_digit_name_is_masked_through_the_pipeline() -> None:
