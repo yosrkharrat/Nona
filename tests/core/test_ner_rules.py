@@ -366,7 +366,8 @@ def test_a_denylist_term_keeps_its_policy_over_a_propagated_name() -> None:
         ("Na3ima Ka3bi", "Na3ima Ka3bi", ["Na3ima", "Ka3bi"]),
         ("Sa3ida Bel7aj fil bureau", "Sa3ida Bel7aj", ["Sa3ida", "Bel7aj"]),
         ("Rdv m3a na3ima ka3bi Ben Salah", "na3ima ka3bi Ben Salah", ["na3ima", "ka3bi", "Ben Salah"]),
-        ("Sami y7eb Ali", "Sami y7eb Ali", ["Sami", "y7eb", "Ali"]),  # two people kept apart
+        ("Sami y7eb Ali", "Sami y7eb Ali", ["Sami", "Ali"]),  # two people kept apart; `y7eb` is listed
+        ("Sami y7ebha Ali", "Sami y7ebha Ali", ["Sami", "y7ebha", "Ali"]),  # unlisted: masked on its own
     ],
 )
 def test_a_confident_word_with_digits_is_never_unmasked(text: str, predicted: str, found: list[str]) -> None:
@@ -409,6 +410,7 @@ def test_a_cued_low_name_with_digits_is_masked(text: str, predicted: str, found:
         ("ok mo3ez", "mo3ez"),  # lowercase and no cue: not name-shaped
         ("Mo3ez passe", "Mo3ez"),  # no cue
         ("m3a Sfax", "Sfax"),
+        ("m3a Pharmacie Mo3ez", "Pharmacie Mo3ez"),  # named after a head word: a place
     ],
 )
 def test_a_low_word_with_digits_needs_a_cue_and_a_name_shape(text: str, predicted: str) -> None:

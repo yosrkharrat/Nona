@@ -140,10 +140,13 @@ NEVER_NAMES: tuple[str, ...] = (
     # things people ask for
     "nomrou", "noumrou", "numrou", "nmrou", "rendez", "rdv", "mail", "contrat", "flous",
     "نومرو", "النومرو", "رقم", "الرقم", "موعد", "العقد", "فلوس",
-    # speech, contact and movement verbs (#50's cues around a name, `SPEECH_VERBS`)
+    # speech, contact and movement verbs: #50's cues (`SPEECH_VERBS`), except `kallemni` and `بعثلي`, which
+    # have no digits, so listing them would change where spans are cut (`ner.py`)
     "kallem", "kallamt", "kallemt", "kallamni", "9alli", "9al", "9alet", "9alt", "3ayetli", "3ayatli",
     "b3athli", "ja", "jet", "mcha", "mchet",
     "قالي", "قال", "قالت", "كلم", "كلمني", "عيطلي", "جا", "جات", "مشى", "مشات",
     # sending and doing, in requests (`ab3athli el mail`, `3malt rdv`)
     "ab3ath", "ab3athli", "ab3athlou", "ab3athtlou", "ab3atht", "b3atht", "3malt", "3mel", "3melt",
+    # frequent verbs the model takes into a name (`Sami y7eb Ali`, `Mootaz ya5dem Sfax`)
+    "y7eb", "n7eb", "t7eb", "ya5dem", "na5dem", "ta5dem", "y7ki", "n7ki", "t7ki",
 )  # fmt: skip
