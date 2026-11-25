@@ -53,8 +53,8 @@ def per_message(found: dict[str, list[tuple[str, str, float]]]) -> Nona:
         ("3andi", True), ("m3a", True), ("9alli", True), ("y5allik", True), ("sa7a", True), ("5ti", True),
         ("15h", False), ("3h", False), ("hamza23", False), ("4G", False), ("22", False), ("Sami", False),
         ("b2", False), ("3", False), ("سامي", False), ("ab3athli", True), ("B2B", False),
-        ("2eme", False), ("3emes", False), ("2iem", False), ("2nde", False), ("3rd", False), ("3rds", False),
-        ("5th", False), ("3ers", True), ("5er", True), ("3em", True),
+        ("2eme", False), ("3emes", False), ("2iem", False), ("2nde", False), ("2nd", False), ("5th", False),
+        ("3ers", True), ("5er", True), ("3em", True), ("3rd", True), ("3nd", True),
     ],
 )  # fmt: skip
 def test_arabizi_words(word: str, expected: bool) -> None:
@@ -242,6 +242,34 @@ def test_one_span_holding_two_people_is_one_placeholder() -> None:
         "PERSON_1 barcha",
         "PERSON_1 kallamni",
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        (
+            "Rdv m3a Sami ya5dem Sfax",
+            ("Sami ya5dem Sfax", "organization", 0.9),
+            "Rdv m3a PERSON_1 LOCATION_1",
+        ),
+        (
+            "Rdv m3a Mootez ya5dem Sfax",
+            ("Mootez ya5dem Sfax", "location", 0.3),
+            "Rdv m3a PERSON_1 LOCATION_1",
+        ),
+        ("J'habite rue de Sfax", ("rue de Sfax", "location", 0.9), "J'habite LOCATION_1"),
+    ],
+)
+def test_a_span_is_cut_at_a_listed_city(text: str, predicted: tuple[str, str, float], found: str) -> None:
+    nona = per_message({text: [predicted]})
+    assert nona.anonymize_messages([text]).texts == (found,)
+
+
+def test_a_cued_span_with_a_lowercase_word_does_not_take_in_a_confident_name() -> None:
+    found = detect(
+        {"Hazem y7ki": ("person", 0.3), "Sami Trabelsi": ("person", 0.95)}, "m3a Hazem y7ki Sami Trabelsi"
+    )
+    assert [f for f, _, _ in found] == ["Hazem y7ki", "Sami Trabelsi"]
 
 
 def test_a_digit_name_is_masked_through_the_pipeline() -> None:

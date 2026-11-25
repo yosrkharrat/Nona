@@ -27,12 +27,14 @@ What this layer adds on top of the model:
   `Na3ima Ka3bi`), so a word with digits is no sign of a non-name. Each piece left with a word of two letters
   or more is a span; a trailing particle is dropped. A listed name behind Arabic clitics loses them (`وسامي` →
   `سامي`), as in the gazetteer.
-- **Types** (ADR-0008, condition 1). The model often calls a person a place, and an Arabizi chunk a place.
-  A LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city,
-  is a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a
-  greeting, an honorific). A LOCATION in lowercase Latin letters is dropped unless it is a listed city:
-  `nomrou`, `ykhdmou 24/24`, `jardin` were the model's, and no gold place was. The conversation-level rule
-  (a span that fits a known person) is in `core/pipeline.py`.
+- **Types** (ADR-0008, condition 1). The model often calls a person a place, and an Arabizi chunk a place. A
+  LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city, is
+  a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a greeting,
+  an honorific). A LOCATION in lowercase Latin letters is dropped unless it is a listed city: `nomrou`,
+  `ykhdmou 24/24`, `jardin` were the model's, and no gold place was. A place or organization span is first cut
+  at the listed cities in it (`Sami ya5dem Sfax` → `Sami ya5dem`, a person, and `Sfax`, a place), unless a
+  head word names it (`rue de Sfax`). The conversation-level rule (a span that fits a known person) is in
+  `core/pipeline.py`.
 - **A threshold** (ADR-0008: 0.5). A span keeps the model's score, so the resolver's `min_score` still
   applies, and look-ahead only spreads words from confident spans (0.8, ADR-0004).
 - **Cue-backed low scores** (deep dive A, layer 4: a context cue raises a weak candidate). In Arabizi the
@@ -122,10 +124,10 @@ _SPEECH_AFTER = re.compile(
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
 _WORD_JOINERS = re.compile(r"['\u2019-]")
-# French and English ordinals (`2eme`, `3rd`): not Arabizi. Not `er` or `em`, which Darija words end with
-# (`5er`, `3em`).
-_ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|nds?|ndes?|rds?|ths?)", re.IGNORECASE)
-RULES_VERSION = 9  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+# French and English ordinals (`2eme`, `2nd`): not Arabizi. Not `er`, `em`, `rd` or `nd` after a 3, which
+# Darija words are (`5er`, `3em`, `3rd` "offer", `3nd` "at").
+_ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|ndes?)|2nds?|[579]ths?", re.IGNORECASE)
+RULES_VERSION = 10  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -199,8 +201,13 @@ class NerRecognizer:
                 if etype is not EntityType.PERSON and places is None:
                     places = [doc.to_original(s, e) for s, e, _ in cities(doc)]
                 low = p.score < self._threshold
-                for piece in clean(text, start, end, person=etype is EntityType.PERSON):
+                segments = [(start, end)] if places is None else _split_at_cities(text, start, end, places)
+                for piece in (
+                    x for a, b in segments for x in clean(text, a, b, person=etype is EntityType.PERSON)
+                ):
                     t = retype(text, *piece, etype, places or [], cue_at=start)
+                    if len(segments) > 1 and piece in (places or []):  # a city cut out of the span
+                        t = EntityType.LOCATION
                     if t is None or (
                         low and (t is EntityType.ORGANIZATION or _place(text, *piece, places or []))
                     ):
@@ -234,7 +241,8 @@ def _join_cued(
     """Spans sorted, with each cued span joined to the PERSON span right after it, spaces only between: a cue
     introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and 0.42). `pieces`
     (low, uncued, name-shaped) are only kept when joined that way. A confident span joins only when every
-    word looks like a name, so a cued name doesn't take in `Ali y7eb Mariem`."""
+    word of both looks like a name, so `m3a Sami` doesn't take in `Ali y7eb Mariem`, nor `m3a Hazem y7ki` a
+    confident `Sami Trabelsi`."""
     joined: list[tuple[tuple[int, int, EntityType], float]] = []
     for key, score in sorted(best.items()):
         if joined:
@@ -245,7 +253,13 @@ def _join_cued(
                 and key[2] is EntityType.PERSON
                 and key[0] > b
                 and _GAP.fullmatch(text, b, key[0])
-                and (key not in high or _name_shaped(text, key[0], key[1], every=True))
+                and (
+                    key not in high
+                    or (
+                        _name_shaped(text, a, b, every=True)
+                        and _name_shaped(text, key[0], key[1], every=True)
+                    )
+                )
             ):
                 joined[-1] = ((a, key[1], EntityType.PERSON), max(prev, score))
                 cued.add(joined[-1][0])
@@ -289,7 +303,7 @@ def _de_arabizi(word: str) -> str:
 def arabizi(word: str) -> bool:
     """A word mixing Latin letters with Arabizi digits (2 3 5 7 9), each digit next to a letter, with at least
     two letters, not all capitals, not an ordinal: `3andi`, `9alli`, `y5allik`. Not `15h`, `3h`, `hamza23`,
-    `4G`, `B2B`, `2eme`, `3rd`."""
+    `4G`, `B2B`, `2eme`, `2nd`."""
     if _ORDINAL.fullmatch(word):
         return False
     letters = 0
@@ -414,6 +428,27 @@ def _place(
     if any(a < end and start < b for a, b in places) or unaccent(normalize(surface).text) in _CITIES:
         return True
     return place_or_org(text, start, end) or (cue_at is not None and place_or_org(text, cue_at, end))
+
+
+def _split_at_cities(
+    text: str, start: int, end: int, places: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """A model span cut at the listed cities in it, each city its own segment: `Sami ya5dem Sfax` → `Sami
+    ya5dem`, `Sfax`, so the person is typed apart from the place. Not a span named with a head word (`rue de
+    Sfax`, `Clinique Sfax`), which is one place."""
+    inside = sorted((max(a, start), min(b, end)) for a, b in places if a < end and start < b)
+    if not inside or inside == [(start, end)] or place_or_org(text, start, end):
+        return [(start, end)]
+    out: list[tuple[int, int]] = []
+    pos = start
+    for a, b in inside:
+        if pos < a:
+            out.append((pos, a))
+        out.append((max(a, pos), b))
+        pos = max(pos, b)
+    if pos < end:
+        out.append((pos, end))
+    return out
 
 
 def place_or_org(text: str, start: int, end: int) -> bool:

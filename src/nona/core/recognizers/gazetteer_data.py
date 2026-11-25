@@ -122,7 +122,7 @@ NEVER_NAMES: tuple[str, ...] = (
     "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa",
     "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
     # function and question words
-    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3and", "3andi",
+    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3and", "3nd", "3andi",
     "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "wa9tech", "9adech",
     "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
     # time
