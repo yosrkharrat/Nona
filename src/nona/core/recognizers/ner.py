@@ -24,9 +24,11 @@ What this layer adds on top of the model:
   lists: honorifics (`Mme Islem` → `Islem`, `بالسيدة` too), the gazetteer's stopwords and pronouns (`I` in
   `I'll`), and Darija words (`NEVER_NAMES`: `nomrou`, `Behi`, `9alli`). An unlisted word stays masked,
   over-masked rather than leaked (fail closed, ADR-0003): names are written with Arabizi digits too (`Mo3ez`,
-  `Na3ima Ka3bi`), so a word with digits is no sign of a non-name. Each piece left with a word of two letters
-  or more is a span; a trailing particle is dropped. A listed name behind Arabic clitics loses them (`وسامي` →
-  `سامي`), as in the gazetteer.
+  `Na3ima Ka3bi`), so a word with digits is no sign of a non-name. Only a low-score span, which only adds
+  masking, is also cut at lowercase Arabizi words that aren't listed names (`ya5dem`), for its cue and place
+  rules; a kept name takes back those right after it (`Na3ima ka3bi`). Each piece left with a word of two
+  letters or more is a span; a trailing particle is dropped. A listed name behind Arabic clitics loses them
+  (`وسامي` → `سامي`), as in the gazetteer.
 - **Types** (ADR-0008, condition 1). The model often calls a person a place, and an Arabizi chunk a place. A
   LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city, is
   a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a greeting,
@@ -42,9 +44,9 @@ What this layer adds on top of the model:
   up is kept whole, as a PERSON scored at the threshold, when it looks like a name (a capitalized word, a word
   starting with an Arabizi digit like `3li`, or Arabic) and a cue backs it: a person cue before it, or a
   speech verb right after it (`9alli`, `قالي`, `said`, from #50's list). A place span keeps what follows its
-  head word and name: `m3a Pharmacie 7ouma Mootez` → `Mootez`. A cued span takes in the name-shaped low-score
-  span right after it, spaces only between, or a confident one whose words all look like names: in `m3a Mootez
-  Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
+  head word and name: `m3a Pharmacie Hannibal Mootez` → `Mootez`. A cued span takes in the name-shaped
+  low-score span right after it, spaces only between, or a confident one whose words all look like names: in
+  `m3a Mootez Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
 
 A model error propagates; the pipeline turns it into `DetectorError` (fail closed, ADR-0003).
 """
@@ -129,7 +131,7 @@ _WORD_JOINERS = re.compile(r"['\u2019-]")
 # French and English ordinals (`2eme`, `2nd`): not Arabizi. Not `er`, `em`, `rd` or `nd` after a 3, which
 # Darija words are (`5er`, `3em`, `3rd` "offer", `3nd` "at").
 _ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|ndes?)|2nds?|[579]ths?", re.IGNORECASE)
-RULES_VERSION = 12  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 14  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -218,7 +220,7 @@ class NerRecognizer:
                 for piece, city in (
                     (x, city)
                     for a, b, city in segments
-                    for x in clean(text, a, b, person=etype is EntityType.PERSON)
+                    for x in clean(text, a, b, person=etype is EntityType.PERSON, confident=not low)
                 ):
                     t = (
                         EntityType.LOCATION
@@ -228,7 +230,7 @@ class NerRecognizer:
                     if t is None and len(segments) > 1:  # what a city was cut from stays masked
                         t = etype
                     if low and t is not None and _place(text, *piece, places or []):
-                        # A name after a place's own name: `m3a Pharmacie 7ouma Mootez` → `Mootez`.
+                        # A name after a place's own name: `m3a Pharmacie Hannibal Mootez` → `Mootez`.
                         tail = _after_head_name(text, *piece)
                         if tail is None or _place(text, *tail, places or []):
                             continue
@@ -236,14 +238,22 @@ class NerRecognizer:
                     if t is None or (low and t is EntityType.ORGANIZATION):
                         continue
                     # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
-                    parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
+                    parts = (
+                        clean(text, *piece, confident=not low)
+                        if t is EntityType.PERSON and etype is not t
+                        else [piece]
+                    )
                     if low:  # an unsure span must look like a name; then it is kept whole
                         parts = [x for x in parts if _name_shaped(text, *x)]
                     for a, b in parts:
-                        if low:
+                        if low:  # the Darija words cut off after a name stay with it: maybe a surname
+                            b = _past_darija(text, b, end)
                             key, score = (a, b, EntityType.PERSON), self._threshold
                             backed = (
-                                _person_cue(text, a) or _person_cue(text, start) or _speech_after(text, b)
+                                _person_cue(text, a)
+                                or _person_cue(text, start)
+                                or _speech_after(text, b)
+                                or _speech_after(text, end)
                             )
                             (cued if backed else pieces).add(key)
                         else:
@@ -378,14 +388,18 @@ def _clitic_honorific(folded: str) -> bool:
     )
 
 
-def clean(text: str, start: int, end: int, *, person: bool = True) -> list[tuple[int, int]]:
+def clean(
+    text: str, start: int, end: int, *, person: bool = True, confident: bool = True
+) -> list[tuple[int, int]]:
     """The pieces of a model span that may be names (module docstring): cut at never-name words, without a
     trailing particle or clitics before a listed Arabic name, each with a word of two letters or more.
-    Honorifics cut only a PERSON span (`person`)."""
+    Honorifics cut only a PERSON span (`person`). A low-score span (not `confident`) is also cut at
+    lowercase Arabizi words that aren't listed names (`ya5dem`, `sa7a`): that path only adds masking, its
+    cue and place rules need the pieces, and a kept name takes back the words right after it."""
     words = [(m.start(), m.end()) for m in _SPAN_WORD.finditer(text, start, end)]
     pieces: list[list[tuple[int, int]]] = [[]]
     for a, b in words:
-        if never_name(text[a:b], honorific=person):
+        if never_name(text[a:b], honorific=person) or (not confident and _lowercase_arabizi(text[a:b])):
             pieces.append([])
         else:
             pieces[-1].append((a, b))
@@ -402,6 +416,27 @@ def clean(text: str, start: int, end: int, *, person: bool = True) -> list[tuple
             a = _past_letters(text, a, clitics)
         out.append((a, piece[-1][1]))
     return out
+
+
+def _past_darija(text: str, b: int, end: int) -> int:
+    """The end of the lowercase Arabizi words right after `b`, up to `end`, spaces only between: what a
+    low-score cut took off a name (`Na3ima ka3bi`) goes back to it."""
+    for m in _SPAN_WORD.finditer(text, b, end):
+        if not (_GAP.fullmatch(text, b, m.start()) and _lowercase_arabizi(m.group())):
+            break
+        if never_name(m.group()):
+            break
+        b = m.end()
+    return b
+
+
+def _lowercase_arabizi(word: str) -> bool:
+    """An Arabizi word starting with a lowercase letter that isn't a listed name: a Darija word, not `Mo7sen`
+    or `3li`."""
+    if not (word[:1].islower() and arabizi(word)):
+        return False
+    tokens = canonical_tokens(word)
+    return not (tokens and tokens <= NAMES)
 
 
 def _past_letters(text: str, i: int, n: int) -> int:
@@ -490,7 +525,7 @@ def _city_word(word: str) -> bool:
 
 def _after_head_name(text: str, start: int, end: int) -> tuple[int, int] | None:
     """What follows a head word and the one word naming the place, when the span starts with a head word:
-    `Pharmacie 7ouma Mootez` → `Mootez`. None otherwise (`Clinique Sami`)."""
+    `Pharmacie Hannibal Mootez` → `Mootez`. None otherwise (`Clinique Sami`)."""
     words = list(_SPAN_WORD.finditer(text, start, end))
     if len(words) < 3 or normalize(words[0].group()).text not in _HEADS:
         return None

@@ -200,8 +200,8 @@ def test_a_lowercase_name_word_inside_a_span_stays_masked(text: str, predicted: 
     [
         ("Rdv m3a Hazem y7ki", "Hazem y7ki", "Hazem y7ki"),  # kept whole: `y7ki` might be a name
         ("Rdv m3a Na3ima ka3bi", "Na3ima ka3bi", "Na3ima ka3bi"),  # a lowercase surname
-        ("Rdv m3a Hazem Ben y7ki", "Hazem Ben y7ki", "Hazem Ben y7ki"),
-        ("Rdv m3a y7ki Hazem", "y7ki Hazem", "y7ki Hazem"),
+        ("Rdv m3a Hazem Ben y7ki", "Hazem Ben y7ki", "Hazem"),  # a trailing particle goes, and what follows
+        ("Rdv m3a y7ki Hazem", "y7ki Hazem", "Hazem"),  # a Darija word before the name
         ("Hazem 3ayetli el bera7", "Hazem 3ayetli", "Hazem"),  # a speech verb inside the span
         ("Hazem b3athli el mail", "Hazem b3athli", "Hazem"),
         ("Hazem 9alt", "Hazem 9alt", "Hazem"),
@@ -265,6 +265,28 @@ def test_a_span_is_cut_at_a_listed_city(text: str, predicted: tuple[str, str, fl
     assert nona.anonymize_messages([text]).texts == (found,)
 
 
+@pytest.mark.parametrize(
+    ("text", "predictions", "found"),
+    [
+        (
+            "Rdv m3a Mootaz ya5dem Sfax",
+            [("Sfax", "location", 0.9), ("Mootaz ya5dem Sfax", "person", 0.3)],
+            "Rdv m3a PERSON_1 LOCATION_1",
+        ),
+        ("ok sa7a Si Mootaz", [("sa7a Si Mootaz", "location", 0.3)], "ok sa7a Si PERSON_1"),
+        (
+            "Mootaz ya5dem Sfax 9alli",
+            [("Mootaz ya5dem Sfax", "location", 0.3)],
+            "PERSON_1 LOCATION_1 9alli",
+        ),
+    ],
+)
+def test_a_low_span_is_cut_at_darija_words_for_its_cues_and_places(
+    text: str, predictions: list[tuple[str, str, float]], found: str
+) -> None:
+    assert per_message({text: predictions}).anonymize_messages([text]).texts == (found,)
+
+
 def test_a_lowercase_city_is_cut_out_and_masked() -> None:
     nona = per_message({"nemchi l sfax 5ater": [("sfax 5ater", "location", 0.9)]})
     assert nona.anonymize_messages(["nemchi l sfax 5ater"]).texts == ("nemchi l LOCATION_1 5ater",)
@@ -307,7 +329,8 @@ def test_a_person_span_is_never_cut_at_a_city_whatever_the_order() -> None:
 @pytest.mark.parametrize(
     ("text", "predicted", "found"),
     [
-        ("m3a Pharmacie 7ouma Mootez", "Pharmacie 7ouma Mootez", ["Mootez"]),  # a name after the place's
+        ("m3a Pharmacie Hannibal Mootez", "Pharmacie Hannibal Mootez", ["Mootez"]),  # after the place's
+        ("m3a Pharmacie Hannibal Sfax", "Pharmacie Hannibal Sfax", []),  # the tail is a place
         ("avec la Clinique Sami", "Clinique Sami", []),  # only the place's own name
     ],
 )
