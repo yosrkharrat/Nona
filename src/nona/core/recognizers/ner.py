@@ -20,11 +20,13 @@ What this layer adds on top of the model:
   each next to a letter, change: `15h`, `hamza23`, `B2B` and phone numbers stay as written. Combining
   the model's spans on both texts caught one more held-out name on `dev` for a second model call on every
   Arabizi message; ADR-0008 records it, and part 3 decides with the latency numbers.
-- **Spans are cleaned** (ADR-0008, condition 2). A span is cut at words that are never names: honorifics
-  (`Mme Islem` → `Islem`, `بالسيدة` too), the gazetteer's stopwords and pronouns (`I` in `I'll`), Darija
-  words (`NEVER_NAMES`: `nomrou`, `Behi`), and Arabizi words with digits that aren't listed names (`9alli`,
-  `y3aychek`). Each piece left with a word of two letters or more is a span; a trailing particle is dropped.
-  A listed name behind Arabic clitics loses them (`وسامي` → `سامي`), as in the gazetteer.
+- **Spans are cleaned** (ADR-0008, condition 2). A span is cut at words that are never names, from closed
+  lists: honorifics (`Mme Islem` → `Islem`, `بالسيدة` too), the gazetteer's stopwords and pronouns (`I` in
+  `I'll`), and Darija words (`NEVER_NAMES`: `nomrou`, `Behi`, `9alli`). Only there: an unlisted word stays
+  masked, over-masked rather than leaked (fail closed, ADR-0003). Names are written with Arabizi digits too
+  (`Mo3ez`, `Na3ima Ka3bi`), so a word with digits is no sign of a non-name. Each piece left with a word of
+  two letters or more is a span; a trailing particle is dropped. A listed name behind Arabic clitics loses
+  them (`وسامي` → `سامي`), as in the gazetteer.
 - **Types** (ADR-0008, condition 1). The model often calls a person a place, and an Arabizi chunk a place.
   A LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city,
   is a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a
@@ -117,7 +119,7 @@ _SPEECH_AFTER = re.compile(
 # greetings), and `with`, `avec`, `مع` ("with": a meeting is with someone). Matched on the folded text.
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
-RULES_VERSION = 1  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 2  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -300,8 +302,9 @@ def _latin(c: str) -> bool:
 @functools.lru_cache(maxsize=8192)
 def never_name(word: str, *, honorific: bool = True) -> bool:
     """Whether a written word can't be (part of) a name (module docstring): an honorific, also behind Arabic
-    clitics (`بالسيدة`), a stopword or Darija word that isn't a listed name, or an unlisted Arabizi word.
-    With `honorific=False`, honorifics don't count: a place may hold one (`rue Dr Ali Belhouane`)."""
+    clitics (`بالسيدة`), or a stopword or Darija word that isn't a listed name. Closed lists only: any other
+    word may be a name (`Mo3ez`). With `honorific=False`, honorifics don't count: a place may hold one
+    (`rue Dr Ali Belhouane`)."""
     folded = normalize(word).text
     if _honorific(word):
         return honorific
@@ -309,9 +312,7 @@ def never_name(word: str, *, honorific: bool = True) -> bool:
     listed = bool(tokens) and tokens <= NAMES
     if word in ARABIC_STOP:
         return True
-    if folded in STOPWORDS or folded in _NEVER_NAMES:
-        return not listed
-    return arabizi(word) and not listed
+    return (folded in STOPWORDS or folded in _NEVER_NAMES) and not listed
 
 
 def _honorific(word: str) -> bool:

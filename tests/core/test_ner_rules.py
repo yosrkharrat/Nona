@@ -3,12 +3,14 @@ cue-backed low scores, and the conversation-level corrections in the pipeline. W
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from nona.core import EntityType, Nona, normalize
-from nona.core.canonical import canonical_tokens
+from nona.core.canonical import ABD_PREFIXES, PARTICLES, canonical_tokens
 from nona.core.recognizers import NerPrediction, NerRecognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES
 from nona.core.recognizers.gazetteer_data import NEVER_NAMES
@@ -103,8 +105,9 @@ def test_no_never_name_word_is_a_listed_name() -> None:
     ("span", "pieces"),
     [
         ("Chnowa el mail mta3 Hamza", ["Hamza"]),
-        ("Aymen 9alli", ["Aymen"]),
-        ("rabbi y5allik", []),
+        ("rabbi y5allik", []),  # both listed
+        ("rabbi yfar7ek", ["yfar7ek"]),  # an unlisted Arabizi word stays masked: it may be a name
+        ("Aymen 9alli", ["Aymen"]),  # `9alli` is listed
         ("I", []),
         ("Hamza el", ["Hamza"]),
         ("Ahmed Ben Salem", ["Ahmed Ben Salem"]),
@@ -122,6 +125,68 @@ def test_no_never_name_word_is_a_listed_name() -> None:
 )
 def test_clean(span: str, pieces: list[str]) -> None:
     assert [span[a:b] for a, b in clean(span, 0, len(span))] == pieces
+
+
+# Every word cleaning may remove is in one of these (closed lists), never an open rule.
+_LIST_WORDS = ["Mme", "Dr", "بالسيدة", "I", "Je", "el", "nomrou", "Behi", "9alli", "mta3", "y3aychek", "باهي"]
+_OPEN_WORDS = ["Mo3ez", "Mo7sen", "Na3ima", "Ka3bi", "Bel7aj", "3li", "yfar7ek", "7attli", "Zorgati", "Xqwv"]
+
+
+@given(st.lists(st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, "Sami", "Hamza", "سامي", "Ben"]), max_size=6))
+def test_cleaning_removes_only_closed_list_words(words: list[str]) -> None:
+    span = " ".join(words)
+    kept = {(m.start(), m.end()) for m in re.finditer(r"\S+", span)}
+    for a, b in clean(span, 0, len(span)):
+        kept -= {(s, e) for s, e in kept if a <= s and e <= b}
+    removed = [span[s:e] for s, e in kept]
+    # A trailing particle is dropped too (`Hamza el`, `Sami Ben`): also a closed list.
+    assert all(never_name(w) or normalize(w).text in _PARTICLES for w in removed)
+    assert not any(w in _OPEN_WORDS for w in removed)
+
+
+_PARTICLES = PARTICLES | ABD_PREFIXES
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("Mo3ez passe demain", "Mo3ez", ["Mo3ez"]),
+        ("Mo7sen kallamni el bera7", "Mo7sen kallamni", ["Mo7sen"]),
+        ("3li bech yji", "3li", ["3li"]),
+        ("Na3ima Ka3bi", "Na3ima Ka3bi", ["Na3ima Ka3bi"]),
+        ("Sa3ida Bel7aj fil bureau", "Sa3ida Bel7aj", ["Sa3ida Bel7aj"]),
+    ],
+)
+def test_a_name_written_with_digits_is_masked_whole(text: str, predicted: str, found: list[str]) -> None:
+    assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == found
+
+
+def test_a_digit_name_is_masked_through_the_pipeline() -> None:
+    nona = pipeline({"Na3ima Ka3bi": ("person", 0.95)})
+    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == ("Rdv m3a PERSON_1 ghodwa",)
+
+
+def test_a_known_name_written_later_with_a_digit_is_not_sent_in_clear() -> None:
+    nona = per_message(
+        {
+            "Mohsen Trabelsi called": [("Mohsen Trabelsi", "person", 0.95)],
+            "Mo7sen 9alli barcha": [("Mo7sen", "person", 0.95)],
+        }
+    )
+    texts = nona.anonymize_messages(["Mohsen Trabelsi called", "Mo7sen 9alli barcha"]).texts
+    assert "Mo7sen" not in texts[1]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        # What the real model gives: a place at 0.29 and 0.31, rescued by the speech verb and the cue.
+        ("Mo7sen 9alli barcha", "Mo7sen 9alli barcha", "Mo7sen"),
+        ("Rdv m3a Na3ima Ka3bi ghodwa", "Na3ima Ka3bi ghodwa", "Na3ima Ka3bi"),
+    ],
+)
+def test_a_cued_low_name_written_with_digits_is_masked(text: str, predicted: str, found: str) -> None:
+    assert detect({predicted: ("location", 0.3)}, text) == [(found, EntityType.PERSON, 0.5)]
 
 
 # --------------------------------------------------------------------------- types

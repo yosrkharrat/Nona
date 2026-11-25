@@ -106,23 +106,25 @@ COMMON_CITIES: tuple[str, ...] = ("Nice", "Douz", "Korba", "Ennasr", "Lac 2", "C
 # Darija words that are never a name, in Latin letters and Arabic script (ADR-0008, condition 2). The NER
 # model takes them into names or tags them alone (`nomrou Zakaria`, `Behi`, `Aymen 9alli`), so a model span is
 # cut at them. Pronouns, function and question words, and frequent words of requests and replies. Arabizi
-# words with digits (`9alli`, `y3aychek`) need no entry: an unlisted one is never a name (`ner.py`). French
-# and English stopwords are the gazetteer's `STOPWORDS`. Words that are also given names are left out, since
-# a model span is cut at these whatever its score: `wala` (Walaa), `bahi`, `rani`, `yesser`, `يسر` (Yosr),
-# `ken`, `mel`, `win`, `ama`.
+# words with digits need an entry too: names are written with digits (`Mo3ez`), so a span is cut only at
+# listed words, and an unlisted Arabizi word stays masked (`ner.py`). French and English stopwords are the
+# gazetteer's `STOPWORDS`. Words that are also given names are left out, since a model span is cut at these
+# whatever its score: `wala` (Walaa), `bahi`, `rani`, `yesser`, `يسر` (Yosr), `ken`, `mel`, `win`, `ama`.
 NEVER_NAMES: tuple[str, ...] = (
     # pronouns
     "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa",
     "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
     # function and question words
-    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men",
+    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3la", "3and", "3andi",
     "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "wa9tech", "9adech",
     "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
     # time
-    "taw", "tawa", "lyoum", "ghodwa", "ba3d", "9bal", "lbare7", "توا", "اليوم", "غدوة", "بعد", "قبل",
+    "taw", "tawa", "lyoum", "ghodwa", "ba3d", "9bal", "lbare7", "sbe7", "3asr",
+    "توا", "اليوم", "غدوة", "بعد", "قبل",
     # replies, thanks, blessings
     "behi", "barcha", "yezzi", "zeda", "zada", "ey", "eyh", "iyeh", "aslema", "ahla",
-    "marhba", "rabbi", "inchallah", "nchallah", "hamdoulah", "sahit", "y3aychek", "ya3tik",
+    "marhba", "rabbi", "inchallah", "nchallah", "hamdoulah", "sahit", "y3aychek", "ya3tik", "y5allik",
+    "3aslema",
     "باهي", "برشا", "يزي", "زادة", "إيه", "اي", "اهلا", "مرحبا", "ربي", "إنشاء", "يعيشك", "يعطيك",
     # people
     "rajel", "mra", "راجل", "مرا",
@@ -132,4 +134,6 @@ NEVER_NAMES: tuple[str, ...] = (
     # speech and contact verbs, which #50 uses as cues around a name
     "kallem", "kallamt", "kallemt", "kallamni", "9alli", "9al", "9alet", "ja", "jet", "mcha", "mchet",
     "قالي", "قال", "قالت", "كلم", "كلمني", "عيطلي", "جا", "جات", "مشى", "مشات",
+    # sending and doing, in requests (`ab3athli el mail`, `3malt rdv`)
+    "ab3ath", "ab3athli", "ab3athlou", "ab3athtlou", "ab3atht", "b3atht", "3malt", "3mel", "3melt",
 )  # fmt: skip
