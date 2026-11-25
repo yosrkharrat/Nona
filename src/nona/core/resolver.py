@@ -10,9 +10,9 @@ CIN on the same 8 digits). The resolver:
    (`Sami Trabelsi PERSON_1` → `Sami Trabelsi`; `Sami PERSON_1 Trabelsi` → `Sami` and `Trabelsi`): a detection
    that swallowed one would replace it, and its text would end up in the mapping. A structured value is never
    cut: `PERSON_1@example.com` is one email;
-4. keeps non-overlapping spans greedily: longest first, then a propagated name over any other span with the
-   same extent (a name keeps the placeholder, and the type, it was first given: ADR-0004, ADR-0008), then
-   type priority, then score, then `Span.sort_key`.
+4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
+   the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
+5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -47,6 +47,10 @@ PRIORITY: dict[EntityType, int] = {
 }
 
 
+PROPAGATION = "propagation"
+DENYLIST = "denylist"
+
+
 def _fold(term: str) -> str:
     return " ".join(term.casefold().split())
 
@@ -60,12 +64,12 @@ def denylist_spans(doc: NormalizedDoc, terms: Iterable[str]) -> list[Span]:
             continue
         pattern = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, needle.split())) + r"(?!\w)")
         for m in pattern.finditer(doc.text):
-            spans.append(to_span(doc, m.start(), m.end(), EntityType.CUSTOM, 1.0, "denylist"))
+            spans.append(to_span(doc, m.start(), m.end(), EntityType.CUSTOM, 1.0, DENYLIST))
     return spans
 
 
 def known_spans(
-    doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]], detector: str = "propagation"
+    doc: NormalizedDoc, known: Iterable[tuple[EntityType, str]], detector: str = PROPAGATION
 ) -> list[Span]:
     """Forward propagation (ADR-0004, step 2): each occurrence of a surface form linked in an earlier message.
 
@@ -102,9 +106,8 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
     return re.compile(left + re.escape(surface.strip()) + right), False
 
 
-def _rank(span: Span) -> tuple[int, bool, int, float, tuple[int, int, str, float, str]]:
-    known = span.detector == "propagation" and span.type in NAME_TYPES
-    return (-len(span), not known, -PRIORITY[span.type], -span.score, span.sort_key())
+def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:
+    return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
 
 
 def placeholder_holes(original: str) -> list[tuple[int, int]]:
@@ -153,6 +156,11 @@ def resolve(
             for piece in (cut_at_placeholders(s, original, holes) if s.type in NAME_TYPES else [s])
         ]
     candidates = [s for s in spans if s.score >= min_score and _fold(s.text_in(original)) not in allowed]
+    known = {(s.start, s.end) for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES}
+    if known:
+        candidates = [
+            s for s in candidates if s.detector in (PROPAGATION, DENYLIST) or (s.start, s.end) not in known
+        ]
     kept: list[Span] = []
     for span in sorted(candidates, key=_rank):
         if not any(span.overlaps(k) for k in kept):

@@ -107,21 +107,23 @@ COMMON_CITIES: tuple[str, ...] = ("Nice", "Douz", "Korba", "Ennasr", "Lac 2", "C
 # model takes them into names or tags them alone (`nomrou Zakaria`, `Behi`, `Aymen 9alli`), so a model span is
 # cut at them. Pronouns, function and question words, and frequent words of requests and replies. Arabizi
 # words with digits (`9alli`, `y3aychek`) need no entry: an unlisted one is never a name (`ner.py`). French
-# and English stopwords are the gazetteer's `STOPWORDS`.
+# and English stopwords are the gazetteer's `STOPWORDS`. Words that are also given names are left out, since
+# a model span is cut at these whatever its score: `wala` (Walaa), `bahi`, `rani`, `yesser`, `يسر` (Yosr),
+# `ken`, `mel`, `win`, `ama`.
 NEVER_NAMES: tuple[str, ...] = (
     # pronouns
-    "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa", "rani", "rahi",
+    "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa",
     "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
     # function and question words
-    "w", "wa", "wala", "walla", "ama", "ken", "kan", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "mel",
-    "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "win", "wa9tech", "9adech",
+    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men",
+    "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "wa9tech", "9adech",
     "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
     # time
     "taw", "tawa", "lyoum", "ghodwa", "ba3d", "9bal", "lbare7", "توا", "اليوم", "غدوة", "بعد", "قبل",
     # replies, thanks, blessings
-    "behi", "bahi", "barcha", "yesser", "yezzi", "zeda", "zada", "ey", "eyh", "iyeh", "aslema", "ahla",
+    "behi", "barcha", "yezzi", "zeda", "zada", "ey", "eyh", "iyeh", "aslema", "ahla",
     "marhba", "rabbi", "inchallah", "nchallah", "hamdoulah", "sahit", "y3aychek", "ya3tik",
-    "باهي", "برشا", "يسر", "يزي", "زادة", "إيه", "اي", "اهلا", "مرحبا", "ربي", "إنشاء", "يعيشك", "يعطيك",
+    "باهي", "برشا", "يزي", "زادة", "إيه", "اي", "اهلا", "مرحبا", "ربي", "إنشاء", "يعيشك", "يعطيك",
     # people
     "rajel", "mra", "راجل", "مرا",
     # things people ask for

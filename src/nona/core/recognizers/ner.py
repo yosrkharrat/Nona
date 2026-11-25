@@ -93,12 +93,21 @@ _ALNUM_RUN = re.compile(r"[^\W_]+")
 _NEVER_NAMES = frozenset(normalize(w).text for w in gazetteer_data.NEVER_NAMES)
 _CITIES = frozenset(unaccent(normalize(c).text) for c in gazetteer_data.CITIES)
 _NAME_PARTICLES = PARTICLES | ABD_PREFIXES
-# A street or a district is named after people (`rue Mohamed Ali`, `شارع الحبيب بورقيبة`): a span right after
-# one of these words keeps the model's type.
-_PLACE_WORD = re.compile(
-    r"(?<!\w)(?:rue|avenue|av|boulevard|bd|route|impasse|place|cité|cite|street|st|road|avenida"
-    r"|شارع|نهج|طريق|حي|ساحة)\.?[ \t]*\Z"
-)
+# Streets, districts and organizations are named after people (`rue Mohamed Ali`, `Clinique Ahmed Ben Salem`,
+# `شارع الحبيب بورقيبة`): a span that starts with one of these words, or comes right after one, keeps the
+# model's type.
+_HEADS = frozenset(
+    normalize(w).text
+    for w in (
+        "rue", "avenue", "av", "boulevard", "bd", "route", "impasse", "place", "cité", "cite", "street", "st",
+        "road", "clinique", "pharmacie", "hôpital", "hopital", "cabinet", "société", "societe", "ste", "sarl",
+        "banque", "bank", "école", "ecole", "lycée", "lycee", "université", "universite", "institut",
+        "centre", "center", "hôtel", "hotel", "café", "cafe", "restaurant", "clinic", "pharmacy", "hospital",
+        "school", "company",
+        "شارع", "نهج", "طريق", "حي", "ساحة", "مستشفى", "مصحة", "صيدلية", "شركة", "بنك", "مدرسة", "معهد",
+        "جامعة", "مقهى", "نزل",
+    )
+)  # fmt: skip
 # Speech and contact verbs right after a name (#50): `Hazem 9alli`, `Aymen kallamni`, `سامي قالي`.
 _SPEECH_AFTER = re.compile(
     r"[ \t]+(?:9alli|9al|9alet|9alt|kallamni|kallemni|3ayetli|3ayatli|b3athli|said|a dit|m['\u2019]a dit"
@@ -172,6 +181,7 @@ class NerRecognizer:
         best: dict[tuple[int, int, EntityType], float] = {}
         cued: set[tuple[int, int, EntityType]] = set()
         pieces: set[tuple[int, int, EntityType]] = set()  # uncued low spans, kept only once joined
+        high: set[tuple[int, int, EntityType]] = set()  # spans at the threshold or above: always kept
         for w_start, w_end in windows(text, self._model.max_words, self._overlap):
             for p in self._model.predict(view[w_start:w_end], list(LABELS), self._cued):
                 etype = LABELS.get(p.label)
@@ -181,19 +191,28 @@ class NerRecognizer:
                 if etype is not EntityType.PERSON and places is None:
                     places = [doc.to_original(s, e) for s, e, _ in cities(doc)]
                 low = p.score < self._threshold
-                for a, b in clean(text, start, end, person=etype is EntityType.PERSON):
-                    if low:
-                        if not _capitalized(text[a:b]):
-                            continue
-                        key, score = (a, b, EntityType.PERSON), self._threshold
-                        (cued if _person_cue(text, a) or _speech_after(text, b) else pieces).add(key)
-                    else:
-                        t = retype(text, a, b, etype, places or [], cue_at=start)
-                        if t is None:
-                            continue
-                        key, score = (a, b, t), min(p.score, 1.0)
-                    best[key] = max(best.get(key, 0.0), score)
-        joined = _join_cued(text, best, cued, pieces - cued)
+                for piece in clean(text, start, end, person=etype is EntityType.PERSON):
+                    t = retype(text, *piece, etype, places or [], cue_at=start)
+                    if t is None or (
+                        low and (t is EntityType.ORGANIZATION or _place(text, *piece, places or []))
+                    ):
+                        continue
+                    # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
+                    parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
+                    for a, b in parts:
+                        if low:
+                            if not _capitalized(text[a:b]):
+                                continue
+                            key, score = (a, b, EntityType.PERSON), self._threshold
+                            backed = (
+                                _person_cue(text, a) or _person_cue(text, start) or _speech_after(text, b)
+                            )
+                            (cued if backed else pieces).add(key)
+                        else:
+                            key, score = (a, b, t), min(p.score, 1.0)
+                            high.add(key)
+                        best[key] = max(best.get(key, 0.0), score)
+        joined = _join_cued(text, best, cued, pieces - cued - high)
         return [Span(s, e, t, score, self.name) for (s, e, t), score in joined]
 
 
@@ -284,7 +303,7 @@ def never_name(word: str, *, honorific: bool = True) -> bool:
     clitics (`بالسيدة`), a stopword or Darija word that isn't a listed name, or an unlisted Arabizi word.
     With `honorific=False`, honorifics don't count: a place may hold one (`rue Dr Ali Belhouane`)."""
     folded = normalize(word).text
-    if is_honorific(word) or (folded[:1] in PROCLITICS and _clitic_honorific(folded)):
+    if _honorific(word):
         return honorific
     tokens = canonical_tokens(word)
     listed = bool(tokens) and tokens <= NAMES
@@ -293,6 +312,12 @@ def never_name(word: str, *, honorific: bool = True) -> bool:
     if folded in STOPWORDS or folded in _NEVER_NAMES:
         return not listed
     return arabizi(word) and not listed
+
+
+def _honorific(word: str) -> bool:
+    """An honorific, also behind up to two Arabic clitics (`بالسيدة`)."""
+    folded = normalize(word).text
+    return is_honorific(word) or (folded[:1] in PROCLITICS and _clitic_honorific(folded))
 
 
 def _clitic_honorific(folded: str) -> bool:
@@ -349,21 +374,45 @@ def retype(
     cue_at: int | None = None,
 ) -> EntityType | None:
     """The type a cleaned model span gets, or `None` to drop it (module docstring). `cue_at` is where the
-    model's span started, before cleaning: a cue is looked for there."""
+    model's span started, before cleaning: a cue is looked for there and before the piece itself."""
     if etype is EntityType.PERSON:
         return etype
     surface = text[start:end]
     cue_at = start if cue_at is None else cue_at
-    is_place = any(a < end and start < b for a, b in places) or unaccent(normalize(surface).text) in _CITIES
-    if is_place or _PLACE_WORD.search(normalize(text[max(0, cue_at - 20) : cue_at]).text):
+    if _place(text, start, end, places, cue_at):
         return etype
     if _listed_first_name(surface):
         return EntityType.PERSON
-    if etype is EntityType.LOCATION and _person_cue(text, cue_at):
+    first = _SPAN_WORD.match(surface)
+    leading = first is not None and _honorific(first.group())  # `Mme Islem`, typed a place
+    cued = _person_cue(text, cue_at) or _person_cue(text, start) or leading
+    if etype is EntityType.LOCATION and cued:
         return EntityType.PERSON
     if etype is EntityType.LOCATION and any(_latin(c) for c in surface) and surface == surface.lower():
         return None
     return etype
+
+
+def _place(
+    text: str, start: int, end: int, places: Sequence[tuple[int, int]], cue_at: int | None = None
+) -> bool:
+    """Whether a span is a place or an organization whatever names it holds: a listed city, or a head word
+    (`rue`, `Clinique`, `شارع`) as its first word or right before it (`place_or_org`)."""
+    surface = text[start:end]
+    if any(a < end and start < b for a, b in places) or unaccent(normalize(surface).text) in _CITIES:
+        return True
+    return place_or_org(text, start, end) or (cue_at is not None and place_or_org(text, cue_at, end))
+
+
+def place_or_org(text: str, start: int, end: int) -> bool:
+    """A span that starts with a place or organization head word, or right after one: `rue Mohamed Ali`,
+    `Clinique Ahmed Ben Salem`, `à la Clinique` + `Ahmed Ben Salem`. Such a span is named after someone, and
+    keeps the model's type (`core/pipeline.py` too)."""
+    first = _SPAN_WORD.match(text, start, end)
+    if first is not None and normalize(first.group()).text in _HEADS:
+        return True
+    before = normalize(text[max(0, start - 30) : start]).text.split()
+    return bool(before) and before[-1].rstrip(".") in _HEADS and text[start - 1 : start] in " \t"
 
 
 def _listed_first_name(surface: str) -> bool:
@@ -394,8 +443,6 @@ def _person_cue(text: str, start: int) -> bool:
     """A person cue right before `start`, on the same line: an honorific, or a gazetteer cue phrase."""
     before = normalize(text[max(0, start - 30) : start]).text
     words = before.split()
-    last = words[-1] if words else ""
-    honorific = is_honorific(last) or (last[:1] in PROCLITICS and _clitic_honorific(last))
-    if honorific and before[-1:].isspace():
+    if words and _honorific(words[-1]) and before[-1:] in (" ", "\t"):
         return True
     return bool(STRONG_PHRASE.search(before) or WEAK_PHRASE.search(before) or _WITH.search(before))

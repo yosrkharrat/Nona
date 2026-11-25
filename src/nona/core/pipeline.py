@@ -19,7 +19,8 @@ message-local rules are in `core/recognizers/ner.py`):
   LOCATION fits when its name tokens contain a known person's or are contained in them (`Bacem Hachicha`
   after `Bacem`), or when it follows a person with only `and` between them (`m3a Hazem Boukadida w Hazem
   Drira`). An ORGANIZATION fits only when every token belongs to known people, so `Clinique Ahmed Ben
-  Salem` stays an organization. A listed city never changes type;
+  Salem` stays an organization, as does a span that starts with a place or organization word or follows
+  one (`rue Mohamed Ali`). A listed city never changes type;
 - a model span that is a known form with Arabic clitics in front (`لزكرياء` after `زكرياء`) loses them, as
   propagation does, so it links to that form;
 - the resolver keeps a propagated form over a recognizer span with the same extent and another type
@@ -51,7 +52,7 @@ from nona.core.pseudonymize import (
 )
 from nona.core.recognizers import Recognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES, common
-from nona.core.recognizers.ner import NER
+from nona.core.recognizers.ner import NER, place_or_org
 from nona.core.resolver import (
     cut_at_placeholders,
     denylist_spans,
@@ -91,7 +92,12 @@ def _as_people(
     persons = sorted((s for s in recognized if s.type is EntityType.PERSON), key=lambda s: s.end)
     out: list[Span] = []
     for s in recognized:
-        if s.type in _RETYPED and s.detector == NER and not any(s.overlaps(p) for p in places):
+        if (
+            s.type in _RETYPED
+            and s.detector == NER
+            and not any(s.overlaps(p) for p in places)
+            and not place_or_org(text, s.start, s.end)
+        ):
             tokens = canonical_tokens(s.text_in(text))
             if s.type is EntityType.ORGANIZATION:
                 fits = bool(tokens) and tokens <= every

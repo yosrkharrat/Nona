@@ -75,13 +75,16 @@ def test_the_view_keeps_every_offset(text: str) -> None:
 
 @pytest.mark.parametrize(
     "word",
-    ["I", "Je", "Il", "nomrou", "Behi", "باهي", "نومرو", "9alli", "y3aychek", "Rani", "بالسيدة", "Mme"],
+    ["I", "Je", "Il", "nomrou", "Behi", "باهي", "نومرو", "9alli", "y3aychek", "chnowa", "بالسيدة", "Mme"],
 )
 def test_words_that_are_never_names(word: str) -> None:
     assert never_name(word)
 
 
-@pytest.mark.parametrize("word", ["Sami", "Amal", "7amza", "mo7amed", "سامي", "Montaser", "Ben", "زكرياء"])
+@pytest.mark.parametrize(
+    "word",
+    ["Sami", "Amal", "7amza", "mo7amed", "سامي", "Montaser", "Ben", "زكرياء", "Wala", "Bahi", "يسر", "Rani"],
+)
 def test_names_are_not_never_names(word: str) -> None:
     assert not never_name(word)
 
@@ -261,3 +264,87 @@ def test_the_resolver_keeps_a_propagated_name_over_another_type_at_the_same_plac
     phone = Span(0, 8, EntityType.PHONE, 1.0, "propagation")  # structured values keep the priority rule
     cin = Span(0, 8, EntityType.NATIONAL_ID, 0.9, "cin")
     assert resolve([phone, cin], "12345678") == [cin]
+
+
+# --------------------------------------------------------------------------- review findings (PR #79)
+
+
+def test_a_name_scored_low_in_one_window_and_high_in_another_is_kept() -> None:
+    filler = " ".join(f"mot{i}" for i in range(20))
+    text = f"{filler} Karim Jlassi {filler}"
+    scores = iter([0.4, 0.9, 0.9, 0.9])
+
+    def predict(view: str) -> list[NerPrediction]:
+        i = view.find("Karim Jlassi")
+        return [] if i < 0 else [NerPrediction(i, i + 12, "person", next(scores))]
+
+    spans = NerRecognizer(FakeModel(predict=predict, max_words=30), overlap_words=10).detect(normalize(text))
+    assert [(text[s.start : s.end], s.score) for s in spans] == [("Karim Jlassi", 0.9)]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "label"),
+    [
+        ("J'habite rue Mohamed Ali.", "rue Mohamed Ali", "location"),
+        ("rdv à la Clinique Ahmed Ben Salem", "Clinique Ahmed Ben Salem", "organization"),
+        ("rdv à la Clinique Ahmed Ben Salem", "Ahmed Ben Salem", "organization"),
+        ("نسكن في شارع محمد علي", "شارع محمد علي", "location"),
+    ],
+)
+def test_a_place_or_organization_named_after_someone_keeps_its_type(
+    text: str, predicted: str, label: str
+) -> None:
+    assert detect({predicted: (label, 0.9)}, text) == [(predicted, EntityType(label.upper()), 0.9)]
+
+
+def test_a_street_is_not_merged_with_a_person_of_the_same_name() -> None:
+    nona = per_message(
+        {
+            "Mohamed passe demain.": [("Mohamed", "person", 0.9)],
+            "J'habite rue Mohamed Ali.": [("rue Mohamed Ali", "location", 0.9)],
+        }
+    )
+    texts = nona.anonymize_messages(["Mohamed passe demain.", "J'habite rue Mohamed Ali."]).texts
+    assert texts[1] == "J'habite LOCATION_1."
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("3andi rdv m3a Mootez Jaouadi", "m3a Mootez Jaouadi", "Mootez Jaouadi"),  # the cue inside the span
+        ("demain Mme Islem passe", "Mme Islem", "Islem"),  # a leading honorific
+    ],
+)
+def test_a_cue_inside_a_place_span_makes_it_a_person(text: str, predicted: str, found: str) -> None:
+    assert detect({predicted: ("location", 0.9)}, text) == [(found, EntityType.PERSON, 0.9)]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted"),
+    [
+        ("rendez-vous avec Orange demain", "Orange"),
+        ("موعد مع الشركة", "الشركة"),
+        ("avec la Clinique Sami", "Sami"),
+    ],
+)
+def test_a_cue_does_not_make_a_low_organization_a_person(text: str, predicted: str) -> None:
+    assert detect({predicted: ("organization", 0.3)}, text) == []
+
+
+def test_a_cue_does_not_cross_a_line() -> None:
+    assert detect({"Yassine": ("person", 0.3)}, "Merci Dr\nYassine passe demain") == []
+    assert detect({"Yassine": ("person", 0.3)}, "Merci Dr Yassine") == [("Yassine", EntityType.PERSON, 0.5)]
+
+
+def test_a_denylist_term_keeps_its_policy_over_a_propagated_name() -> None:
+    from nona.core.pseudonymize import Policy
+
+    known = Span(0, 4, EntityType.PERSON, 1.0, "propagation")
+    denied = Span(0, 4, EntityType.CUSTOM, 1.0, "denylist")
+    assert resolve([known, denied], "Sami") == [denied]
+    nona = Nona(
+        denylist=["Sami"], policies={EntityType.CUSTOM: Policy.REDACT, EntityType.PERSON: Policy.PSEUDONYMIZE}
+    )
+    texts = nona.anonymize_messages(["Bonjour Sami Trabelsi", "Sami a appelé"]).texts
+    assert "Sami" not in texts[1]
+    assert "PERSON" not in texts[1]
