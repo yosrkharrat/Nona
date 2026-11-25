@@ -350,11 +350,26 @@ def test_a_low_cued_name_without_a_capital_is_kept(text: str, predicted: str) ->
     assert detect({predicted: ("person", 0.3)}, text) == [(predicted, EntityType.PERSON, 0.5)]
 
 
-def test_a_cue_vouches_for_a_lowercase_surname_right_after() -> None:
-    found = detect({"Mootez": ("person", 0.25), "ben salah": ("person", 0.42)}, "Rdv m3a Mootez ben salah")
-    assert found == [("Mootez ben salah", EntityType.PERSON, 0.5)]
+def test_a_cue_joins_a_digit_initial_surname() -> None:
     found = detect({"Mootez": ("person", 0.25), "7amdi": ("person", 0.42)}, "Rdv m3a Mootez 7amdi ghodwa")
     assert found == [("Mootez 7amdi", EntityType.PERSON, 0.5)]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("Rdv m3a 3abd-allah", {"3abd-allah": ("person", 0.3)}, ["3abd-allah"]),
+        ("Rdv m3a 2eme groupe", {"2eme groupe": ("person", 0.3)}, []),  # an ordinal, not a name
+        ("m3a Sami fel bureau", {"Sami": ("person", 0.3), "fel bureau": ("person", 0.3)}, ["Sami"]),
+        (
+            "Rdv m3a Sami ali y7eb Mariem",
+            {"Sami": ("person", 0.3), "ali": ("person", 0.3), "ali y7eb Mariem": ("person", 0.9)},
+            ["Sami", "ali y7eb Mariem"],
+        ),
+    ],
+)
+def test_what_a_cue_takes_in(text: str, predicted: dict[str, tuple[str, float]], found: list[str]) -> None:
+    assert [f for f, _, _ in detect(predicted, text)] == found
 
 
 def test_a_cued_name_does_not_take_in_a_confident_span_with_lowercase_words() -> None:

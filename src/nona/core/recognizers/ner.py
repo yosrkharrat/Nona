@@ -39,9 +39,9 @@ What this layer adds on top of the model:
   model often finds a name but scores it under 0.5 (`Hazem 9alli`: 0.46). A span from `cued_threshold` (0.2)
   up is kept whole, as a PERSON scored at the threshold, when it looks like a name (a capitalized word, a word
   starting with an Arabizi digit like `3li`, or Arabic) and a cue backs it: a person cue before it, or a
-  speech verb right after it (`9alli`, `قالي`, `said`, from #50's list). A cued span takes in the low-score
-  span right after it, spaces only between, or a confident one whose words all look like names: in `m3a Mootez
-  Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
+  speech verb right after it (`9alli`, `قالي`, `said`, from #50's list). A cued span takes in the name-shaped
+  low-score span right after it, spaces only between, or a confident one whose words all look like names: in
+  `m3a Mootez Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
 
 A model error propagates; the pipeline turns it into `DetectorError` (fail closed, ADR-0003).
 """
@@ -121,7 +121,9 @@ _SPEECH_AFTER = re.compile(
 # greetings), and `with`, `avec`, `مع` ("with": a meeting is with someone). Matched on the folded text.
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
-RULES_VERSION = 5  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+_WORD_JOINERS = re.compile(r"['\u2019-]")
+_ORDINAL = re.compile(r"\d+(?:e|eme|ieme|er|ere|nd|rd|th|st)", re.IGNORECASE)
+RULES_VERSION = 6  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -203,10 +205,12 @@ class NerRecognizer:
                         continue
                     # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
                     parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
+                    if low:  # an unsure span must look like a name; then it is kept whole
+                        parts = [x for x in parts if _name_shaped(text, *x)]
                     for a, b in parts:
-                        if low:  # kept whole if it looks like a name and a cue backs it, or joined
+                        if low:
                             key, score = (a, b, EntityType.PERSON), self._threshold
-                            backed = _name_shaped(text, a, b) and (
+                            backed = (
                                 _person_cue(text, a) or _person_cue(text, start) or _speech_after(text, b)
                             )
                             (cued if backed else pieces).add(key)
@@ -226,9 +230,9 @@ def _join_cued(
     high: set[tuple[int, int, EntityType]],
 ) -> list[tuple[tuple[int, int, EntityType], float]]:
     """Spans sorted, with each cued span joined to the PERSON span right after it, spaces only between: a cue
-    introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and 0.42; `m3a
-    Mootez ben salah`). `pieces` (low, uncued) are only kept when joined that way. A confident span joins only
-    when every word looks like a name, so a cued name doesn't take in `Ali y7eb Mariem`."""
+    introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and 0.42). `pieces`
+    (low, uncued, name-shaped) are only kept when joined that way. A confident span joins only when every
+    word looks like a name, so a cued name doesn't take in `Ali y7eb Mariem`."""
     joined: list[tuple[tuple[int, int, EntityType], float]] = []
     for key, score in sorted(best.items()):
         if joined:
@@ -432,8 +436,16 @@ def _name_shaped(text: str, start: int, end: int, *, every: bool = False) -> boo
     an Arabizi digit (`3li`, `7amdi`), or is in a script without capitals (Arabic). `Hazem y7ki` passes;
     `bureau 3` and `montaser` don't. With `every`, each word with letters must."""
     words = [w for w in _SPAN_WORD.findall(text, start, end) if any(c.isalpha() for c in w)]
-    shaped = (not _cased(w) or w[0].isupper() or (w[0] in _ARABIZI_LETTER and arabizi(w)) for w in words)
+    shaped = (not _cased(w) or w[0].isupper() or _digit_initial(w) for w in words)
     return all(shaped) if every else any(shaped)
+
+
+def _digit_initial(word: str) -> bool:
+    """An Arabizi word that starts with a digit (`3li`, `3abd-allah`), not an ordinal (`2eme`, `3rd`)."""
+    return any(
+        part[:1] in _ARABIZI_LETTER and arabizi(part) and not _ORDINAL.fullmatch(part)
+        for part in _WORD_JOINERS.split(word)
+    )
 
 
 def _speech_after(text: str, end: int) -> bool:
