@@ -395,7 +395,7 @@ def test_a_known_name_written_later_with_a_digit_is_not_sent_in_clear() -> None:
     [
         # What the real model gives: a place at 0.29 and 0.31, backed by the speech verb and the cue.
         ("Mo7sen 9alli barcha", "Mo7sen 9alli barcha", ["Mo7sen"]),
-        ("Rdv m3a Na3ima Ka3bi ghodwa", "Na3ima Ka3bi ghodwa", ["Na3ima Ka3bi"]),  # the cue joins them
+        ("Rdv m3a Na3ima Ka3bi ghodwa", "Na3ima Ka3bi ghodwa", ["Na3ima", "Ka3bi"]),  # one word at a time
         ("Rdv m3a 3li ghodwa", "3li ghodwa", ["3li"]),
     ],
 )
@@ -425,22 +425,40 @@ _OPEN_WORDS = ["Mo3ez", "Mo7sen", "Na3ima", "Ka3bi", "Bel7aj", "3li", "yfar7ek",
 _PARTICLES = PARTICLES | ABD_PREFIXES
 
 
-@given(st.lists(st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, "Sami", "Hamza", "سامي", "Ben"]), max_size=6))
-def test_only_closed_list_words_are_unmasked(words: list[str]) -> None:
-    """The security invariant: every word of a confident span is masked, unless a closed list says it is
-    never a name (or it is a trailing particle)."""
+_WORDS = [*_LIST_WORDS, *_OPEN_WORDS, "Sami", "Hamza", "سامي", "Ben", "Sfax", "Clinique", "m3a", "kallemni"]
+
+
+@given(st.lists(st.sampled_from(_WORDS), min_size=1, max_size=6), st.sampled_from([0.95, 0.6]))
+def test_only_closed_list_words_of_a_confident_person_are_unmasked(words: list[str], score: float) -> None:
+    """The security invariant, through the whole pipeline: every word of a confident PERSON span stays
+    masked, unless a closed list says it is never a name or it is a trailing particle. The gazetteer and the
+    other recognizers run too, so the resolver's choices are covered."""
     text = " ".join(words)
-    spans = NerRecognizer(fake({text: ("person", 0.95)})).detect(normalize(text)) if text else []
-    covered = {i for s in spans for i in range(s.start, s.end)}
+    covered = {i for s in pipeline({text: ("person", score)}).detect(text) for i in range(s.start, s.end)}
     for m in re.finditer(r"\S+", text):
         if not any(i in covered for i in range(m.start(), m.end())):
             word = m.group()
             assert never_name(word) or normalize(word).text in _PARTICLES, (text, word)
 
 
-@pytest.mark.parametrize("verb", SPEECH_VERBS)
-def test_every_speech_verb_is_a_never_name(verb: str) -> None:
+def test_a_re_masked_word_is_never_joined_into_a_longer_span() -> None:
+    """A re-masked word joined to a longer span could partly overlap the gazetteer's name, and the resolver
+    keeps only the longer span (`Sami` leaked)."""
+    text = "ena w Sami Ka3bi Bel7aj kallamni"
+    out = pipeline({"Sami Ka3bi Bel7aj": ("person", 0.3)}).anonymize_messages([text]).texts[0]
+    assert "Sami" not in out
+    assert "Ka3bi" not in out
+
+
+def test_an_arabizi_word_from_a_span_holding_a_person_is_a_person() -> None:
+    nona = pipeline({"Ka3bi Sami": ("organization", 0.9)})
+    assert "Ka3bi" not in nona.anonymize_messages(["el contrat ta3 Ka3bi Sami jeh"]).texts[0]
+
+
+@pytest.mark.parametrize("verb", [v for v in SPEECH_VERBS if any(c.isdigit() for c in v)])
+def test_a_speech_verb_with_digits_is_cut_and_not_masked_again(verb: str) -> None:
     assert never_name(verb)
+    assert arabizi_cuts(verb, 0, len(verb)) == []
 
 
 @pytest.mark.parametrize(("text", "view"), [("3ers m3a Sami", "aers maa Sami"), ("5er", "ker")])

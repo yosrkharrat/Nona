@@ -27,10 +27,10 @@ What this layer adds on top of the model:
   dropped. A listed name behind Arabic clitics loses them (`وسامي` → `سامي`), as in the gazetteer. The pieces
   are what the type, place and cue rules below work on. **But an Arabizi word is no sign of a non-name**
   (`Mo3ez`, `Na3ima Ka3bi`, `3li`): cleaning must never unmask one (fail closed, ADR-0003). So the Arabizi
-  words cut out of a span are masked again, each on its own (`Na3ima Ka3bi` → two placeholders, a split, never
-  a leak), typed like the model's span (a lowercase LOCATION still goes); from a low-score span, only those
-  that look like a name (a capital or a leading Arabizi digit) and that a cue backs. Only the closed lists
-  (`NEVER_NAMES`, stopwords, honorifics) ever unmask a word.
+  words cut out of a span are masked again, each on its own and never joined to another span (`Na3ima Ka3bi` →
+  two placeholders, a split, never a leak): as a person when the span holds one, else typed like the model's
+  span; from a low-score span, only those that look like a name (a capital or a leading Arabizi digit) and
+  that a cue backs. Only the closed lists (`NEVER_NAMES`, stopwords, honorifics) ever unmask a word.
 - **Types** (ADR-0008, condition 1). The model often calls a person a place, and an Arabizi chunk a place.
   A LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city,
   is a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a
@@ -192,6 +192,7 @@ class NerRecognizer:
         cued: set[tuple[int, int, EntityType]] = set()
         pieces: set[tuple[int, int, EntityType]] = set()  # uncued low spans, kept only once joined
         high: set[tuple[int, int, EntityType]] = set()  # spans at the threshold or above: always kept
+        remasked: set[tuple[int, int, EntityType]] = set()  # Arabizi words masked again: kept, never joined
         for w_start, w_end in windows(text, self._model.max_words, self._overlap):
             for p in self._model.predict(view[w_start:w_end], list(LABELS), self._cued):
                 etype = LABELS.get(p.label)
@@ -201,6 +202,7 @@ class NerRecognizer:
                 if etype is not EntityType.PERSON and places is None:
                     places = [doc.to_original(s, e) for s, e, _ in cities(doc)]
                 low = p.score < self._threshold
+                person = False  # a piece of this prediction is a person
                 for piece in clean(text, start, end, person=etype is EntityType.PERSON):
                     t = retype(text, *piece, etype, places or [], cue_at=start)
                     if t is None or (
@@ -221,27 +223,25 @@ class NerRecognizer:
                         else:
                             key, score = (a, b, t), min(p.score, 1.0)
                             high.add(key)
+                        person = person or key[2] is EntityType.PERSON
                         best[key] = max(best.get(key, 0.0), score)
                 for a, b in arabizi_cuts(text, start, end):  # masked again: it may be a name
-                    t = retype(text, a, b, etype, places or [], cue_at=start)
+                    t = EntityType.PERSON if person else retype(text, a, b, etype, places or [], cue_at=start)
                     if not low:
-                        if t is not None:
-                            best[(a, b, t)] = max(best.get((a, b, t), 0.0), min(p.score, 1.0))
-                            high.add((a, b, t))
+                        key, score = (a, b, t or etype), min(p.score, 1.0)  # fail closed: never dropped
                     elif (
-                        _looks_like_a_name(text[a:b])
+                        t is not None
+                        and t is not EntityType.ORGANIZATION
+                        and _looks_like_a_name(text[a:b])
                         and not _place(text, a, b, places or [])
-                        and (
-                            _person_cue(text, a)
-                            or _person_cue(text, start)
-                            or _speech_after(text, b)
-                            or _speech_after(text, end)
-                        )
+                        and (_person_cue(text, a) or _person_cue(text, start) or _speech_after(text, b))
                     ):
-                        key = (a, b, EntityType.PERSON)
-                        best[key] = max(best.get(key, 0.0), self._threshold)
-                        cued.add(key)
-        joined = _join_cued(text, best, cued, pieces - cued - high)
+                        key, score = (a, b, EntityType.PERSON), self._threshold
+                    else:
+                        continue
+                    remasked.add(key)
+                    best[key] = max(best.get(key, 0.0), score)
+        joined = _join_cued(text, best, cued - remasked, pieces - cued - high - remasked, remasked)
         return [Span(s, e, t, score, self.name) for (s, e, t), score in joined]
 
 
@@ -250,6 +250,7 @@ def _join_cued(
     best: dict[tuple[int, int, EntityType], float],
     cued: set[tuple[int, int, EntityType]],
     pieces: set[tuple[int, int, EntityType]],
+    remasked: set[tuple[int, int, EntityType]],
 ) -> list[tuple[tuple[int, int, EntityType], float]]:
     """Spans sorted, with each cued span joined to the capitalized PERSON span right after it, spaces only
     between: a cue introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and
@@ -260,6 +261,7 @@ def _join_cued(
             (a, b, t), prev = joined[-1]
             if (
                 t is EntityType.PERSON
+                and key not in remasked  # one word, never part of a longer span (`arabizi_cuts`)
                 and (a, b, t) in cued
                 and key[2] is EntityType.PERSON
                 and key[0] > b

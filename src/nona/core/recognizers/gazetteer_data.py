@@ -140,9 +140,10 @@ NEVER_NAMES: tuple[str, ...] = (
     # things people ask for
     "nomrou", "noumrou", "numrou", "nmrou", "rendez", "rdv", "mail", "contrat", "flous",
     "نومرو", "النومرو", "رقم", "الرقم", "موعد", "العقد", "فلوس",
-    # speech, contact and movement verbs
-    *SPEECH_VERBS, "kallem", "kallamt", "kallemt", "ja", "jet", "mcha", "mchet",
-    "كلم", "جا", "جات", "مشى", "مشات",
+    # speech, contact and movement verbs (#50's cues around a name, `SPEECH_VERBS`)
+    "kallem", "kallamt", "kallemt", "kallamni", "9alli", "9al", "9alet", "9alt", "3ayetli", "3ayatli",
+    "b3athli", "ja", "jet", "mcha", "mchet",
+    "قالي", "قال", "قالت", "كلم", "كلمني", "عيطلي", "جا", "جات", "مشى", "مشات",
     # sending and doing, in requests (`ab3athli el mail`, `3malt rdv`)
     "ab3ath", "ab3athli", "ab3athlou", "ab3athtlou", "ab3atht", "b3atht", "3malt", "3mel", "3melt",
 )  # fmt: skip
