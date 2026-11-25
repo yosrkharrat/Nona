@@ -122,10 +122,10 @@ _SPEECH_AFTER = re.compile(
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
 _WORD_JOINERS = re.compile(r"['\u2019-]")
-# French and English ordinals (`2eme`, `3rd`), which `_digit_initial` doesn't take for names. Not `er` or
-# `em`, which Darija words end with (`5er`, `3em`).
-_ORDINAL = re.compile(r"\d+(?:eme|emes|ieme|iemes|nd|nde|rd|th)", re.IGNORECASE)
-RULES_VERSION = 8  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+# French and English ordinals (`2eme`, `3rd`): not Arabizi. Not `er` or `em`, which Darija words end with
+# (`5er`, `3em`).
+_ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|nds?|ndes?|rds?|ths?)", re.IGNORECASE)
+RULES_VERSION = 9  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -288,7 +288,10 @@ def _de_arabizi(word: str) -> str:
 
 def arabizi(word: str) -> bool:
     """A word mixing Latin letters with Arabizi digits (2 3 5 7 9), each digit next to a letter, with at least
-    two letters, not all capitals: `3andi`, `9alli`, `y5allik`. Not `15h`, `3h`, `hamza23`, `4G`, `B2B`."""
+    two letters, not all capitals, not an ordinal: `3andi`, `9alli`, `y5allik`. Not `15h`, `3h`, `hamza23`,
+    `4G`, `B2B`, `2eme`, `3rd`."""
+    if _ORDINAL.fullmatch(word):
+        return False
     letters = 0
     for i, c in enumerate(word):
         if c.isdigit():
@@ -443,10 +446,10 @@ def _name_shaped(text: str, start: int, end: int, *, every: bool = False) -> boo
 
 
 def _digit_initial(word: str) -> bool:
-    """An Arabizi word, or part of one, that starts with a digit (`3li`, `3abd-allah`, `ben-3ali`), not an
-    ordinal (`2eme`, `3rd`). All capitals don't count (`2FA`), as in `arabizi`."""
+    """An Arabizi word, or part of one, that starts with a digit (`3li`, `3abd-allah`, `ben-3ali`). Not an
+    ordinal (`2eme`), a never-name part (`l'3asr`), or all capitals (`2FA`, so `3LI` doesn't count either)."""
     return any(
-        part[:1] in _ARABIZI_LETTER and arabizi(part) and not _ORDINAL.fullmatch(part)
+        part[:1] in _ARABIZI_LETTER and arabizi(part) and not never_name(part)
         for part in _WORD_JOINERS.split(word)
     )
 

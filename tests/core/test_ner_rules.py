@@ -53,14 +53,24 @@ def per_message(found: dict[str, list[tuple[str, str, float]]]) -> Nona:
         ("3andi", True), ("m3a", True), ("9alli", True), ("y5allik", True), ("sa7a", True), ("5ti", True),
         ("15h", False), ("3h", False), ("hamza23", False), ("4G", False), ("22", False), ("Sami", False),
         ("b2", False), ("3", False), ("سامي", False), ("ab3athli", True), ("B2B", False),
+        ("2eme", False), ("3emes", False), ("2iem", False), ("2nde", False), ("3rd", False), ("3rds", False),
+        ("5th", False), ("3ers", True), ("5er", True), ("3em", True),
     ],
 )  # fmt: skip
 def test_arabizi_words(word: str, expected: bool) -> None:
     assert arabizi(word) is expected
 
 
-@pytest.mark.parametrize(("text", "view"), [("3ers m3a Sami", "aers maa Sami"), ("5er", "ker")])
-def test_darija_words_like_ordinals_are_still_de_arabized(text: str, view: str) -> None:
+@pytest.mark.parametrize(
+    ("text", "view"),
+    [
+        ("3ers m3a Sami", "aers maa Sami"),
+        ("5er", "ker"),
+        ("le 2nd Sami", "le 2nd Sami"),
+        ("3eme etage", "3eme etage"),
+    ],
+)
+def test_the_view_keeps_ordinals_and_de_arabizes_darija(text: str, view: str) -> None:
     assert model_view(text) == view
 
 
@@ -367,6 +377,8 @@ def test_a_cue_joins_a_digit_initial_surname() -> None:
         ("Rdv m3a 2eme groupe", {"2eme groupe": ("person", 0.3)}, []),  # an ordinal, not a name
         ("Rdv m3a 2nde groupe", {"2nde groupe": ("person", 0.3)}, []),
         ("Rdv m3a 2FA ghodwa", {"2FA": ("person", 0.3)}, []),  # an acronym
+        ("Rdv m3a 2iem groupe", {"2iem groupe": ("person", 0.3)}, []),
+        ("m3a l'3asr", {"l'3asr": ("person", 0.3)}, []),  # `3asr` is a never-name
         ("m3a Sami ben-3ali", {"Sami ben-3ali": ("person", 0.3)}, ["Sami ben-3ali"]),
         ("Rdv m3a ben-3ali", {"ben-3ali": ("person", 0.3)}, ["ben-3ali"]),
         ("m3a Sami fel bureau", {"Sami": ("person", 0.3), "fel bureau": ("person", 0.3)}, ["Sami"]),
