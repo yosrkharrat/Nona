@@ -265,6 +265,32 @@ def test_a_span_is_cut_at_a_listed_city(text: str, predicted: tuple[str, str, fl
     assert nona.anonymize_messages([text]).texts == (found,)
 
 
+def test_a_lowercase_city_is_cut_out_and_masked() -> None:
+    nona = per_message({"nemchi l sfax 5ater": [("sfax 5ater", "location", 0.9)]})
+    assert nona.anonymize_messages(["nemchi l sfax 5ater"]).texts == ("nemchi l LOCATION_1 5ater",)
+
+
+def test_a_person_span_is_never_cut_at_a_city_whatever_the_order() -> None:
+    text = "Ariana Ben Salah w Sfax"
+    alone = detect({"Ariana Ben Salah": ("person", 0.9)}, text)
+    both = per_message({text: [("Sfax", "location", 0.9), ("Ariana Ben Salah", "person", 0.9)]})
+    assert alone == [("Ariana Ben Salah", EntityType.PERSON, 0.9)]
+    assert both.anonymize_messages([text]).texts == ("PERSON_1 w LOCATION_1",)
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("m3a Pharmacie 7ouma Mootez", "Pharmacie 7ouma Mootez", ["Mootez"]),  # a name after the place's
+        ("avec la Clinique Sami", "Clinique Sami", []),  # only the place's own name
+    ],
+)
+def test_a_low_span_after_a_head_word_keeps_the_name_after_the_place(
+    text: str, predicted: str, found: list[str]
+) -> None:
+    assert [f for f, _, _ in detect({predicted: ("person", 0.3)}, text)] == found
+
+
 def test_a_cued_span_with_a_lowercase_word_does_not_take_in_a_confident_name() -> None:
     found = detect(
         {"Hazem y7ki": ("person", 0.3), "Sami Trabelsi": ("person", 0.95)}, "m3a Hazem y7ki Sami Trabelsi"

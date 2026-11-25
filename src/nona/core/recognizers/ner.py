@@ -33,17 +33,18 @@ What this layer adds on top of the model:
   an honorific). A LOCATION in lowercase Latin letters is dropped unless it is a listed city: `nomrou`,
   `ykhdmou 24/24`, `jardin` were the model's, and no gold place was. A place or organization span is first cut
   at the listed cities in it (`Sami ya5dem Sfax` → `Sami ya5dem`, a person, and `Sfax`, a place), unless a
-  head word names it (`rue de Sfax`). The conversation-level rule (a span that fits a known person) is in
-  `core/pipeline.py`.
+  head word names it (`rue de Sfax`); a lowercase city word counts (`sfax 5ater`). The conversation-level rule
+  (a span that fits a known person) is in `core/pipeline.py`.
 - **A threshold** (ADR-0008: 0.5). A span keeps the model's score, so the resolver's `min_score` still
   applies, and look-ahead only spreads words from confident spans (0.8, ADR-0004).
 - **Cue-backed low scores** (deep dive A, layer 4: a context cue raises a weak candidate). In Arabizi the
   model often finds a name but scores it under 0.5 (`Hazem 9alli`: 0.46). A span from `cued_threshold` (0.2)
   up is kept whole, as a PERSON scored at the threshold, when it looks like a name (a capitalized word, a word
   starting with an Arabizi digit like `3li`, or Arabic) and a cue backs it: a person cue before it, or a
-  speech verb right after it (`9alli`, `قالي`, `said`, from #50's list). A cued span takes in the name-shaped
-  low-score span right after it, spaces only between, or a confident one whose words all look like names: in
-  `m3a Mootez Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
+  speech verb right after it (`9alli`, `قالي`, `said`, from #50's list). A place span keeps what follows its
+  head word and name: `m3a Pharmacie 7ouma Mootez` → `Mootez`. A cued span takes in the name-shaped low-score
+  span right after it, spaces only between, or a confident one whose words all look like names: in `m3a Mootez
+  Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
 
 A model error propagates; the pipeline turns it into `DetectorError` (fail closed, ADR-0003).
 """
@@ -127,7 +128,7 @@ _WORD_JOINERS = re.compile(r"['\u2019-]")
 # French and English ordinals (`2eme`, `2nd`): not Arabizi. Not `er`, `em`, `rd` or `nd` after a 3, which
 # Darija words are (`5er`, `3em`, `3rd` "offer", `3nd` "at").
 _ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|ndes?)|2nds?|[579]ths?", re.IGNORECASE)
-RULES_VERSION = 10  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 11  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -201,16 +202,28 @@ class NerRecognizer:
                 if etype is not EntityType.PERSON and places is None:
                     places = [doc.to_original(s, e) for s, e, _ in cities(doc)]
                 low = p.score < self._threshold
-                segments = [(start, end)] if places is None else _split_at_cities(text, start, end, places)
-                for piece in (
-                    x for a, b in segments for x in clean(text, a, b, person=etype is EntityType.PERSON)
+                segments = (
+                    [(start, end, False)]
+                    if etype is EntityType.PERSON
+                    else _split_at_cities(text, start, end, places or [])
+                )
+                for piece, city in (
+                    (x, city)
+                    for a, b, city in segments
+                    for x in clean(text, a, b, person=etype is EntityType.PERSON)
                 ):
-                    t = retype(text, *piece, etype, places or [], cue_at=start)
-                    if len(segments) > 1 and piece in (places or []):  # a city cut out of the span
-                        t = EntityType.LOCATION
-                    if t is None or (
-                        low and (t is EntityType.ORGANIZATION or _place(text, *piece, places or []))
-                    ):
+                    t = (
+                        EntityType.LOCATION
+                        if city
+                        else retype(text, *piece, etype, places or [], cue_at=start)
+                    )
+                    if low and t is not None and _place(text, *piece, places or []):
+                        # A name after a place's own name: `m3a Pharmacie 7ouma Mootez` → `Mootez`.
+                        tail = _after_head_name(text, *piece)
+                        if tail is None or _place(text, *tail, places or []):
+                            continue
+                        piece, t = tail, EntityType.PERSON
+                    if t is None or (low and t is EntityType.ORGANIZATION):
                         continue
                     # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
                     parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
@@ -432,23 +445,44 @@ def _place(
 
 def _split_at_cities(
     text: str, start: int, end: int, places: Sequence[tuple[int, int]]
-) -> list[tuple[int, int]]:
-    """A model span cut at the listed cities in it, each city its own segment: `Sami ya5dem Sfax` → `Sami
-    ya5dem`, `Sfax`, so the person is typed apart from the place. Not a span named with a head word (`rue de
-    Sfax`, `Clinique Sfax`), which is one place."""
-    inside = sorted((max(a, start), min(b, end)) for a, b in places if a < end and start < b)
+) -> list[tuple[int, int, bool]]:
+    """A place or organization span cut at the listed cities in it, each city its own segment (`True`):
+    `Sami ya5dem Sfax` → `Sami ya5dem`, `Sfax`, so the person is typed apart from the place. A lowercase city
+    word counts too (`sfax 5ater`), as the gazetteer needs a capital. Not a span named with a head word (`rue
+    de Sfax`, `Clinique Sfax`), which is one place."""
+    found = [(max(a, start), min(b, end)) for a, b in places if a < end and start < b]
+    found += [m.span() for m in _SPAN_WORD.finditer(text, start, end) if _city_word(m.group())]
+    inside: list[tuple[int, int]] = []
+    for a, b in sorted(found):
+        if inside and a < inside[-1][1]:
+            inside[-1] = (inside[-1][0], max(b, inside[-1][1]))
+        else:
+            inside.append((a, b))
     if not inside or inside == [(start, end)] or place_or_org(text, start, end):
-        return [(start, end)]
-    out: list[tuple[int, int]] = []
+        return [(start, end, False)]
+    out: list[tuple[int, int, bool]] = []
     pos = start
     for a, b in inside:
         if pos < a:
-            out.append((pos, a))
-        out.append((max(a, pos), b))
-        pos = max(pos, b)
+            out.append((pos, a, False))
+        out.append((a, b, True))
+        pos = b
     if pos < end:
-        out.append((pos, end))
+        out.append((pos, end, False))
     return out
+
+
+def _city_word(word: str) -> bool:
+    return unaccent(normalize(word).text) in _CITIES
+
+
+def _after_head_name(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """What follows a head word and the one word naming the place, when the span starts with a head word:
+    `Pharmacie 7ouma Mootez` → `Mootez`. None otherwise (`Clinique Sami`)."""
+    words = list(_SPAN_WORD.finditer(text, start, end))
+    if len(words) < 3 or normalize(words[0].group()).text not in _HEADS:
+        return None
+    return words[2].start(), end
 
 
 def place_or_org(text: str, start: int, end: int) -> bool:
