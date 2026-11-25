@@ -122,8 +122,8 @@ _SPEECH_AFTER = re.compile(
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
 _WORD_JOINERS = re.compile(r"['\u2019-]")
-_ORDINAL = re.compile(r"\d+(?:e|eme|ieme|er|ere|nd|rd|th|st)", re.IGNORECASE)
-RULES_VERSION = 6  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+_ORDINAL = re.compile(r"\d+(?:e|em|eme|ieme|iem|er|ere|nd|nde|rd|th|st)s?", re.IGNORECASE)
+RULES_VERSION = 7  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -286,7 +286,10 @@ def _de_arabizi(word: str) -> str:
 
 def arabizi(word: str) -> bool:
     """A word mixing Latin letters with Arabizi digits (2 3 5 7 9), each digit next to a letter, with at least
-    two letters, not all capitals: `3andi`, `9alli`, `y5allik`. Not `15h`, `3h`, `hamza23`, `4G`, `B2B`."""
+    two letters, not all capitals, not an ordinal: `3andi`, `9alli`, `y5allik`. Not `15h`, `3h`, `hamza23`,
+    `4G`, `B2B`, `2eme`, `3rd`."""
+    if _ORDINAL.fullmatch(word):
+        return False
     letters = 0
     for i, c in enumerate(word):
         if c.isdigit():
@@ -441,11 +444,9 @@ def _name_shaped(text: str, start: int, end: int, *, every: bool = False) -> boo
 
 
 def _digit_initial(word: str) -> bool:
-    """An Arabizi word that starts with a digit (`3li`, `3abd-allah`), not an ordinal (`2eme`, `3rd`)."""
-    return any(
-        part[:1] in _ARABIZI_LETTER and arabizi(part) and not _ORDINAL.fullmatch(part)
-        for part in _WORD_JOINERS.split(word)
-    )
+    """An Arabizi word that starts with a digit (`3li`, `3LI`, `3abd-allah`)."""
+    first = _WORD_JOINERS.split(word)[0]
+    return first[:1] in _ARABIZI_LETTER and arabizi(first.lower())
 
 
 def _speech_after(text: str, end: int) -> bool:

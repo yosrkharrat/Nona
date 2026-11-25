@@ -53,6 +53,7 @@ def per_message(found: dict[str, list[tuple[str, str, float]]]) -> Nona:
         ("3andi", True), ("m3a", True), ("9alli", True), ("y5allik", True), ("sa7a", True), ("5ti", True),
         ("15h", False), ("3h", False), ("hamza23", False), ("4G", False), ("22", False), ("Sami", False),
         ("b2", False), ("3", False), ("سامي", False), ("ab3athli", True), ("B2B", False),
+        ("2eme", False), ("2nde", False), ("3rd", False), ("2emes", False), ("2iem", False),
     ],
 )  # fmt: skip
 def test_arabizi_words(word: str, expected: bool) -> None:
@@ -360,6 +361,9 @@ def test_a_cue_joins_a_digit_initial_surname() -> None:
     [
         ("Rdv m3a 3abd-allah", {"3abd-allah": ("person", 0.3)}, ["3abd-allah"]),
         ("Rdv m3a 2eme groupe", {"2eme groupe": ("person", 0.3)}, []),  # an ordinal, not a name
+        ("Rdv m3a 2nde groupe", {"2nde groupe": ("person", 0.3)}, []),
+        ("Rdv m3a 3LI ghodwa", {"3LI": ("person", 0.3)}, ["3LI"]),
+        ("m3a l'3asr", {"l'3asr": ("person", 0.3)}, []),  # only the first part counts
         ("m3a Sami fel bureau", {"Sami": ("person", 0.3), "fel bureau": ("person", 0.3)}, ["Sami"]),
         (
             "Rdv m3a Sami ali y7eb Mariem",
