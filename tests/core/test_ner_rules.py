@@ -133,22 +133,24 @@ _OPEN_WORDS = ["Mo3ez", "Mo7sen", "Na3ima", "Ka3bi", "Bel7aj", "3li", "yfar7ek",
 _PARTICLES = PARTICLES | ABD_PREFIXES
 
 
-@given(st.lists(st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, "Sami", "Hamza", "سامي", "Ben"]), max_size=6))
+_OPEN_LOWER = [w.lower() for w in _OPEN_WORDS]
+
+
+@given(
+    st.lists(
+        st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, *_OPEN_LOWER, "Sami", "Hamza", "سامي", "Ben"]),
+        max_size=6,
+    )
+)
 def test_cleaning_removes_only_closed_list_words(words: list[str]) -> None:
     span = " ".join(words)
     kept = {(m.start(), m.end()) for m in re.finditer(r"\S+", span)}
     for a, b in clean(span, 0, len(span)):
         kept -= {(s, e) for s, e in kept if a <= s and e <= b}
-    for s, e in kept:
-        word, i = span[s:e], [m.start() for m in re.finditer(r"\S+", span)].index(s)
-        # A trailing particle is dropped too (`Hamza el`, `Sami Ben`): also a closed list.
-        if never_name(word) or normalize(word).text in _PARTICLES:
-            continue
-        # The one open case: a lowercase Arabizi word between two capitalized words (`Sami y7eb Ali`).
-        assert word[0].islower(), word
-        assert arabizi(word), word
-        assert words[i - 1][0].isupper(), span
-        assert words[i + 1][0].isupper(), span
+    removed = [span[s:e] for s, e in kept]
+    # A trailing particle is dropped too (`Hamza el`, `Sami Ben`): also a closed list.
+    assert all(never_name(w) or normalize(w).text in _PARTICLES for w in removed)
+    assert not any(w in _OPEN_WORDS or w in _OPEN_LOWER for w in removed)
 
 
 @pytest.mark.parametrize(
@@ -165,33 +167,32 @@ def test_a_name_written_with_digits_is_masked_whole(text: str, predicted: str, f
     assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == found
 
 
-def test_a_verb_between_two_names_still_separates_them() -> None:
-    assert [f for f, _, _ in detect({"Sami y7eb Ali": ("person", 0.95)}, "Sami y7eb Ali barcha")] == [
-        "Sami",
-        "Ali",
-    ]
-    nona = per_message(
-        {
-            "Sami y7eb Ali barcha": [("Sami y7eb Ali", "person", 0.95)],
-            "Sami w Ali jew": [("Sami", "person", 0.9), ("Ali", "person", 0.9)],
-        }
-    )
-    texts = nona.anonymize_messages(["Sami y7eb Ali barcha", "Sami w Ali jew"]).texts
-    assert texts == ("PERSON_1 y7eb PERSON_2 barcha", "PERSON_1 w PERSON_2 jew")
-    # Not between two capitalized words: it may be a name, so it stays masked.
-    assert [f for f, _, _ in detect({"Na3ima ka3bi": ("person", 0.95)}, "Na3ima ka3bi")] == ["Na3ima ka3bi"]
+@pytest.mark.parametrize(
+    ("text", "predicted"),
+    [
+        ("Rdv m3a Na3ima ka3bi Ben Salah ghodwa", "Na3ima ka3bi Ben Salah"),  # a lowercase surname
+        ("Mo3ez ka3bi Trabelsi passe", "Mo3ez ka3bi Trabelsi"),
+        ("Rdv m3a Mme na3ima Trabelsi", "na3ima Trabelsi"),  # after an honorific
+        ("Dr mo3ez Ben Salah", "mo3ez Ben Salah"),
+    ],
+)
+def test_a_lowercase_name_word_inside_a_span_stays_masked(text: str, predicted: str) -> None:
+    assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == [predicted]
 
 
 @pytest.mark.parametrize(
     ("text", "predicted", "found"),
     [
-        ("Rdv m3a Hazem y7ki", "Hazem y7ki", "Hazem"),  # an unlisted lowercase word in a low span
+        ("Rdv m3a Hazem y7ki", "Hazem y7ki", "Hazem y7ki"),  # kept whole: `y7ki` might be a name
+        ("Rdv m3a Na3ima ka3bi", "Na3ima ka3bi", "Na3ima ka3bi"),  # a lowercase surname
+        ("Rdv m3a Hazem Ben y7ki", "Hazem Ben y7ki", "Hazem Ben y7ki"),
+        ("Rdv m3a y7ki Hazem", "y7ki Hazem", "y7ki Hazem"),
         ("Hazem 3ayetli el bera7", "Hazem 3ayetli", "Hazem"),  # a speech verb inside the span
         ("Hazem b3athli el mail", "Hazem b3athli", "Hazem"),
         ("Hazem 9alt", "Hazem 9alt", "Hazem"),
     ],
 )
-def test_a_low_span_keeps_its_capitalized_name(text: str, predicted: str, found: str) -> None:
+def test_a_low_span_with_a_capital_is_kept_whole(text: str, predicted: str, found: str) -> None:
     assert detect({predicted: ("location", 0.3)}, text) == [(found, EntityType.PERSON, 0.5)]
 
 

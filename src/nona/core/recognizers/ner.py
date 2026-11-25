@@ -24,10 +24,9 @@ What this layer adds on top of the model:
   lists: honorifics (`Mme Islem` → `Islem`, `بالسيدة` too), the gazetteer's stopwords and pronouns (`I` in
   `I'll`), and Darija words (`NEVER_NAMES`: `nomrou`, `Behi`, `9alli`). An unlisted word stays masked,
   over-masked rather than leaked (fail closed, ADR-0003): names are written with Arabizi digits too (`Mo3ez`,
-  `Na3ima Ka3bi`), so a word with digits is no sign of a non-name. One exception: a lowercase Arabizi word
-  between two capitalized words joins two people (`Sami y7eb Ali`), so the span is cut there. Each piece left
-  with a word of two letters or more is a span; a trailing particle is dropped. A listed name behind Arabic
-  clitics loses them (`وسامي` → `سامي`), as in the gazetteer.
+  `Na3ima Ka3bi`), so a word with digits is no sign of a non-name. Each piece left with a word of two letters
+  or more is a span; a trailing particle is dropped. A listed name behind Arabic clitics loses them (`وسامي` →
+  `سامي`), as in the gazetteer.
 - **Types** (ADR-0008, condition 1). The model often calls a person a place, and an Arabizi chunk a place.
   A LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city,
   is a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a
@@ -38,10 +37,10 @@ What this layer adds on top of the model:
   applies, and look-ahead only spreads words from confident spans (0.8, ADR-0004).
 - **Cue-backed low scores** (deep dive A, layer 4: a context cue raises a weak candidate). In Arabizi the
   model often finds a name but scores it under 0.5 (`Hazem 9alli`: 0.46). A span from `cued_threshold` (0.2)
-  up keeps its runs of capitalized words (Arabic always passes: `m3a Hazem y7ki` → `Hazem`), each kept as a
-  PERSON scored at the threshold when a cue backs it: a person cue before it, or a speech verb right after it
-  (`9alli`, `قالي`, `said`, from #50's list). A cued span takes in the capitalized span right after it, spaces
-  only between: in `m3a Mootez Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
+  up is kept, as a PERSON scored at the threshold, when it has a capitalized word (Arabic always passes) and a
+  cue backs it: a person cue before it, or a speech verb right after it (`9alli`, `قالي`, `said`, from #50's
+  list). A cued span takes in the capitalized span right after it, spaces only between: in `m3a Mootez
+  Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
 
 A model error propagates; the pipeline turns it into `DetectorError` (fail closed, ADR-0003).
 """
@@ -203,8 +202,8 @@ class NerRecognizer:
                         continue
                     # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
                     parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
-                    if low:  # an unsure span keeps only what looks like a name
-                        parts = [run for part in parts for run in _capitalized_runs(text, *part)]
+                    if low:  # an unsure span needs a capital to look like a name; then it is kept whole
+                        parts = [x for x in parts if any(map(_capitalized, _SPAN_WORD.findall(text, *x)))]
                     for a, b in parts:
                         if low:
                             key, score = (a, b, EntityType.PERSON), self._threshold
@@ -338,8 +337,8 @@ def clean(text: str, start: int, end: int, *, person: bool = True) -> list[tuple
     Honorifics cut only a PERSON span (`person`)."""
     words = [(m.start(), m.end()) for m in _SPAN_WORD.finditer(text, start, end)]
     pieces: list[list[tuple[int, int]]] = [[]]
-    for i, (a, b) in enumerate(words):
-        if never_name(text[a:b], honorific=person) or _between_names(text, words, i):
+    for a, b in words:
+        if never_name(text[a:b], honorific=person):
             pieces.append([])
         else:
             pieces[-1].append((a, b))
@@ -356,18 +355,6 @@ def clean(text: str, start: int, end: int, *, person: bool = True) -> list[tuple
             a = _past_letters(text, a, clitics)
         out.append((a, piece[-1][1]))
     return out
-
-
-def _between_names(text: str, words: Sequence[tuple[int, int]], i: int) -> bool:
-    """An unlisted lowercase Arabizi word between two capitalized Latin words: a verb joining two people
-    (`Sami y7eb Ali`), not part of a name. Elsewhere such a word may be a name (`Na3ima ka3bi`) and stays."""
-    word = text[words[i][0] : words[i][1]]
-    if not (0 < i < len(words) - 1 and word[0].islower() and arabizi(word)):
-        return False
-    tokens = canonical_tokens(word)
-    if tokens and tokens <= NAMES:
-        return False
-    return all(_latin(text[words[j][0]]) and text[words[j][0]].isupper() for j in (i - 1, i + 1))
 
 
 def _past_letters(text: str, i: int, n: int) -> int:
@@ -437,22 +424,6 @@ def _listed_first_name(surface: str) -> bool:
         and not any(common(t, _cased(m.group())) for t in tokens)
         for m in _SPAN_WORD.finditer(surface)
     )
-
-
-def _capitalized_runs(text: str, start: int, end: int) -> list[tuple[int, int]]:
-    """The runs of capitalized words in a span, each with a word of two letters or more: a low-score span
-    keeps only what looks like a name (`Hazem y7ki` → `Hazem`)."""
-    runs: list[list[tuple[int, int]]] = [[]]
-    for m in _SPAN_WORD.finditer(text, start, end):
-        if _capitalized(m.group()):
-            runs[-1].append(m.span())
-        elif runs[-1]:
-            runs.append([])
-    return [
-        (run[0][0], run[-1][1])
-        for run in runs
-        if any(sum(c.isalpha() for c in text[a:b]) >= 2 for a, b in run)
-    ]
 
 
 def _capitalized(surface: str) -> bool:
