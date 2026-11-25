@@ -51,13 +51,11 @@ def test_the_pinned_model_loads_offline(recognizer: NerRecognizer) -> None:
     ("text", "name"),
     [
         ("Rendez-vous demain avec Chiheb Drira au bureau.", "Chiheb Drira"),
-        pytest.param(
-            "3andi rendez-vous m3a Mootez Jaouadi ghodwa",
-            "Mootez Jaouadi",
-            # In Arabizi the model calls the name a place, under the threshold (0.38), and with a final period
-            # takes `Mootez Jaouadi ghodwa` as one location (0.59): ADR-0008 conditions 1 and 2, #72 part 2.
-            marks=pytest.mark.xfail(reason="Arabizi: name typed as a location, low score", strict=True),
-        ),
+        # Arabizi: on the original text the model calls the name a place under the threshold (0.38), and
+        # with a final period takes `Mootez Jaouadi ghodwa` as one location (0.59). The de-Arabizi'd view,
+        # the `m3a` cue joining the pieces (0.25 and 0.42) and span cleaning make it one PERSON (#72 part 2).
+        ("3andi rendez-vous m3a Mootez Jaouadi ghodwa", "Mootez Jaouadi"),
+        ("3andi rendez-vous m3a Mootez Jaouadi ghodwa.", "Mootez Jaouadi"),
         ("موعد مع إسلام الشتيوي غدا", "إسلام الشتيوي"),
     ],
 )

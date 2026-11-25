@@ -1,6 +1,6 @@
 # ADR-0008: NER model choice
 
-- Status: **Proposed** (S4 spike, #71). Becomes Accepted when the recognizer (#72) meets the conditions below.
+- Status: **Proposed** (S4 spike, #71). Becomes Accepted when the recognizer (#72) meets the conditions below. Part 2 (quality) addressed conditions 1 and 2; 3 and 4 are part 3.
 - Date: 2026-11-23
 - Related: [deep dive A](../design/04-deep-dives.md#a-detection-in-mixed-french--arabic--darija--arabizi) (layer 2), [ADR-0004](0004-causal-entity-linking.md), [ADR-0007](0007-release-supply-chain.md), NFR-3, NFR-6, NFR-7, NFR-12
 
@@ -85,6 +85,31 @@ Pinned too: the tokenizer from `microsoft/mdeberta-v3-base` (MIT) at `a0484667b2
 - `nona bench --systems nona-ner` runs it; `pytest -m model` tests the real model (deselected by default). With pip, CPU-only torch is installed from its own index with `--index-url`, not `--extra-index-url`, which would let pip take a package from either index. It is **not** in the default pipeline.
 
 On `dev` (`nona-ner`): direct leak 2.1%, held-out PERSON 6.2%, over-masked tokens 5.4% (honorific trimming, from 6.3%), PERSON wrong split 26.2%, ambiguity 18.6%. A real-model test records the Arabizi case behind conditions 1 and 2: in `3andi rendez-vous m3a Mootez Jaouadi ghodwa` the model calls the name a place at 0.38, and with a final period takes `Mootez Jaouadi ghodwa` as one location at 0.59.
+
+## Implementation (#72, part 2: quality)
+
+Conditions 1 and 2, measured on `dev` with `nona-ner` (same data, model and threshold as part 1):
+
+| | Direct leak | Held-out PERSON | Re-sent turns | Over-masked tokens | Distractors | PERSON wrong split | Ambiguity |
+|---|---|---|---|---|---|---|---|
+| Part 1 | 2.1% (6/284) | 6.2% (6/96) | 3.6% | 5.4% (148/2754) | 14.5% (10/69) | 26.2% (16/61) | 18.6% (29/156) |
+| **Part 2** | **1.4%** (4/284) | **4.2%** (4/96) | 3.6% | **0.8%** (23/2754) | 13.0% (9/69) | **4.9%** (3/61) | **3.8%** (6/156) |
+
+Still no wrong merge (0/95). The default `nona` system (no model) gives byte-identical results.
+
+What did it, in [`ner.py`](../../src/nona/core/recognizers/ner.py) (one message) and [`pipeline.py`](../../src/nona/core/pipeline.py) (the conversation):
+
+- **The de-Arabizi'd view** (condition 2), tried as asked: the model reads the text with each Arabizi digit replaced by one letter (`3andi` → `aandi`), so offsets don't move. On its own it took leaks from 2.1% to 1.8%, over-masked tokens from 5.4% to 5.0% and wrong splits from 26.2% to 21.3%. Capitalizing listed lowercase names as well didn't help. Combining spans from the original and the view (the build plan's wording) caught one more held-out name (leak 1.1%) and changed nothing else, for a second model call on every Arabizi message: left to part 3, which has the latency numbers.
+- **Span cleaning** (condition 2): model spans are cut at words that are never names: honorifics, also behind an Arabic clitic (`بالسيدة`), the gazetteer's stopwords and pronouns (`I`, `Il`, `Je`), a list of Darija words in Latin and Arabic script (`NEVER_NAMES` in `gazetteer_data.py`: `nomrou`, `Behi`, `باهي`, `نومرو`), and Arabizi words with digits that aren't listed names (`9alli`, `y3aychek`). A listed name behind Arabic clitics loses them (`وسامي`). This is most of the over-masking drop, and the Arabic splits: `نومرو زكرياء` had made the person absorb "number".
+- **Types** (condition 1). The model's LOCATION spans on `dev` were 7 places, 16 persons and 36 Arabizi chunks; its ORGANIZATION spans included 6 persons, which policy `KEEP` would have sent in clear. A LOCATION or ORGANIZATION with a listed first name (not a common word, not a listed city, not after `rue`, `شارع`…) is a PERSON; a LOCATION after a person cue (`m3a`, `with`, a greeting, an honorific) too; a lowercase LOCATION that isn't a listed city is dropped. In the conversation: a model LOCATION that fits a known person, or follows one with `and` between, is a PERSON, and an ORGANIZATION whose tokens all belong to known people too (`Clinique Ahmed Ben Salem` stays an organization). A propagated name beats any other span with the same extent, so a name keeps the placeholder, and the type, it was first given. A model span that is a known form behind clitics (`لزكرياء`) is aligned with it.
+- **Cue-backed low scores** (deep dive A, layer 4). In Arabizi the model often scores a name under 0.5 (`Hazem 9alli`: 0.46). From 0.2 up, a capitalized span backed by a person cue before it or a speech verb after it (#50's `9alli`, `قالي`) is kept at the threshold score, and joins the capitalized piece right after it. The real-model test that was a strict xfail in part 1, `3andi rendez-vous m3a Mootez Jaouadi ghodwa`, now passes, with and without the final period.
+
+Left, and why:
+
+- **Splits: 3 of 61, all ADR-0004's two-entity case.** One template, three times: `Dr Zghal`, then `Chirine`, then `Chirine Zghal`, which fits both earlier entities and gets its own placeholder. Under ADR-0004's freeze no linking rule can bring these to zero: both placeholders were sent before the full name. Whether to reopen ADR-0004 (for example, writing the full name as its parts' placeholders, `PERSON_2 PERSON_1`, which adds no new person) is the owner's decision.
+- **Leaks: 4 held-out mentions**, all bare first names the model doesn't find even at 0.2: `غيث` twice in Arabic (an unlisted Arabic word is never spread from its full name, by design since #55), a lowercase Arabizi `bacem`, and `Chiheb 9alli` after two Chihebs were named. Re-sent assistant turns leak 5 of 139, the same bare names.
+- **Distractors: 9 of 69.** `m3a Ooredoo` (masked before too, now as a PERSON: `m3a` is a person cue), and `رمضان كريم`, `اللهم آمين`, which the gazetteer masks; #50 (Arabic common-word names need context) covers those.
+- `NEVER_NAMES` and the speech verbs are a first list, to be checked by a native speaker as #50's were. Everything here was tuned on `dev`: #75 checks it once on the frozen `test`.
 
 ## Consequences
 

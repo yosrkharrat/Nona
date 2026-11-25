@@ -84,7 +84,7 @@ S1 benchmark ─► S2 structured PII ─► S3 linking ─► S4 GLiNER + froze
 - **Spike:** `gliner_multi-v2.1` vs `gliner_multi_pii-v1` on `dev`, per language. The result is **ADR-0008 (NER model choice)**, and the licenses go in `THIRD_PARTY.md`.
 - An NER recognizer:
   - loaded once and run off the event loop
-  - spans from the original text and the de-Arabizi'd view are combined
+  - the model reads the de-Arabizi'd view (combining it with the original text is measured in ADR-0008, and decided with the latency numbers)
   - weights come only through `nona models pull` (NFR-3)
   - tests are marked `model` and run in their own CI job with the model cached
 - The dataset reaches the 05 §7 targets:

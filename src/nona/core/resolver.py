@@ -10,7 +10,9 @@ CIN on the same 8 digits). The resolver:
    (`Sami Trabelsi PERSON_1` → `Sami Trabelsi`; `Sami PERSON_1 Trabelsi` → `Sami` and `Trabelsi`): a detection
    that swallowed one would replace it, and its text would end up in the mapping. A structured value is never
    cut: `PERSON_1@example.com` is one email;
-4. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
+4. keeps non-overlapping spans greedily: longest first, then a propagated name over any other span with the
+   same extent (a name keeps the placeholder, and the type, it was first given: ADR-0004, ADR-0008), then
+   type priority, then score, then `Span.sort_key`.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -100,8 +102,9 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
     return re.compile(left + re.escape(surface.strip()) + right), False
 
 
-def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:
-    return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
+def _rank(span: Span) -> tuple[int, bool, int, float, tuple[int, int, str, float, str]]:
+    known = span.detector == "propagation" and span.type in NAME_TYPES
+    return (-len(span), not known, -PRIORITY[span.type], -span.score, span.sort_key())
 
 
 def placeholder_holes(original: str) -> list[tuple[int, int]]:

@@ -13,17 +13,31 @@ Look-ahead only spreads words that a confident detection vouches for:
 - a propagated form spreads only the words its person was vouched for when first found (its seeds,
   `core/linking.py`).
 
+A model's span types and edges are corrected with what the conversation knows (ADR-0008, condition 1; the
+message-local rules are in `core/recognizers/ner.py`):
+- a LOCATION or ORGANIZATION span from the NER model that fits a known person becomes a PERSON. A
+  LOCATION fits when its name tokens contain a known person's or are contained in them (`Bacem Hachicha`
+  after `Bacem`), or when it follows a person with only `and` between them (`m3a Hazem Boukadida w Hazem
+  Drira`). An ORGANIZATION fits only when every token belongs to known people, so `Clinique Ahmed Ben
+  Salem` stays an organization. A listed city never changes type;
+- a model span that is a known form with Arabic clitics in front (`لزكرياء` after `زكرياء`) loses them, as
+  propagation does, so it links to that form;
+- the resolver keeps a propagated form over a recognizer span with the same extent and another type
+  (`core/resolver.py`), so a name keeps the placeholder it was given.
+
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
+from nona.core.boundaries import PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
-from nona.core.canonical import canonical_tokens, name_words
+from nona.core.canonical import canonical_tokens, compatible, name_words
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
@@ -37,6 +51,7 @@ from nona.core.pseudonymize import (
 )
 from nona.core.recognizers import Recognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES, common
+from nona.core.recognizers.ner import NER
 from nona.core.resolver import (
     cut_at_placeholders,
     denylist_spans,
@@ -51,11 +66,61 @@ from nona.core.types import EntityType, Span
 LOOK_AHEAD_MIN_SCORE = 0.8
 GAZETTEER = "gazetteer"
 STRONG_CUE_SCORE = 0.95  # what the gazetteer gives a run after a strong cue (`M.`, `je m'appelle`)
+# Between two names of one list of people: `Sami w Ahmed`, `Sami et Ahmed`, `سامي و أحمد`.
+_AND = re.compile(r"[ \t]+(?:w|wa|et|and|و)[ \t]+")
+_RETYPED = frozenset({EntityType.LOCATION, EntityType.ORGANIZATION})
 
 
 def _cased(word: str) -> bool:
     """Whether the word's script has capitals (Latin, Cyrillic…), as opposed to Arabic."""
     return any(c.lower() != c.upper() for c in word)
+
+
+def _as_people(
+    text: str, recognized: Sequence[Span], known: Sequence[tuple[EntityType, str]], propagated: Sequence[Span]
+) -> list[Span]:
+    """Model LOCATION and ORGANIZATION spans that fit a known person, as PERSON (module docstring)."""
+    people = [canonical_tokens(surface) for etype, surface in known if etype is EntityType.PERSON]
+    people += [canonical_tokens(s.text_in(text)) for s in propagated if s.type is EntityType.PERSON]
+    people += [canonical_tokens(s.text_in(text)) for s in recognized if s.type is EntityType.PERSON]
+    people = [t for t in people if t]
+    if not people:
+        return list(recognized)
+    every = frozenset[str]().union(*people)
+    places = [s for s in recognized if s.detector == GAZETTEER and s.type is EntityType.LOCATION]
+    persons = sorted((s for s in recognized if s.type is EntityType.PERSON), key=lambda s: s.end)
+    out: list[Span] = []
+    for s in recognized:
+        if s.type in _RETYPED and s.detector == NER and not any(s.overlaps(p) for p in places):
+            tokens = canonical_tokens(s.text_in(text))
+            if s.type is EntityType.ORGANIZATION:
+                fits = bool(tokens) and tokens <= every
+            else:
+                fits = any(compatible(tokens, t) for t in people) or any(
+                    _AND.fullmatch(text, p.end, s.start) for p in persons if p.end < s.start
+                )
+            if fits:
+                s = Span(s.start, s.end, EntityType.PERSON, s.score, s.detector)
+        out.append(s)
+    return out
+
+
+def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[Span]) -> list[Span]:
+    """A recognizer name span that is a propagated form behind one or two Arabic clitics starts at the form
+    (module docstring), so `لزكرياء` links to `زكرياء` and restores with its clitic in place."""
+    starts = {(p.start, p.end) for p in propagated}
+    out: list[Span] = []
+    for s in recognized:
+        for n in (1, 2):
+            if (
+                s.detector != GAZETTEER
+                and (s.start + n, s.end) in starts
+                and all(c in PROCLITICS for c in text[s.start : s.start + n])
+            ):
+                s = Span(s.start + n, s.end, s.type, s.score, s.detector)
+                break
+        out.append(s)
+    return out
 
 
 class DetectorError(RuntimeError):
@@ -108,8 +173,10 @@ class Nona:
         """Resolved spans, and the seeds of each PERSON span (see the module docstring). `seeds` are the
         earlier messages' (`Pseudonymizer.seeds`)."""
         doc = normalize(text)
+        known = list(known)
         propagated = known_spans(doc, known)
         recognized = self._recognize(doc, text)
+        recognized = _behind_clitics(text, _as_people(text, recognized, known, propagated), propagated)
         candidates: list[Span] = denylist_spans(doc, self._denylist) + propagated
         # A span kept as is (an ORGANIZATION, by default) must not hide a value already masked earlier:
         # `Clinique Ahmed Ben Salem` after `Ahmed Ben Salem` was issued would send the name in clear.

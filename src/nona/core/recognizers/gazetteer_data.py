@@ -102,3 +102,32 @@ CITIES: tuple[str, ...] = (
 
 # Cities that are also words or names: matched only with a capital letter (deep dive A).
 COMMON_CITIES: tuple[str, ...] = ("Nice", "Douz", "Korba", "Ennasr", "Lac 2", "Carthage")
+
+# Darija words that are never a name, in Latin letters and Arabic script (ADR-0008, condition 2). The NER
+# model takes them into names or tags them alone (`nomrou Zakaria`, `Behi`, `Aymen 9alli`), so a model span is
+# cut at them. Pronouns, function and question words, and frequent words of requests and replies. Arabizi
+# words with digits (`9alli`, `y3aychek`) need no entry: an unlisted one is never a name (`ner.py`). French
+# and English stopwords are the gazetteer's `STOPWORDS`.
+NEVER_NAMES: tuple[str, ...] = (
+    # pronouns
+    "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa", "rani", "rahi",
+    "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
+    # function and question words
+    "w", "wa", "wala", "walla", "ama", "ken", "kan", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "mel",
+    "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "win", "wa9tech", "9adech",
+    "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
+    # time
+    "taw", "tawa", "lyoum", "ghodwa", "ba3d", "9bal", "lbare7", "توا", "اليوم", "غدوة", "بعد", "قبل",
+    # replies, thanks, blessings
+    "behi", "bahi", "barcha", "yesser", "yezzi", "zeda", "zada", "ey", "eyh", "iyeh", "aslema", "ahla",
+    "marhba", "rabbi", "inchallah", "nchallah", "hamdoulah", "sahit", "y3aychek", "ya3tik",
+    "باهي", "برشا", "يسر", "يزي", "زادة", "إيه", "اي", "اهلا", "مرحبا", "ربي", "إنشاء", "يعيشك", "يعطيك",
+    # people
+    "rajel", "mra", "راجل", "مرا",
+    # things people ask for
+    "nomrou", "noumrou", "numrou", "nmrou", "rendez", "rdv", "mail", "contrat", "flous",
+    "نومرو", "النومرو", "رقم", "الرقم", "موعد", "العقد", "فلوس",
+    # speech and contact verbs, which #50 uses as cues around a name
+    "kallem", "kallamt", "kallemt", "kallamni", "9alli", "9al", "9alet", "ja", "jet", "mcha", "mchet",
+    "قالي", "قال", "قالت", "كلم", "كلمني", "عيطلي", "جا", "جات", "مشى", "مشات",
+)  # fmt: skip
