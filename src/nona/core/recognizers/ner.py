@@ -33,10 +33,12 @@ What this layer adds on top of the model:
   LOCATION or ORGANIZATION span with a listed first name that isn't a common word, and isn't a listed city, is
   a PERSON (`Bilel Gharbi`); so is a LOCATION right after a person cue (`m3a Hazem Drira`, `with`, a greeting,
   an honorific). A LOCATION in lowercase Latin letters is dropped unless it is a listed city: `nomrou`,
-  `ykhdmou 24/24`, `jardin` were the model's, and no gold place was. A place or organization span is first cut
-  at the listed cities in it (`Sami ya5dem Sfax` → `Sami ya5dem`, a person, and `Sfax`, a place), unless a
-  head word names it (`rue de Sfax`); a lowercase city word counts (`sfax 5ater`). The conversation-level rule
-  (a span that fits a known person) is in `core/pipeline.py`.
+  `ykhdmou 24/24`, `jardin` were the model's, and no gold place was. A place span, an organization holding a
+  person, and a low-score person span are first cut at the listed cities in them (`Sami ya5dem Sfax` → `Sami
+  ya5dem`, a person, and `Sfax`, a place), unless a head word names them (`rue de Sfax`); a lowercase city
+  word counts (`sfax 5ater`). What a city was cut from stays masked, lowercase too (`mootez trabelsi`), and an
+  organization's rest is taken for a person. The conversation-level rule (a span that fits a known person) is
+  in `core/pipeline.py`.
 - **A threshold** (ADR-0008: 0.5). A span keeps the model's score, so the resolver's `min_score` still
   applies, and look-ahead only spreads words from confident spans (0.8, ADR-0004).
 - **Cue-backed low scores** (deep dive A, layer 4: a context cue raises a weak candidate). In Arabizi the
@@ -131,7 +133,7 @@ _WORD_JOINERS = re.compile(r"['\u2019-]")
 # French and English ordinals (`2eme`, `2nd`): not Arabizi. Not `er`, `em`, `rd` or `nd` after a 3, which
 # Darija words are (`5er`, `3em`, `3rd` "offer", `3nd` "at").
 _ORDINAL = re.compile(r"\d+(?:emes?|iemes?|iems?|ndes?)|2nds?|[579]ths?", re.IGNORECASE)
-RULES_VERSION = 14  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 15  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -191,7 +193,7 @@ class NerRecognizer:
     def detect(self, doc: NormalizedDoc) -> list[Span]:
         text = doc.original
         view = model_view(text)
-        places: list[tuple[int, int]] | None = None  # listed cities, original offsets: computed when needed
+        places = [doc.to_original(s, e) for s, e, _ in cities(doc)]  # listed cities, original offsets
         best: dict[tuple[int, int, EntityType], float] = {}
         cued: set[tuple[int, int, EntityType]] = set()
         pieces: set[tuple[int, int, EntityType]] = set()  # uncued low spans, kept only once joined
@@ -202,16 +204,14 @@ class NerRecognizer:
                 if etype is None or p.score < self._cued or not 0 <= p.start < p.end <= w_end - w_start:
                     continue
                 start, end = w_start + p.start, w_start + p.end
-                if etype is not EntityType.PERSON and places is None:
-                    places = [doc.to_original(s, e) for s, e, _ in cities(doc)]
                 low = p.score < self._threshold
-                segments = (
+                segments = (  # a confident person is never cut at a city (`Ariana Ben Salah`)
                     [(start, end, False)]
-                    if etype is EntityType.PERSON
-                    else _split_at_cities(text, start, end, places or [])
+                    if etype is EntityType.PERSON and not low
+                    else _split_at_cities(text, start, end, places)
                 )
                 if etype is EntityType.ORGANIZATION and not any(  # split only to free a person
-                    retype(text, *x, etype, places or [], cue_at=start) is EntityType.PERSON
+                    retype(text, *x, etype, places, cue_at=start) is EntityType.PERSON
                     for a, b, city in segments
                     if not city
                     for x in clean(text, a, b, person=False)
@@ -222,17 +222,15 @@ class NerRecognizer:
                     for a, b, city in segments
                     for x in clean(text, a, b, person=etype is EntityType.PERSON, confident=not low)
                 ):
-                    t = (
-                        EntityType.LOCATION
-                        if city
-                        else retype(text, *piece, etype, places or [], cue_at=start)
-                    )
-                    if t is None and len(segments) > 1:  # what a city was cut from stays masked
-                        t = etype
-                    if low and t is not None and _place(text, *piece, places or []):
+                    t = EntityType.LOCATION if city else retype(text, *piece, etype, places, cue_at=start)
+                    if len(segments) > 1 and not city and t in (None, EntityType.ORGANIZATION):
+                        # What a city was cut from stays masked: an organization was only cut to free a
+                        # person, so the rest is taken for one too (`Kharroubi sfax Sami`).
+                        t = EntityType.PERSON if etype is EntityType.ORGANIZATION else etype
+                    if low and t is not None and _place(text, *piece, places):
                         # A name after a place's own name: `m3a Pharmacie Hannibal Mootez` → `Mootez`.
                         tail = _after_head_name(text, *piece)
-                        if tail is None or _place(text, *tail, places or []):
+                        if tail is None or _place(text, *tail, places):
                             continue
                         piece, t = tail, EntityType.PERSON
                     if t is None or (low and t is EntityType.ORGANIZATION):

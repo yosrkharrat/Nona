@@ -311,6 +311,26 @@ def test_what_a_city_does_not_split(text: str, predicted: str, found: list[tuple
     assert [(f, t.value) for f, t, _ in detect({predicted: (label, 0.9)}, text)] == found
 
 
+@pytest.mark.parametrize(
+    ("text", "predictions", "leaked"),
+    [
+        ("Kharroubi sfax Sami", [("Kharroubi sfax Sami", "organization", 0.8)], "Kharroubi"),
+        (
+            "m3a Sami Bel7aj Sfax ghodwa f Tunis",
+            [("Tunis", "location", 0.9), ("Sami Bel7aj Sfax", "person", 0.3)],
+            "Sami",
+        ),
+        ("m3a Sami 3li Sfax ghodwa", [("Sami 3li Sfax", "person", 0.3)], "3li"),
+        ("m3a Sami 3li Sfax f Tunis", [("Tunis", "location", 0.9), ("Sami 3li Sfax", "person", 0.3)], "3li"),
+    ],
+)
+def test_a_name_next_to_a_city_stays_masked(
+    text: str, predictions: list[tuple[str, str, float]], leaked: str
+) -> None:
+    out = per_message({text: predictions}).anonymize_messages([text]).texts[0]
+    assert leaked not in out, out
+
+
 def test_a_city_that_is_also_a_word_needs_a_capital() -> None:
     assert _city_word("Douz")
     assert _city_word("sfax")
