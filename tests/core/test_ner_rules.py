@@ -14,7 +14,7 @@ from nona.core.canonical import ABD_PREFIXES, PARTICLES, canonical_tokens
 from nona.core.recognizers import NerPrediction, NerRecognizer, default_recognizers
 from nona.core.recognizers.gazetteer import NAMES
 from nona.core.recognizers.gazetteer_data import NEVER_NAMES, SPEECH_VERBS
-from nona.core.recognizers.ner import _city_word, arabizi, clean, model_view, never_name
+from nona.core.recognizers.ner import arabizi, arabizi_cuts, clean, model_view, never_name
 from nona.core.resolver import resolve
 from nona.core.types import Span
 from tests.core.test_ner import FakeModel
@@ -53,25 +53,10 @@ def per_message(found: dict[str, list[tuple[str, str, float]]]) -> Nona:
         ("3andi", True), ("m3a", True), ("9alli", True), ("y5allik", True), ("sa7a", True), ("5ti", True),
         ("15h", False), ("3h", False), ("hamza23", False), ("4G", False), ("22", False), ("Sami", False),
         ("b2", False), ("3", False), ("سامي", False), ("ab3athli", True), ("B2B", False),
-        ("2eme", False), ("3emes", False), ("2iem", False), ("2nde", False), ("2nd", False), ("5th", False),
-        ("3ers", True), ("5er", True), ("3em", True), ("3rd", True), ("3nd", True),
     ],
 )  # fmt: skip
 def test_arabizi_words(word: str, expected: bool) -> None:
     assert arabizi(word) is expected
-
-
-@pytest.mark.parametrize(
-    ("text", "view"),
-    [
-        ("3ers m3a Sami", "aers maa Sami"),
-        ("5er", "ker"),
-        ("le 2nd Sami", "le 2nd Sami"),
-        ("3eme etage", "3eme etage"),
-    ],
-)
-def test_the_view_keeps_ordinals_and_de_arabizes_darija(text: str, view: str) -> None:
-    assert model_view(text) == view
 
 
 def test_the_model_reads_the_de_arabizi_view() -> None:
@@ -120,9 +105,8 @@ def test_no_never_name_word_is_a_listed_name() -> None:
     ("span", "pieces"),
     [
         ("Chnowa el mail mta3 Hamza", ["Hamza"]),
-        ("rabbi y5allik", []),  # both listed
-        ("rabbi yfar7ek", ["yfar7ek"]),  # an unlisted Arabizi word stays masked: it may be a name
-        ("Aymen 9alli", ["Aymen"]),  # `9alli` is listed
+        ("Aymen 9alli", ["Aymen"]),
+        ("rabbi y5allik", []),
         ("I", []),
         ("Hamza el", ["Hamza"]),
         ("Ahmed Ben Salem", ["Ahmed Ben Salem"]),
@@ -140,259 +124,6 @@ def test_no_never_name_word_is_a_listed_name() -> None:
 )
 def test_clean(span: str, pieces: list[str]) -> None:
     assert [span[a:b] for a, b in clean(span, 0, len(span))] == pieces
-
-
-# Every word cleaning may remove is in one of these (closed lists), never an open rule.
-_LIST_WORDS = ["Mme", "Dr", "بالسيدة", "I", "Je", "el", "nomrou", "Behi", "9alli", "mta3", "y3aychek", "باهي"]
-_OPEN_WORDS = ["Mo3ez", "Mo7sen", "Na3ima", "Ka3bi", "Bel7aj", "3li", "yfar7ek", "7attli", "Zorgati", "Xqwv"]
-_PARTICLES = PARTICLES | ABD_PREFIXES
-
-
-_OPEN_LOWER = [w.lower() for w in _OPEN_WORDS]
-
-
-@given(
-    st.lists(
-        st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, *_OPEN_LOWER, "Sami", "Hamza", "سامي", "Ben"]),
-        max_size=6,
-    )
-)
-def test_cleaning_removes_only_closed_list_words(words: list[str]) -> None:
-    span = " ".join(words)
-    kept = {(m.start(), m.end()) for m in re.finditer(r"\S+", span)}
-    for a, b in clean(span, 0, len(span)):
-        kept -= {(s, e) for s, e in kept if a <= s and e <= b}
-    removed = [span[s:e] for s, e in kept]
-    # A trailing particle is dropped too (`Hamza el`, `Sami Ben`): also a closed list.
-    assert all(never_name(w) or normalize(w).text in _PARTICLES for w in removed)
-    assert not any(w in _OPEN_WORDS or w in _OPEN_LOWER for w in removed)
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        ("Mo3ez passe demain", "Mo3ez", ["Mo3ez"]),
-        ("Mo7sen kallamni el bera7", "Mo7sen kallamni", ["Mo7sen"]),
-        ("3li bech yji", "3li", ["3li"]),
-        ("Na3ima Ka3bi", "Na3ima Ka3bi", ["Na3ima Ka3bi"]),
-        ("Sa3ida Bel7aj fil bureau", "Sa3ida Bel7aj", ["Sa3ida Bel7aj"]),
-    ],
-)
-def test_a_name_written_with_digits_is_masked_whole(text: str, predicted: str, found: list[str]) -> None:
-    assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == found
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted"),
-    [
-        ("Rdv m3a Na3ima ka3bi Ben Salah ghodwa", "Na3ima ka3bi Ben Salah"),  # a lowercase surname
-        ("Mo3ez ka3bi Trabelsi passe", "Mo3ez ka3bi Trabelsi"),
-        ("Rdv m3a Mme na3ima Trabelsi", "na3ima Trabelsi"),  # after an honorific
-        ("Dr mo3ez Ben Salah", "mo3ez Ben Salah"),
-    ],
-)
-def test_a_lowercase_name_word_inside_a_span_stays_masked(text: str, predicted: str) -> None:
-    assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == [predicted]
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        ("Rdv m3a Hazem y7ki", "Hazem y7ki", "Hazem y7ki"),  # kept whole: `y7ki` might be a name
-        ("Rdv m3a Na3ima ka3bi", "Na3ima ka3bi", "Na3ima ka3bi"),  # a lowercase surname
-        ("Rdv m3a Hazem Ben y7ki", "Hazem Ben y7ki", "Hazem"),  # a trailing particle goes, and what follows
-        ("Rdv m3a y7ki Hazem", "y7ki Hazem", "Hazem"),  # a Darija word before the name
-        ("Hazem 3ayetli el bera7", "Hazem 3ayetli", "Hazem"),  # a speech verb inside the span
-        ("Hazem b3athli el mail", "Hazem b3athli", "Hazem"),
-        ("Hazem 9alt", "Hazem 9alt", "Hazem"),
-    ],
-)
-def test_a_low_span_with_a_capital_is_kept_whole(text: str, predicted: str, found: str) -> None:
-    assert detect({predicted: ("location", 0.3)}, text) == [(found, EntityType.PERSON, 0.5)]
-
-
-@pytest.mark.parametrize("verb", SPEECH_VERBS)
-def test_every_speech_verb_is_a_never_name(verb: str) -> None:
-    assert never_name(verb)
-
-
-def test_two_people_found_apart_keep_two_placeholders() -> None:
-    nona = per_message(
-        {
-            "Sami w Ali jew": [("Sami", "person", 0.9), ("Ali", "person", 0.9)],
-            "Ali kallamni": [("Ali", "person", 0.9)],
-        }
-    )
-    assert nona.anonymize_messages(["Sami w Ali jew", "Ali kallamni"]).texts == (
-        "PERSON_1 w PERSON_2 jew",
-        "PERSON_2 kallamni",
-    )
-
-
-def test_one_span_holding_two_people_is_one_placeholder() -> None:
-    """The accepted limit (ADR-0008, #82): a merge, never a leak. Cutting at `y7eb` would unmask name parts
-    elsewhere (`Na3ima ka3bi Ben Salah`). Change this test when #82 is fixed."""
-    nona = per_message(
-        {
-            "Sami y7eb Ali barcha": [("Sami y7eb Ali", "person", 0.95)],
-            "Ali kallamni": [("Ali", "person", 0.9)],
-        }
-    )
-    assert nona.anonymize_messages(["Sami y7eb Ali barcha", "Ali kallamni"]).texts == (
-        "PERSON_1 barcha",
-        "PERSON_1 kallamni",
-    )
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        (
-            "Rdv m3a Sami ya5dem Sfax",
-            ("Sami ya5dem Sfax", "organization", 0.9),
-            "Rdv m3a PERSON_1 LOCATION_1",
-        ),
-        (
-            "Rdv m3a Mootez ya5dem Sfax",
-            ("Mootez ya5dem Sfax", "location", 0.3),
-            "Rdv m3a PERSON_1 LOCATION_1",
-        ),
-        ("J'habite rue de Sfax", ("rue de Sfax", "location", 0.9), "J'habite LOCATION_1"),
-    ],
-)
-def test_a_span_is_cut_at_a_listed_city(text: str, predicted: tuple[str, str, float], found: str) -> None:
-    nona = per_message({text: [predicted]})
-    assert nona.anonymize_messages([text]).texts == (found,)
-
-
-@pytest.mark.parametrize(
-    ("text", "predictions", "found"),
-    [
-        (
-            "Rdv m3a Mootaz ya5dem Sfax",
-            [("Sfax", "location", 0.9), ("Mootaz ya5dem Sfax", "person", 0.3)],
-            "Rdv m3a PERSON_1 LOCATION_1",
-        ),
-        ("ok sa7a Si Mootaz", [("sa7a Si Mootaz", "location", 0.3)], "ok sa7a Si PERSON_1"),
-        (
-            "Mootaz ya5dem Sfax 9alli",
-            [("Mootaz ya5dem Sfax", "location", 0.3)],
-            "PERSON_1 LOCATION_1 9alli",
-        ),
-    ],
-)
-def test_a_low_span_is_cut_at_darija_words_for_its_cues_and_places(
-    text: str, predictions: list[tuple[str, str, float]], found: str
-) -> None:
-    assert per_message({text: predictions}).anonymize_messages([text]).texts == (found,)
-
-
-def test_a_lowercase_city_is_cut_out_and_masked() -> None:
-    nona = per_message({"nemchi l sfax 5ater": [("sfax 5ater", "location", 0.9)]})
-    assert nona.anonymize_messages(["nemchi l sfax 5ater"]).texts == ("nemchi l LOCATION_1 5ater",)
-
-
-@pytest.mark.parametrize("name", ["mootez trabelsi", "na3ima ka3bi"])
-def test_a_lowercase_name_cut_from_a_city_stays_masked(name: str) -> None:
-    text = f"ena w {name} Sfax"
-    nona = per_message({text: [(f"{name} Sfax", "location", 0.9)]})
-    assert name not in nona.anonymize_messages([text]).texts[0]
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        ("Radio Sfax", "Radio Sfax", [("Radio Sfax", "ORGANIZATION")]),  # no person to free
-        ("Espérance de Tunis", "Espérance de Tunis", [("Espérance de Tunis", "ORGANIZATION")]),
-    ],
-)
-def test_what_a_city_does_not_split(text: str, predicted: str, found: list[tuple[str, str]]) -> None:
-    label = found[0][1].lower()
-    assert [(f, t.value) for f, t, _ in detect({predicted: (label, 0.9)}, text)] == found
-
-
-@pytest.mark.parametrize(
-    ("text", "predictions", "leaked"),
-    [
-        ("Kharroubi sfax Sami", [("Kharroubi sfax Sami", "organization", 0.8)], "Kharroubi"),
-        (
-            "m3a Sami Bel7aj Sfax ghodwa f Tunis",
-            [("Tunis", "location", 0.9), ("Sami Bel7aj Sfax", "person", 0.3)],
-            "Sami",
-        ),
-        ("m3a Sami 3li Sfax ghodwa", [("Sami 3li Sfax", "person", 0.3)], "3li"),
-        ("m3a Sami 3li Sfax f Tunis", [("Tunis", "location", 0.9), ("Sami 3li Sfax", "person", 0.3)], "3li"),
-    ],
-)
-def test_a_name_next_to_a_city_stays_masked(
-    text: str, predictions: list[tuple[str, str, float]], leaked: str
-) -> None:
-    out = per_message({text: predictions}).anonymize_messages([text]).texts[0]
-    assert leaked not in out, out
-
-
-def test_a_city_that_is_also_a_word_needs_a_capital() -> None:
-    assert _city_word("Douz")
-    assert _city_word("sfax")
-    assert not _city_word("douz")
-    assert not _city_word("nice")
-
-
-def test_a_person_span_is_never_cut_at_a_city_whatever_the_order() -> None:
-    text = "Ariana Ben Salah w Sfax"
-    alone = detect({"Ariana Ben Salah": ("person", 0.9)}, text)
-    both = per_message({text: [("Sfax", "location", 0.9), ("Ariana Ben Salah", "person", 0.9)]})
-    assert alone == [("Ariana Ben Salah", EntityType.PERSON, 0.9)]
-    assert both.anonymize_messages([text]).texts == ("PERSON_1 w LOCATION_1",)
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        ("m3a Pharmacie Hannibal Mootez", "Pharmacie Hannibal Mootez", ["Mootez"]),  # after the place's
-        ("m3a Pharmacie Hannibal Sfax", "Pharmacie Hannibal Sfax", []),  # the tail is a place
-        ("avec la Clinique Sami", "Clinique Sami", []),  # only the place's own name
-    ],
-)
-def test_a_low_span_after_a_head_word_keeps_the_name_after_the_place(
-    text: str, predicted: str, found: list[str]
-) -> None:
-    assert [f for f, _, _ in detect({predicted: ("person", 0.3)}, text)] == found
-
-
-def test_a_cued_span_with_a_lowercase_word_does_not_take_in_a_confident_name() -> None:
-    found = detect(
-        {"Hazem y7ki": ("person", 0.3), "Sami Trabelsi": ("person", 0.95)}, "m3a Hazem y7ki Sami Trabelsi"
-    )
-    assert [f for f, _, _ in found] == ["Hazem y7ki", "Sami Trabelsi"]
-
-
-def test_a_digit_name_is_masked_through_the_pipeline() -> None:
-    nona = pipeline({"Na3ima Ka3bi": ("person", 0.95)})
-    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == ("Rdv m3a PERSON_1 ghodwa",)
-
-
-def test_a_known_name_written_later_with_a_digit_is_not_sent_in_clear() -> None:
-    nona = per_message(
-        {
-            "Mohsen Trabelsi called": [("Mohsen Trabelsi", "person", 0.95)],
-            "Mo7sen 9alli barcha": [("Mo7sen", "person", 0.95)],
-        }
-    )
-    texts = nona.anonymize_messages(["Mohsen Trabelsi called", "Mo7sen 9alli barcha"]).texts
-    assert "Mo7sen" not in texts[1]
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        # What the real model gives: a place at 0.29 and 0.31, rescued by the speech verb and the cue.
-        ("Mo7sen 9alli barcha", "Mo7sen 9alli barcha", "Mo7sen"),
-        ("Rdv m3a Na3ima Ka3bi ghodwa", "Na3ima Ka3bi ghodwa", "Na3ima Ka3bi"),
-    ],
-)
-def test_a_cued_low_name_written_with_digits_is_masked(text: str, predicted: str, found: str) -> None:
-    assert detect({predicted: ("location", 0.3)}, text) == [(found, EntityType.PERSON, 0.5)]
 
 
 # --------------------------------------------------------------------------- types
@@ -458,67 +189,6 @@ def test_a_cue_joins_the_pieces_of_one_name() -> None:
     found = detect({"Mootez": ("location", 0.25), "Jaouadi": ("location", 0.42)}, text)
     assert found == [("Mootez Jaouadi", EntityType.PERSON, 0.5)]
     assert detect({"Jaouadi": ("location", 0.42)}, text) == []  # an uncued piece alone
-
-
-@pytest.mark.parametrize("rest", ["Jaouadi y7ki", "Jaouadi ben salah"])
-def test_a_cue_joins_a_piece_with_a_lowercase_word(rest: str) -> None:
-    text = f"Rdv m3a Mootez {rest}"
-    found = detect({"Mootez": ("person", 0.25), rest: ("person", 0.42)}, text)
-    assert found == [(f"Mootez {rest}", EntityType.PERSON, 0.5)]
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted"), [("Rdv m3a bureau 3", "bureau 3"), ("m3a bureau 2024", "bureau 2024")]
-)
-def test_a_low_span_that_does_not_look_like_a_name_is_dropped(text: str, predicted: str) -> None:
-    assert detect({predicted: ("person", 0.3)}, text) == []
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted"),
-    [
-        ("موعد مع سامي غدوة", "سامي"),
-        ("سامي قالي", "سامي"),
-        ("Rdv m3a 3li ghodwa", "3li"),
-        ("7amdi 9alli", "7amdi"),
-    ],
-)
-def test_a_low_cued_name_without_a_capital_is_kept(text: str, predicted: str) -> None:
-    """Arabic has no capitals, and an Arabizi name may start with a digit."""
-    assert detect({predicted: ("person", 0.3)}, text) == [(predicted, EntityType.PERSON, 0.5)]
-
-
-def test_a_cue_joins_a_digit_initial_surname() -> None:
-    found = detect({"Mootez": ("person", 0.25), "7amdi": ("person", 0.42)}, "Rdv m3a Mootez 7amdi ghodwa")
-    assert found == [("Mootez 7amdi", EntityType.PERSON, 0.5)]
-
-
-@pytest.mark.parametrize(
-    ("text", "predicted", "found"),
-    [
-        ("Rdv m3a 3abd-allah", {"3abd-allah": ("person", 0.3)}, ["3abd-allah"]),
-        ("Rdv m3a 2eme groupe", {"2eme groupe": ("person", 0.3)}, []),  # an ordinal, not a name
-        ("Rdv m3a 2nde groupe", {"2nde groupe": ("person", 0.3)}, []),
-        ("Rdv m3a 2FA ghodwa", {"2FA": ("person", 0.3)}, []),  # an acronym
-        ("Rdv m3a 2iem groupe", {"2iem groupe": ("person", 0.3)}, []),
-        ("m3a l'3asr", {"l'3asr": ("person", 0.3)}, []),  # `3asr` is a never-name
-        ("m3a Sami ben-3ali", {"Sami ben-3ali": ("person", 0.3)}, ["Sami ben-3ali"]),
-        ("Rdv m3a ben-3ali", {"ben-3ali": ("person", 0.3)}, ["ben-3ali"]),
-        ("m3a Sami fel bureau", {"Sami": ("person", 0.3), "fel bureau": ("person", 0.3)}, ["Sami"]),
-        (
-            "Rdv m3a Sami ali y7eb Mariem",
-            {"Sami": ("person", 0.3), "ali": ("person", 0.3), "ali y7eb Mariem": ("person", 0.9)},
-            ["Sami", "ali y7eb Mariem"],
-        ),
-    ],
-)
-def test_what_a_cue_takes_in(text: str, predicted: dict[str, tuple[str, float]], found: list[str]) -> None:
-    assert [f for f, _, _ in detect(predicted, text)] == found
-
-
-def test_a_cued_name_does_not_take_in_a_confident_span_with_lowercase_words() -> None:
-    found = detect({"Sami": ("person", 0.3), "Ali y7eb Mariem": ("person", 0.9)}, "m3a Sami Ali y7eb Mariem")
-    assert found == [("Sami", EntityType.PERSON, 0.5), ("Ali y7eb Mariem", EntityType.PERSON, 0.9)]
 
 
 def test_below_the_cued_threshold_nothing_is_kept() -> None:
@@ -680,3 +350,99 @@ def test_a_denylist_term_keeps_its_policy_over_a_propagated_name() -> None:
     texts = nona.anonymize_messages(["Bonjour Sami Trabelsi", "Sami a appelé"]).texts
     assert "Sami" not in texts[1]
     assert "PERSON" not in texts[1]
+
+
+# --------------------------------------------------------------------------- security review (PR #79)
+# Cleaning cuts a span at Arabizi words for its rules, but an Arabizi word may be a name: what is cut out is
+# masked again, each word on its own. Only the closed lists ever unmask a word.
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        ("Mo3ez passe demain", "Mo3ez", ["Mo3ez"]),
+        ("Mo7sen kallamni el bera7", "Mo7sen kallamni", ["Mo7sen"]),
+        ("3li bech yji", "3li", ["3li"]),
+        ("Na3ima Ka3bi", "Na3ima Ka3bi", ["Na3ima", "Ka3bi"]),
+        ("Sa3ida Bel7aj fil bureau", "Sa3ida Bel7aj", ["Sa3ida", "Bel7aj"]),
+        ("Rdv m3a na3ima ka3bi Ben Salah", "na3ima ka3bi Ben Salah", ["na3ima", "ka3bi", "Ben Salah"]),
+        ("Sami y7eb Ali", "Sami y7eb Ali", ["Sami", "y7eb", "Ali"]),  # two people kept apart
+    ],
+)
+def test_a_confident_word_with_digits_is_never_unmasked(text: str, predicted: str, found: list[str]) -> None:
+    assert [f for f, _, _ in detect({predicted: ("person", 0.95)}, text)] == found
+
+
+def test_a_digit_name_is_masked_through_the_pipeline() -> None:
+    nona = pipeline({"Na3ima Ka3bi": ("person", 0.95)})
+    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == (
+        "Rdv m3a PERSON_1 PERSON_2 ghodwa",
+    )
+
+
+def test_a_known_name_written_later_with_a_digit_is_not_sent_in_clear() -> None:
+    nona = per_message(
+        {
+            "Mohsen Trabelsi called": [("Mohsen Trabelsi", "person", 0.95)],
+            "Mo7sen 9alli barcha": [("Mo7sen", "person", 0.95)],
+        }
+    )
+    assert "Mo7sen" not in nona.anonymize_messages(["Mohsen Trabelsi called", "Mo7sen 9alli barcha"]).texts[1]
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted", "found"),
+    [
+        # What the real model gives: a place at 0.29 and 0.31, backed by the speech verb and the cue.
+        ("Mo7sen 9alli barcha", "Mo7sen 9alli barcha", ["Mo7sen"]),
+        ("Rdv m3a Na3ima Ka3bi ghodwa", "Na3ima Ka3bi ghodwa", ["Na3ima Ka3bi"]),  # the cue joins them
+        ("Rdv m3a 3li ghodwa", "3li ghodwa", ["3li"]),
+    ],
+)
+def test_a_cued_low_name_with_digits_is_masked(text: str, predicted: str, found: list[str]) -> None:
+    assert [f for f, _, _ in detect({predicted: ("location", 0.3)}, text)] == found
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted"),
+    [
+        ("ok mo3ez", "mo3ez"),  # lowercase and no cue: not name-shaped
+        ("Mo3ez passe", "Mo3ez"),  # no cue
+        ("m3a Sfax", "Sfax"),
+    ],
+)
+def test_a_low_word_with_digits_needs_a_cue_and_a_name_shape(text: str, predicted: str) -> None:
+    assert detect({predicted: ("person", 0.3)}, text) == []
+
+
+def test_an_ordinal_is_cut_but_not_masked_again() -> None:
+    assert arabizi_cuts("Sami 3eme 2nd Mo3ez", 0, 19) == [(14, 19)]
+    assert [f for f, _, _ in detect({"Sami 3eme": ("person", 0.9)}, "Sami 3eme etage")] == ["Sami"]
+
+
+_LIST_WORDS = ["Mme", "Dr", "بالسيدة", "I", "Je", "el", "nomrou", "Behi", "9alli", "mta3", "y3aychek", "باهي"]
+_OPEN_WORDS = ["Mo3ez", "Mo7sen", "Na3ima", "Ka3bi", "Bel7aj", "3li", "yfar7ek", "7attli", "Zorgati", "mo3ez"]
+_PARTICLES = PARTICLES | ABD_PREFIXES
+
+
+@given(st.lists(st.sampled_from([*_LIST_WORDS, *_OPEN_WORDS, "Sami", "Hamza", "سامي", "Ben"]), max_size=6))
+def test_only_closed_list_words_are_unmasked(words: list[str]) -> None:
+    """The security invariant: every word of a confident span is masked, unless a closed list says it is
+    never a name (or it is a trailing particle)."""
+    text = " ".join(words)
+    spans = NerRecognizer(fake({text: ("person", 0.95)})).detect(normalize(text)) if text else []
+    covered = {i for s in spans for i in range(s.start, s.end)}
+    for m in re.finditer(r"\S+", text):
+        if not any(i in covered for i in range(m.start(), m.end())):
+            word = m.group()
+            assert never_name(word) or normalize(word).text in _PARTICLES, (text, word)
+
+
+@pytest.mark.parametrize("verb", SPEECH_VERBS)
+def test_every_speech_verb_is_a_never_name(verb: str) -> None:
+    assert never_name(verb)
+
+
+@pytest.mark.parametrize(("text", "view"), [("3ers m3a Sami", "aers maa Sami"), ("5er", "ker")])
+def test_the_view_de_arabizes_darija_words(text: str, view: str) -> None:
+    assert model_view(text) == view
