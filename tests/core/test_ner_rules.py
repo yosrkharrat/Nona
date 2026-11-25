@@ -329,9 +329,37 @@ def test_a_cue_joins_a_piece_with_a_lowercase_word(rest: str) -> None:
     assert found == [(f"Mootez {rest}", EntityType.PERSON, 0.5)]
 
 
-@pytest.mark.parametrize(("text", "predicted"), [("Rdv m3a bureau 3", "bureau 3"), ("m3a 15h", "15h")])
-def test_a_low_span_without_a_capitalized_word_is_dropped(text: str, predicted: str) -> None:
+@pytest.mark.parametrize(
+    ("text", "predicted"), [("Rdv m3a bureau 3", "bureau 3"), ("m3a bureau 2024", "bureau 2024")]
+)
+def test_a_low_span_that_does_not_look_like_a_name_is_dropped(text: str, predicted: str) -> None:
     assert detect({predicted: ("person", 0.3)}, text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "predicted"),
+    [
+        ("موعد مع سامي غدوة", "سامي"),
+        ("سامي قالي", "سامي"),
+        ("Rdv m3a 3li ghodwa", "3li"),
+        ("7amdi 9alli", "7amdi"),
+    ],
+)
+def test_a_low_cued_name_without_a_capital_is_kept(text: str, predicted: str) -> None:
+    """Arabic has no capitals, and an Arabizi name may start with a digit."""
+    assert detect({predicted: ("person", 0.3)}, text) == [(predicted, EntityType.PERSON, 0.5)]
+
+
+def test_a_cue_vouches_for_a_lowercase_surname_right_after() -> None:
+    found = detect({"Mootez": ("person", 0.25), "ben salah": ("person", 0.42)}, "Rdv m3a Mootez ben salah")
+    assert found == [("Mootez ben salah", EntityType.PERSON, 0.5)]
+    found = detect({"Mootez": ("person", 0.25), "7amdi": ("person", 0.42)}, "Rdv m3a Mootez 7amdi ghodwa")
+    assert found == [("Mootez 7amdi", EntityType.PERSON, 0.5)]
+
+
+def test_a_cued_name_does_not_take_in_a_confident_span_with_lowercase_words() -> None:
+    found = detect({"Sami": ("person", 0.3), "Ali y7eb Mariem": ("person", 0.9)}, "m3a Sami Ali y7eb Mariem")
+    assert found == [("Sami", EntityType.PERSON, 0.5), ("Ali y7eb Mariem", EntityType.PERSON, 0.9)]
 
 
 def test_below_the_cued_threshold_nothing_is_kept() -> None:

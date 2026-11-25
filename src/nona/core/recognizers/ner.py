@@ -37,9 +37,10 @@ What this layer adds on top of the model:
   applies, and look-ahead only spreads words from confident spans (0.8, ADR-0004).
 - **Cue-backed low scores** (deep dive A, layer 4: a context cue raises a weak candidate). In Arabizi the
   model often finds a name but scores it under 0.5 (`Hazem 9alli`: 0.46). A span from `cued_threshold` (0.2)
-  up is kept, as a PERSON scored at the threshold, when it has a capitalized word (Arabic always passes) and a
-  cue backs it: a person cue before it, or a speech verb right after it (`9alli`, `قالي`, `said`, from #50's
-  list). A cued span takes in the capitalized span right after it, spaces only between: in `m3a Mootez
+  up is kept whole, as a PERSON scored at the threshold, when it looks like a name (a capitalized word, a word
+  starting with an Arabizi digit like `3li`, or Arabic) and a cue backs it: a person cue before it, or a
+  speech verb right after it (`9alli`, `قالي`, `said`, from #50's list). A cued span takes in the low-score
+  span right after it, spaces only between, or a confident one whose words all look like names: in `m3a Mootez
   Jaouadi` the model scores `Mootez` 0.25 and `Jaouadi` 0.42, one name.
 
 A model error propagates; the pipeline turns it into `DetectorError` (fail closed, ADR-0003).
@@ -120,7 +121,7 @@ _SPEECH_AFTER = re.compile(
 # greetings), and `with`, `avec`, `مع` ("with": a meeting is with someone). Matched on the folded text.
 _WITH = re.compile(r"(?<!\w)(?:with|avec|مع|ma3)[ \t]*\Z")
 _GAP = re.compile(r"[ \t]+")
-RULES_VERSION = 4  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
+RULES_VERSION = 5  # part of the fingerprint: bump it when cleaning or typing changes, so cached spans go
 
 
 class NerPrediction(NamedTuple):
@@ -202,12 +203,10 @@ class NerRecognizer:
                         continue
                     # A place span keeps its honorifics; once it is a person, they are trimmed (`Mme Islem`).
                     parts = clean(text, *piece) if t is EntityType.PERSON and etype is not t else [piece]
-                    if low:  # an unsure span must look like a name; then it is kept whole
-                        parts = [x for x in parts if _name_shaped(text, *x)]
                     for a, b in parts:
-                        if low:
+                        if low:  # kept whole if it looks like a name and a cue backs it, or joined
                             key, score = (a, b, EntityType.PERSON), self._threshold
-                            backed = (
+                            backed = _name_shaped(text, a, b) and (
                                 _person_cue(text, a) or _person_cue(text, start) or _speech_after(text, b)
                             )
                             (cued if backed else pieces).add(key)
@@ -215,7 +214,7 @@ class NerRecognizer:
                             key, score = (a, b, t), min(p.score, 1.0)
                             high.add(key)
                         best[key] = max(best.get(key, 0.0), score)
-        joined = _join_cued(text, best, cued, pieces - cued - high)
+        joined = _join_cued(text, best, cued, pieces - cued - high, high)
         return [Span(s, e, t, score, self.name) for (s, e, t), score in joined]
 
 
@@ -224,10 +223,12 @@ def _join_cued(
     best: dict[tuple[int, int, EntityType], float],
     cued: set[tuple[int, int, EntityType]],
     pieces: set[tuple[int, int, EntityType]],
+    high: set[tuple[int, int, EntityType]],
 ) -> list[tuple[tuple[int, int, EntityType], float]]:
-    """Spans sorted, with each cued span joined to the name-shaped PERSON span right after it, spaces only
-    between: a cue introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and
-    0.42). `pieces` (low, uncued) are only kept when joined that way."""
+    """Spans sorted, with each cued span joined to the PERSON span right after it, spaces only between: a cue
+    introduces one name, which the model may score in pieces (`m3a Mootez Jaouadi`: 0.25 and 0.42; `m3a
+    Mootez ben salah`). `pieces` (low, uncued) are only kept when joined that way. A confident span joins only
+    when every word looks like a name, so a cued name doesn't take in `Ali y7eb Mariem`."""
     joined: list[tuple[tuple[int, int, EntityType], float]] = []
     for key, score in sorted(best.items()):
         if joined:
@@ -238,7 +239,7 @@ def _join_cued(
                 and key[2] is EntityType.PERSON
                 and key[0] > b
                 and _GAP.fullmatch(text, b, key[0])
-                and _name_shaped(text, key[0], key[1])
+                and (key not in high or _name_shaped(text, key[0], key[1], every=True))
             ):
                 joined[-1] = ((a, key[1], EntityType.PERSON), max(prev, score))
                 cued.add(joined[-1][0])
@@ -426,13 +427,13 @@ def _listed_first_name(surface: str) -> bool:
     )
 
 
-def _name_shaped(text: str, start: int, end: int) -> bool:
-    """What a name looks like when the model is unsure: a word with letters that starts with a capital, or is
-    in a script without capitals (Arabic). `Hazem y7ki` passes; `bureau 3` and `montaser` don't."""
-    return any(
-        any(c.isalpha() for c in w) and (not _cased(w) or w[0].isupper())
-        for w in _SPAN_WORD.findall(text, start, end)
-    )
+def _name_shaped(text: str, start: int, end: int, *, every: bool = False) -> bool:
+    """What a name looks like when the model is unsure: a word with letters that starts with a capital, with
+    an Arabizi digit (`3li`, `7amdi`), or is in a script without capitals (Arabic). `Hazem y7ki` passes;
+    `bureau 3` and `montaser` don't. With `every`, each word with letters must."""
+    words = [w for w in _SPAN_WORD.findall(text, start, end) if any(c.isalpha() for c in w)]
+    shaped = (not _cased(w) or w[0].isupper() or (w[0] in _ARABIZI_LETTER and arabizi(w)) for w in words)
+    return all(shaped) if every else any(shaped)
 
 
 def _speech_after(text: str, end: int) -> bool:
