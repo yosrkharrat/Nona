@@ -39,7 +39,7 @@ from collections.abc import Mapping as AbcMapping
 from nona.core.boundaries import PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
-from nona.core.normalize import NormalizedDoc, normalize
+from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
     Anonymized,
@@ -112,18 +112,20 @@ def _as_people(
 
 
 def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[Span]) -> list[Span]:
-    """A recognizer name span that is a propagated form behind one or two Arabic clitics starts at the form
-    (module docstring), so `لزكرياء` links to `زكرياء` and restores with its clitic in place."""
+    """A recognizer name span that is a propagated form behind one or two Arabic clitics, maybe with what
+    normalization drops around them (`لـ`, `لِ`), starts at the form (module docstring), so `لزكرياء` links to
+    `زكرياء` and restores with its clitic in place."""
     starts = {(p.start, p.end) for p in propagated}
     out: list[Span] = []
     for s in recognized:
-        for n in (1, 2):
-            if (
-                s.detector != GAZETTEER
-                and (s.start + n, s.end) in starts
-                and all(c in PROCLITICS for c in text[s.start : s.start + n])
-            ):
-                s = Span(s.start + n, s.end, s.type, s.score, s.detector)
+        i, proclitics = s.start, 0
+        while s.detector != GAZETTEER and i < s.end and (text[i] in DROPPED or text[i] in PROCLITICS):
+            proclitics += text[i] in PROCLITICS
+            i += 1
+            if 1 <= proclitics <= 2 and (i, s.end) in starts:
+                s = Span(i, s.end, s.type, s.score, s.detector)
+                break
+            if proclitics > 2:
                 break
         out.append(s)
     return out

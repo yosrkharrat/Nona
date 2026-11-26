@@ -14,6 +14,7 @@ text, goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactl
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import re
 from collections.abc import Iterable
@@ -21,9 +22,16 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, placeholder_regex, strict_at
+from nona.core.boundaries import (
+    ANY_PLACEHOLDER,
+    NAME_TYPES,
+    composes_after,
+    loose_at,
+    placeholder_regex,
+    strict_at,
+)
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
-from nona.core.normalize import normalize
+from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.types import Entity, EntityType, Span
 
 
@@ -40,8 +48,12 @@ DEFAULT_POLICIES: AbcMapping[EntityType, Policy] = {
 }
 
 
+# Letters the case-insensitive placeholder regex takes for an ASCII one, which `upper()` doesn't map to it.
+_ASCII_CASE = str.maketrans({"\u0130": "I", "\u0131": "I", "\u017f": "S", "\u212a": "K"})
+
+
 def _canonical_type(raw: str) -> EntityType:
-    return EntityType(re.sub(r"[ _]", "_", raw.upper()))
+    return EntityType(re.sub(r"[ _]", "_", raw.translate(_ASCII_CASE).upper()))
 
 
 class Mapping:
@@ -226,18 +238,51 @@ def pseudonymize(
 
 
 def restore(text: str, mapping: Mapping) -> str:
-    """Put the original values back for every issued placeholder; leave anything else untouched."""
+    """Put the original values back for every issued placeholder; leave anything else untouched.
+
+    A value is written only where forward propagation would find it again (`core/boundaries.py`): a name at
+    strict boundaries (`PERSON_1abc` stays, propagation couldn't catch `Samiabc`), and a multi-word value,
+    which propagation looks for on the normalized view, at its boundaries there too (`سَـلPERSON_1` stays:
+    normalized, `سل` glues to the name).
+    """
     if not len(mapping):
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
+    view = _NormalizedView(text)
+    multi_word: dict[str, bool] = {}  # per call: values are personal data, never kept across calls
 
     def replace(m: re.Match[str]) -> str:
         etype = _canonical_type(m.group(1))
         placeholder = f"{etype.value}_{int(m.group(2))}"
         if placeholder not in mapping:
             return m.group(0)
-        if etype in NAME_TYPES and not strict_at(m.string, m.start(), m.end()):
-            return m.group(0)  # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
-        return mapping.value(placeholder)
+        name = etype in NAME_TYPES
+        if name and not strict_at(m.string, m.start(), m.end()):
+            return m.group(0)
+        value = mapping.value(placeholder)
+        if value not in multi_word:
+            multi_word[value] = len(normalize(value).text.split()) > 1  # found on the normalized view
+        if multi_word[value] and not view.at(m.start(), m.end(), name):
+            return m.group(0)
+        return value
 
     return placeholder_regex(types).sub(replace, text)
+
+
+class _NormalizedView:
+    """Boundaries of a placeholder on the normalized view of the text, normalized once, when first needed."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._doc: NormalizedDoc | None = None
+        self._starts: list[int] = []
+
+    def at(self, start: int, end: int, name: bool) -> bool:
+        if name and composes_after(self._text, end):
+            return False
+        if self._doc is None:
+            self._doc = normalize(self._text)
+            self._starts = [o_start for o_start, _ in self._doc.origin]
+        # A placeholder is ASCII, one normalized character per character, even if a mark follows it.
+        n_start = bisect.bisect_left(self._starts, start)
+        return (strict_at if name else loose_at)(self._doc.text, n_start, n_start + end - start)

@@ -28,7 +28,9 @@ _ARABIC_MARKS = frozenset(
     + ["ٰ"]
     + [chr(c) for c in range(0x06D6, 0x06EE)]
 )
-_DROP = str.maketrans(dict.fromkeys([_TATWEEL, *_ARABIC_MARKS]))
+# What normalization drops: a strict boundary looks past these (`core/boundaries.py`).
+DROPPED = frozenset([_TATWEEL, *_ARABIC_MARKS])
+_DROP = str.maketrans(dict.fromkeys(DROPPED))
 
 
 def _is_mark(c: str) -> bool:
