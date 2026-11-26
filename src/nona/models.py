@@ -343,8 +343,9 @@ class GlinerModel:
     file written in place would run weights nobody checked, and one truncated or replaced over a network
     filesystem would crash the process on a page read. A changed signature fails the call closed
     (`ModelError`, so `DetectorError` in the pipeline), and every later one, until the process restarts and
-    loads the model again; so does a missing file. A `stat` that fails otherwise (a full file table, a network
-    error) fails only that call.
+    loads the model again; so does a missing file (also a network mount that drops for a moment), and a
+    `touch` that leaves the bytes as they were: nothing is hashed, so a new mtime counts as a write. A `stat`
+    that fails otherwise (a full file table, a network error) fails only that call.
 
     Not caught: a write that keeps the size and sets mtime back. It takes write access to the models folder,
     which could as well swap same-size weights before the next start (loading checks their size; `pull`

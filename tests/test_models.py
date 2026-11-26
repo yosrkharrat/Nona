@@ -449,7 +449,7 @@ def test_a_mapped_weights_file_changed_after_loading_fails_closed(
     data = weights.read_bytes()
     if change == "write in place":
         weights.write_bytes(data + b"!")
-    elif change == "same size":  # same inode and size: only the pinned hash tells
+    elif change == "same size":  # same inode and size: mtime tells (`_later` doesn't wait for the clock)
         weights.write_bytes(data[:-1] + b"?")
         _later(weights)
     elif change == "truncate":
@@ -474,6 +474,16 @@ def test_a_permission_change_to_the_mapped_weights_keeps_them_usable(
         assert model.predict("Sami", ["person"], 0.5)
     finally:
         weights.chmod(0o644)
+
+
+def test_touching_the_mapped_weights_fails_closed_until_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    # The bytes are the same, but a new mtime is how an ordinary in-place write shows: nothing is hashed.
+    model = _mapped_model(tmp_path, monkeypatch)
+    _later(_weights(tmp_path))
+    with pytest.raises(ModelError, match="restart"):
+        model.predict("Sami", ["person"], 0.5)
 
 
 def test_a_stat_that_fails_once_fails_only_that_call(
