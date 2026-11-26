@@ -103,11 +103,11 @@ WEAK_HONORIFICS = frozenset({"si", "me", "m", "pr", "sir", "miss", "3am"})  # `3
 STRONG_HONORIFICS = HONORIFICS - WEAK_HONORIFICS
 # Matched on the normalized text that ends where the run starts. `[ \t]`, not `\s`, and `\Z`, not `$` (which
 # matches before a final newline): no cue across lines.
-_STRONG_PHRASE = re.compile(
+STRONG_PHRASE = re.compile(
     r"(?<!\w)(?:je m['\u2019]appelle|m['\u2019]appelle|my name is|name is"
     r"|esmou|ismou|ism-ou|esmi|ismi|esm|اسمي|اسمه)[ \t]*[:,]?[ \t]*\Z"
 )
-_WEAK_PHRASE = re.compile(
+WEAK_PHRASE = re.compile(
     r"(?<!\w)(?:bonjour|bonsoir|salut|merci|cher|chère|hi|hello|dear|thanks|thank you|3aslema|aslema|ahla"
     r"|ya|m3a|ena|مرحبا|شكرا)[ \t]*[:,!]?[ \t]*\Z"
 )
@@ -182,7 +182,7 @@ class _Word:
 ARABIC_STOP = frozenset({"على", "الى", "إلى", "في", "من", "عن", "مع", "هذا", "هذه", "هو", "هي"})
 
 
-def _strip_clitics(text: str, key: str | None) -> tuple[str | None, int]:
+def strip_clitics(text: str, key: str | None) -> tuple[str | None, int]:
     """A listed name behind up to two Arabic clitics: `لسامي`, `ولسامي`, `للطرابلسي` (ل + ال). Returns the
     name's key and how many letters to leave out of the span, or the word unchanged."""
     for n in (1, 2):
@@ -211,7 +211,7 @@ def _words(doc: NormalizedDoc) -> list[_Word]:
         honorific = not canonical_tokens(surface) and not text.isdigit()  # canonical folding: `السيدة` too
         clitic = 0
         if key not in NAMES and cap is None:
-            key, clitic = _strip_clitics(text, key)
+            key, clitic = strip_clitics(text, key)
         out.append(
             _Word(
                 m.start(),
@@ -242,7 +242,7 @@ class GazetteerRecognizer:
         return frozenset({EntityType.PERSON, EntityType.LOCATION})
 
     def detect(self, doc: NormalizedDoc) -> list[Span]:
-        places = _cities(doc)
+        places = cities(doc)
         taken = bytearray(len(doc.text) + 1)  # 1 where a city is: overlap checks in O(word length)
         for s, e, _ in places:
             taken[s:e] = b"\x01" * (e - s)
@@ -342,9 +342,9 @@ def _cue(doc: NormalizedDoc, words: list[_Word], i: int) -> str:
             return "strong" if doc.text.startswith(".", prev.end) else ""
         return "strong" if prev.text in STRONG_HONORIFICS or prev.cap is None else "weak"
     before = doc.text[max(0, words[i].start - 30) : words[i].start]
-    if _STRONG_PHRASE.search(before):
+    if STRONG_PHRASE.search(before):
         return "strong"
-    if _WEAK_PHRASE.search(before):
+    if WEAK_PHRASE.search(before):
         return "weak"
     return ""
 
@@ -393,12 +393,12 @@ def _letter(c: str) -> str:
 
 @functools.lru_cache(maxsize=1)
 def _city_patterns() -> list[tuple[re.Pattern[str], bool]]:
-    common = {_unaccent(normalize(c).text) for c in data.COMMON_CITIES}
+    common = {unaccent(normalize(c).text) for c in data.COMMON_CITIES}
     out: list[tuple[re.Pattern[str], bool]] = []
     for city in sorted(set(data.CITIES), key=len, reverse=True):
         words = normalize(city).text.split()
         body = r"[ \t-]+".join("".join(map(_letter, w)) for w in words)
-        is_common = _unaccent(" ".join(words)) in common
+        is_common = unaccent(" ".join(words)) in common
         if any("\u0600" <= c <= "\u06ff" for c in city):
             # Arabic: up to two clitics in front (`لصفاقس`), and `للمنستير` = ل + المنستير
             out.append((re.compile(_ARABIC_LEFT + body + r"(?!\w)"), is_common))
@@ -411,11 +411,11 @@ def _city_patterns() -> list[tuple[re.Pattern[str], bool]]:
     return out
 
 
-def _unaccent(text: str) -> str:
+def unaccent(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c))
 
 
-def _cities(doc: NormalizedDoc) -> list[tuple[int, int, float]]:
+def cities(doc: NormalizedDoc) -> list[tuple[int, int, float]]:
     """Non-overlapping city matches, longest first: (normalized start, end, score). Linear in the text length
     times the number of patterns: each match is checked against a per-character mask, not earlier matches."""
     found: list[tuple[int, int, float]] = []

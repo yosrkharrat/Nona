@@ -102,3 +102,51 @@ CITIES: tuple[str, ...] = (
 
 # Cities that are also words or names: matched only with a capital letter (deep dive A).
 COMMON_CITIES: tuple[str, ...] = ("Nice", "Douz", "Korba", "Ennasr", "Lac 2", "Carthage")
+
+# Speech and contact verbs right after a name, which #50 uses as cues (`Hazem 9alli`, `Aymen kallamni`,
+# `سامي قالي`); never names themselves. `ner.py` adds `said` and `a dit`: `said` is also a name (Saïd).
+SPEECH_VERBS: tuple[str, ...] = (
+    "9alli", "9al", "9alet", "9alt", "kallamni", "kallemni", "3ayetli", "3ayatli", "b3athli",
+    "قالي", "قال", "قالت", "كلمني", "عيطلي", "بعثلي",
+)  # fmt: skip
+
+# Darija words that are never a name, in Latin letters and Arabic script (ADR-0008, condition 2). The NER
+# model takes them into names or tags them alone (`nomrou Zakaria`, `Behi`, `Aymen 9alli`), so a model span is
+# cut at them. Pronouns, function and question words, and frequent words of requests and replies. Arabizi
+# words with digits need an entry too: a span is also cut at an unlisted one, but names are written with
+# digits (`Mo3ez`), so that word is masked again on its own (`ner.py`); only a listed word stays in clear.
+# French and English stopwords are the gazetteer's `STOPWORDS`. Words that are also given names are left out,
+# since a model span is cut at these whatever its score: `wala` (Walaa), `bahi`, `rani`, `yesser`, `يسر`
+# (Yosr), `ken`, `mel`, `win`, `ama`.
+NEVER_NAMES: tuple[str, ...] = (
+    # pronouns
+    "ena", "enti", "enta", "inti", "inta", "houwa", "hiya", "ahna", "a7na", "entouma", "homa",
+    "انا", "أنا", "انت", "إنت", "انتي", "إنتي", "احنا", "نحن", "انتوما", "هوما", "هم",
+    # function and question words
+    "w", "wa", "ma", "mech", "mich", "fi", "f", "l", "b", "men", "m3a", "ma3", "3al", "3and", "3nd", "3andi",
+    "5ater", "5atr",
+    "mta3", "mte3", "chnowa", "chnouwa", "chneya", "chkoun", "kifech", "kifesh", "wa9tech", "9adech",
+    "متاع", "متاعو", "متاعها", "متاعي", "نتاع", "شنوة", "شنية", "شكون", "كيفاش", "وقتاش", "وين", "قداش",
+    # time
+    "taw", "tawa", "lyoum", "ghodwa", "ba3d", "9bal", "lbare7", "sbe7", "3asr",
+    "توا", "اليوم", "غدوة", "بعد", "قبل",
+    # replies, thanks, blessings
+    "behi", "barcha", "yezzi", "zeda", "zada", "ey", "eyh", "iyeh", "aslema", "ahla",
+    "marhba", "rabbi", "inchallah", "nchallah", "hamdoulah", "sahit", "y3aychek", "ya3tik", "y5allik",
+    "3aslema",
+    "باهي", "برشا", "يزي", "زادة", "إيه", "اي", "اهلا", "مرحبا", "ربي", "إنشاء", "يعيشك", "يعطيك",
+    # people and places of everyday life
+    "rajel", "mra", "راجل", "مرا", "5ouya", "5outi", "3ayla", "7ouma", "9ahwa",
+    # things people ask for
+    "nomrou", "noumrou", "numrou", "nmrou", "rendez", "rdv", "mail", "contrat", "flous",
+    "نومرو", "النومرو", "رقم", "الرقم", "موعد", "العقد", "فلوس",
+    # speech, contact and movement verbs: #50's cues (`SPEECH_VERBS`), except `kallemni` and `بعثلي`, which
+    # have no digits, so listing them would change where spans are cut (`ner.py`)
+    "kallem", "kallamt", "kallemt", "kallamni", "9alli", "9al", "9alet", "9alt", "3ayetli", "3ayatli",
+    "b3athli", "ja", "jet", "mcha", "mchet",
+    "قالي", "قال", "قالت", "كلم", "كلمني", "عيطلي", "جا", "جات", "مشى", "مشات",
+    # sending and doing, in requests (`ab3athli el mail`, `3malt rdv`)
+    "ab3ath", "ab3athli", "ab3athlou", "ab3athtlou", "ab3atht", "b3atht", "3malt", "3mel", "3melt",
+    # frequent verbs the model takes into a name (`Sami y7eb Ali`, `Mootaz ya5dem Sfax`)
+    "y7eb", "n7eb", "t7eb", "ya5dem", "na5dem", "ta5dem", "y7ki", "n7ki", "t7ki",
+)  # fmt: skip
