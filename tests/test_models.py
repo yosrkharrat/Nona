@@ -179,6 +179,9 @@ class _FakeGliner:
     def eval(self) -> None:
         pass
 
+    def predict_entities(self, text: str, labels: list[str], **kwargs: object) -> list[dict[str, object]]:
+        return [{"start": 0, "end": 4, "label": labels[0], "score": 0.9}]
+
 
 @pytest.fixture
 def fake_gliner(monkeypatch: pytest.MonkeyPatch, isolated_offline: None) -> type[_FakeGliner]:
@@ -190,8 +193,9 @@ def fake_gliner(monkeypatch: pytest.MonkeyPatch, isolated_offline: None) -> type
 
 
 def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
-    tmp_path: Path, fake_gliner: type[_FakeGliner]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
 ) -> None:
+    monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)  # the fake weights are large: linked, not written
     pull(tmp_path, download=FakeHub(), models=FAKE)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for p in tmp_path.rglob("*"):
@@ -209,7 +213,8 @@ def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
     assert seen["gliner_files"] == ["gliner_config.json", "model.safetensors"]
     assert seen["encoder_files"] == {n: d for (r, n), d in FILES.items() if r == "org/encoder"}
     assert seen["weights"] == FILES[("org/gliner", "model.safetensors")]
-    assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True}
+    # Linked weights are mapped from the file, not read into memory (NFR-7).
+    assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True, "low_cpu_mem_usage": True}
     assert seen["offline"] == ("1", "1")
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     assert model.identity == f"org/gliner@{'a' * 40}"
@@ -324,6 +329,7 @@ def test_pull_after_a_load_says_to_use_another_process(
 def test_load_copies_the_weights_where_symlinks_are_not_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
 ) -> None:
+    monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)
     pull(tmp_path, download=FakeHub(), models=FAKE)
 
     def refuse(*args: object, **kwargs: object) -> None:
@@ -336,6 +342,8 @@ def test_load_copies_the_weights_where_symlinks_are_not_allowed(
     monkeypatch.setattr(os, "link", no_hard_links)
     load_ner_model(tmp_path, models=FAKE)
     assert fake_gliner.seen["weights"] == FILES[("org/gliner", "model.safetensors")]
+    # The copy is in the temp folder, deleted after loading: read it into memory, never map it.
+    assert fake_gliner.seen["kwargs"]["low_cpu_mem_usage"] is False  # type: ignore[index]
 
 
 def test_a_file_dropped_next_to_the_pinned_encoder_is_never_seen_by_the_loader(
@@ -403,3 +411,119 @@ def test_the_hint_quotes_for_the_shell_in_use(windows: bool, expected: str) -> N
     from nona.cli import shell_quote
 
     assert shell_quote("D:\\my models", windows=windows) == expected
+
+
+def test_weights_written_into_the_temp_folder_are_never_mapped(
+    tmp_path: Path, fake_gliner: type[_FakeGliner]
+) -> None:
+    # Small enough to be written from verified bytes into the temp folder, which is deleted after loading.
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    load_ner_model(tmp_path, models=FAKE)
+    assert fake_gliner.seen["kwargs"]["low_cpu_mem_usage"] is False  # type: ignore[index]
+
+
+def _weights(root: Path) -> Path:
+    return root / GLINER_DIR / "model.safetensors"
+
+
+def _mapped_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> models.GlinerModel:
+    monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)  # large fake weights: linked, so mapped
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    model = load_ner_model(tmp_path, models=FAKE)
+    assert model.predict("Sami", ["person"], 0.5)  # unchanged: fine
+    return model
+
+
+def _later(path: Path) -> None:
+    """Move mtime 10 s forward: a signature change that doesn't wait for the filesystem's timestamp tick."""
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**10))
+
+
+@pytest.mark.parametrize("change", ["write in place", "same size", "truncate", "replace", "delete"])
+def test_a_mapped_weights_file_changed_after_loading_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner], change: str
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    weights = _weights(tmp_path)
+    data = weights.read_bytes()
+    if change == "write in place":
+        weights.write_bytes(data + b"!")
+    elif change == "same size":  # same inode and size: mtime tells (`_later` doesn't wait for the clock)
+        weights.write_bytes(data[:-1] + b"?")
+        _later(weights)
+    elif change == "truncate":
+        weights.write_bytes(b"")
+    elif change == "replace":  # what `pull` does: a new file, the mapped one lives on
+        (tmp_path / "new").write_bytes(data)
+        os.replace(tmp_path / "new", weights)
+    else:
+        weights.unlink()
+    with pytest.raises(ModelError, match="changed on disk since the model was loaded"):
+        model.predict("Sami", ["person"], 0.5)
+
+
+def test_a_permission_change_to_the_mapped_weights_keeps_them_usable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    weights = _weights(tmp_path)
+    weights.chmod(0o444)  # `chmod a-w`, an xattr, a backup tool's hard link: only ctime moves
+    os.link(weights, tmp_path / "backup")
+    try:
+        assert model.predict("Sami", ["person"], 0.5)
+    finally:
+        weights.chmod(0o644)
+
+
+def test_touching_the_mapped_weights_fails_closed_until_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    # The bytes are the same, but a new mtime is how an ordinary in-place write shows: nothing is hashed.
+    model = _mapped_model(tmp_path, monkeypatch)
+    _later(_weights(tmp_path))
+    with pytest.raises(ModelError, match="restart"):
+        model.predict("Sami", ["person"], 0.5)
+
+
+def test_a_stat_that_fails_once_fails_only_that_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    real = models._signature
+    calls = iter([OSError(24, "Too many open files")])
+
+    def flaky(path: Path) -> models.FileSignature:
+        error = next(calls, None)
+        if error is not None:
+            raise error
+        return real(path)
+
+    monkeypatch.setattr(models, "_signature", flaky)
+    with pytest.raises(ModelError, match="can't check the model file"):
+        model.predict("Sami", ["person"], 0.5)
+    assert model.predict("Sami", ["person"], 0.5)
+
+
+def test_a_changed_mapped_file_keeps_failing_even_once_put_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    weights = _weights(tmp_path)
+    data = weights.read_bytes()
+    st = weights.stat()
+    weights.write_bytes(data[:-1] + b"?")
+    _later(weights)
+    with pytest.raises(ModelError):
+        model.predict("Sami", ["person"], 0.5)
+    weights.write_bytes(data)
+    os.utime(weights, ns=(st.st_atime_ns, st.st_mtime_ns))  # bytes and signature back as at load
+    with pytest.raises(ModelError, match="restart"):
+        model.predict("Sami", ["person"], 0.5)
+
+
+def test_weights_read_into_memory_are_not_watched(tmp_path: Path, fake_gliner: type[_FakeGliner]) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)  # small fake weights: written into the temp folder
+    model = load_ner_model(tmp_path, models=FAKE)
+    _weights(tmp_path).write_bytes(b"changed")
+    assert model.predict("Sami", ["person"], 0.5)

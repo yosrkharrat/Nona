@@ -109,7 +109,7 @@ whole history on every request and keeps nothing between requests (ADR-0002).
 - One uvicorn worker, async I/O. NER inference runs in a thread pool (`anyio.to_thread`), batched per request across messages.
 - Model loaded once at startup, and readiness gated by `/healthz`.
 - Latency budget (NFR-6, 300 tokens): normalize 2 ms · regex 3 ms · GLiNER ~80–120 ms · resolve and link 5 ms · rewrite 2 ms.
-  GLiNER dominates, so the v0.2 lever is ONNX Runtime with int8 quantization.
+  Measured in #72 part 3 (ADR-0008): everything but the model takes 2.5–4 ms at p95, the model ~200 ms at p50 and 214–245 ms at p95 on a quiet machine, so NFR-6 isn't met with the model. ONNX Runtime fp32 is 1.5× faster but keeps a second copy of the weights (2.4–2.6 GB); its int8 quantization breaks detection.
 - Streaming: restoration holds back only the length of the longest possible placeholder prefix (≤ 16 chars), so the added time-to-first-token stays small.
 - Every stage emits an OpenTelemetry span and feeds `nona_stage_duration_seconds`, so this budget is checked against real traces ([ADR-0005](../adr/0005-observability.md)).
 - A k6 script (`load/`) drives the proxy against a mock upstream at 1, 8 and 32 concurrent clients and reports p50/p95 overhead and throughput (NFR-15).

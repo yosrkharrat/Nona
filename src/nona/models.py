@@ -324,14 +324,47 @@ def _link_or_copy(source: Path, target: Path) -> None:
         shutil.copyfile(source, target)
 
 
+FileSignature = tuple[int, int, int, int]
+
+
+def _signature(path: Path) -> FileSignature:
+    """What changes when a file is replaced, truncated or written: device, inode, size and mtime. Not ctime,
+    which `chmod`, an xattr or a backup tool's hard link move without touching the bytes."""
+    st = path.stat()
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 class GlinerModel:
     """Adapts a loaded GLiNER model to `NerModel`. One call at a time: torch modules aren't documented as
-    safe to share across threads, and the proxy runs detection in a worker thread (S5)."""
+    safe to share across threads, and the proxy runs detection in a worker thread (S5).
 
-    def __init__(self, model: Any, identity: str, max_words: int) -> None:
+    `mapped` lists the files the weights are memory-mapped from, with their signature at load. They are read
+    page by page for the life of the process, so before each call each one is checked again (one `stat`): a
+    file written in place would run weights nobody checked, and one truncated or replaced over a network
+    filesystem would crash the process on a page read. A changed signature fails the call closed
+    (`ModelError`, so `DetectorError` in the pipeline), and every later one, until the process restarts and
+    loads the model again; so does a missing file (also a network mount that drops for a moment), and a
+    `touch` that leaves the bytes as they were: nothing is hashed, so a new mtime counts as a write. A `stat`
+    that fails otherwise (a full file table, a network error) fails only that call.
+
+    Not caught: a write that keeps the size and sets mtime back. It takes write access to the models folder,
+    which could as well swap same-size weights before the next start (loading checks their size; `pull`
+    checks their hash). And the check runs between calls: a file truncated during one (about 200 ms) can
+    still crash the process. `pull` never does either: it replaces files.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        identity: str,
+        max_words: int,
+        mapped: Sequence[tuple[Path, FileSignature]] = (),
+    ) -> None:
         self._model = model
         self._identity = identity
         self._max_words = max_words
+        self._mapped = tuple(mapped)
+        self._broken: str | None = None  # set once a mapped file changed: every later call fails closed
         self._lock = threading.Lock()
 
     @property
@@ -344,10 +377,28 @@ class GlinerModel:
 
     def predict(self, text: str, labels: Sequence[str], threshold: float) -> list[NerPrediction]:
         with self._lock:
+            self._check_mapped()
             found = self._model.predict_entities(text, list(labels), threshold=threshold, flat_ner=True)
         return [
             NerPrediction(int(e["start"]), int(e["end"]), str(e["label"]), float(e["score"])) for e in found
         ]
+
+    def _check_mapped(self) -> None:
+        if self._broken is not None:
+            raise ModelError(self._broken)
+        for path, signature in self._mapped:
+            try:
+                now: FileSignature | None = _signature(path)
+            except FileNotFoundError:
+                now = None  # gone: a change, like any other
+            except OSError as exc:  # maybe transient: this call fails closed, the next one checks again
+                raise ModelError(f"can't check the model file {path}: {exc}") from exc
+            if now != signature:
+                self._broken = (
+                    f"{path} changed on disk since the model was loaded from it (the weights are mapped from "
+                    "the file, not copied): restart to load it again"
+                )
+                raise ModelError(self._broken)
 
 
 def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> GlinerModel:
@@ -359,6 +410,17 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
     `tokenizer.json`, which transformers would prefer) is never seen, the small files can't change between
     the check and the load, and a read-only or shared models folder works. The weights are read through
     the link: checked by size here, by hash only in `pull` (hashing 1.1 GB on every start is too slow).
+
+    **Memory (NFR-7).** Through a link, the weights are memory-mapped from the safetensors file, not read
+    into memory: GLiNER builds the model on the `meta` device and puts the file's tensors in place
+    (`low_cpu_mem_usage`). Only the pages inference reads are resident, and they are clean file pages the
+    kernel can drop and read again: most of the 250k-row multilingual embedding table is never read. Loading
+    peaked at 2.9 GB, and RSS was 1.97 GB after the `dev` split; now loading peaks at 0.6 GB, and RSS is
+    1.22-1.33 GB after `dev` (ADR-0008, `bench/resources.py`). The file stays mapped for the life of the
+    process: the link goes with the temp folder, the mapping doesn't. `pull` replaces files (`os.replace`),
+    never writes into them, so a running process keeps the file it mapped; any change to that file makes the
+    next model call fail closed (`GlinerModel`). A copy (no symlinks) is read into memory as before, since the
+    temp folder holding it is deleted.
     """
     root = models_dir() if root is None else root
     folder = check(root, models=models)
@@ -374,12 +436,19 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
                         (target / f.name).write_bytes(small[(repo.repo, f.name)])
                     else:
                         _link_or_copy((root / repo.folder / f.name).resolve(), target / f.name)
+            # Map the weights only if they are links into the models folder, which outlives the temp one.
+            weights = list(staged[models.gliner].glob("*.safetensors"))
+            mapped = bool(weights) and all(w.is_symlink() for w in weights)
+            watched = [(w.resolve(), _signature(w.resolve())) for w in weights] if mapped else []
             config_path = staged[models.gliner] / "gliner_config.json"
             config = json.loads(config_path.read_bytes())
             config["model_name"] = str(staged[models.encoder])
             config_path.write_text(json.dumps(config), encoding="utf-8")
             model = GLiNER.from_pretrained(
-                str(staged[models.gliner]), local_files_only=True, load_tokenizer=True
+                str(staged[models.gliner]),
+                local_files_only=True,
+                load_tokenizer=True,
+                low_cpu_mem_usage=mapped,
             )
     except ModelError:
         raise
@@ -387,4 +456,4 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
         raise ModelError(f"loading the NER model from {folder} failed ({type(exc).__name__}: {exc})") from exc
     model.eval()
     max_words = int(getattr(model.config, "max_len", 384))
-    return GlinerModel(model, f"{models.gliner.repo}@{models.gliner.revision}", max_words)
+    return GlinerModel(model, f"{models.gliner.repo}@{models.gliner.revision}", max_words, watched)

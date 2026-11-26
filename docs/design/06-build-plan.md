@@ -92,7 +92,7 @@ S1 benchmark ─► S2 structured PII ─► S3 linking ─► S4 GLiNER + froze
   - about 50 hand-written hard cases
   - LLM drafts checked with a small review script (05 D3)
 - **Freeze `test`**: commit `test.sha256` and `DATASHEET.md`.
-- Check NFR-7: memory use ≤ 1.5 GB with the model loaded.
+- Check NFR-7: memory use ≤ 1.5 GB with the model loaded. Measured in #72 part 3: 1.22–1.33 GB RSS after `dev`, with the weights mapped from the file; up to 2.07 GB of RSS if every weight page is read, all clean file pages above 0.5 GB (ADR-0008).
 - **Exit:** a per-language leak rate on `dev`.
 
 ### S5: Non-streaming proxy, instrumented from the start (~20 h)

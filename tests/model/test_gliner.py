@@ -6,6 +6,10 @@ Run with `uv run --extra ner pytest -m model`. CI runs them in their own job wit
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
+import sys
+import textwrap
 from unittest import mock
 
 import pytest
@@ -83,3 +87,41 @@ def test_in_the_pipeline(recognizer: NerRecognizer) -> None:
         ["Rappelle Chiheb Drira demain.", "Chiheb Drira a confirmé."]
     )
     assert conv.texts == ("Rappelle PERSON_1 demain.", "PERSON_1 a confirmé.")
+
+
+# NFR-7: RSS ≤ 1.5 GB with the model loaded. A fresh process, so the peak is the load's and this workload's,
+# not the test session's. Long messages in each script touch more of the embedding table than short ones.
+_MEMORY = textwrap.dedent(
+    """
+    import json, resource, sys, warnings
+    from nona.core import Nona
+    from nona.core.recognizers import NerRecognizer, default_recognizers
+    from nona.models import load_ner_model
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = load_ner_model()
+    nona = Nona([*default_recognizers(), NerRecognizer(model)])
+    texts = [
+        "Rendez-vous demain avec Chiheb Drira au bureau, puis appelle Mme Islem Ghariani. " * 12,
+        "3andi rendez-vous m3a Mootez Jaouadi ghodwa, 9alli Hazem elli el contrat wsel. " * 12,
+        "موعد مع إسلام الشتيوي غدا في صفاقس، وقال لي السيد منير القاسمي إن الملف جاهز. " * 12,
+        "Call Kenza Boukadida in London about the Acme Corp contract before Friday. " * 12,
+    ]
+    for text in texts:
+        nona.anonymize(text)
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak_bytes = peak if sys.platform == "darwin" else peak * 1024  # bytes on macOS, KiB on Linux
+    print(json.dumps({"peak_bytes": peak_bytes, "warnings": [str(w.message) for w in caught]}))
+    """
+)
+
+
+def test_the_model_fits_in_nfr7_memory() -> None:
+    command = [sys.executable, "-c", _MEMORY]  # this interpreter and a fixed script
+    done = subprocess.run(command, capture_output=True, text=True, timeout=600)  # noqa: S603
+    assert done.returncode == 0, done.stderr[-2000:]
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    # gliner falls back to reading every weight into memory, with only a warning, when it can't map them.
+    assert not [w for w in result["warnings"] if "low_cpu_mem_usage" in w], result["warnings"]
+    assert result["peak_bytes"] <= 1.5e9, result
