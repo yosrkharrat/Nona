@@ -10,7 +10,7 @@ pipeline, and prints RSS after loading, after the workload, and the peak. The we
 safetensors file (`nona.models`), so only the pages inference reads are resident: RSS grows with the
 vocabulary a workload touches. `--touch-all` reads the whole embedding table once, the bound for a process
 that has seen every one of the 250k tokens. The macOS physical footprint (what Activity Monitor shows,
-without clean file pages, which the kernel drops under memory pressure) is printed too.
+without clean file pages, which the kernel drops under memory pressure) is printed too. GB are 10^9 bytes.
 
 Latency (NFR-6: added overhead p95 ≤ 150 ms for a 300-token message):
 
@@ -20,8 +20,8 @@ Each run anonymizes one long message with a fresh `Nona` (an empty detection cac
 be a cache hit), with and without the model. That is everything Nona adds to a request before it is sent
 (normalize, recognizers, resolve, link, rewrite); the proxy's HTTP hop comes in S5. `--load N` starts N busy
 processes first, standing in for another job on the machine (ADR-0008 measured 289/550 ms under a render job).
-It also times one model call on the Arabizi message's original text: the cost of the second call that
-ADR-0008 left to this part.
+It also times one model call alone on each message (`one_model_call`): on the Arabizi message, that is
+what the second call on the original text, left open by ADR-0008, would add.
 
 "300 tokens" are counted with the model's own tokenizer (mDeBERTa); an LLM's tokenizer gives a similar count
 on French and fewer on Arabic. Synthetic data only.
@@ -84,18 +84,23 @@ LONG = {
 }
 
 
-def _rss_mb() -> float:
+def _gb(n_bytes: float) -> float:
+    return round(n_bytes / 1e9, 2)
+
+
+def _rss() -> int:
     ps = shutil.which("ps") or "ps"
     out = subprocess.run([ps, "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True)  # noqa: S603
-    return int(out.stdout.strip()) / 1024
+    return int(out.stdout.strip()) * 1024  # KiB
 
 
-def _peak_mb() -> float:
+def _peak() -> int:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return peak / (1 << 20) if sys.platform == "darwin" else peak / 1024  # bytes on macOS, KiB on Linux
+    return peak if sys.platform == "darwin" else peak * 1024  # bytes on macOS, KiB on Linux
 
 
-def _footprint_mb() -> float | None:
+def _footprint() -> float | None:
+    """macOS only. `vmmap` rounds it (`476.7M`, `1.5G`); the unit letters are powers of 1024."""
     if sys.platform != "darwin":
         return None
     vmmap = shutil.which("vmmap") or "vmmap"
@@ -103,8 +108,7 @@ def _footprint_mb() -> float | None:
     for line in out.splitlines():
         if line.startswith("Physical footprint:"):
             value = line.split(":", 1)[1].strip()
-            unit = {"K": 1 / 1024, "M": 1, "G": 1024}[value[-1]]
-            return float(value[:-1]) * unit
+            return float(value[:-1]) * {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30}[value[-1]]
     return None
 
 
@@ -124,16 +128,16 @@ def memory(args: argparse.Namespace) -> dict[str, object]:
     from nona.core import Nona
     from nona.core.recognizers import NerRecognizer, default_recognizers
 
-    before = _rss_mb()
+    before = _rss()
     start = time.perf_counter()
     model = _load()
     load_s = time.perf_counter() - start
     gc.collect()
     out: dict[str, object] = {
-        "rss_before_load_mb": round(before),
+        "rss_before_load_gb": _gb(before),
         "load_s": round(load_s, 1),
-        "rss_after_load_mb": round(_rss_mb()),
-        "peak_after_load_mb": round(_peak_mb()),
+        "rss_after_load_gb": _gb(_rss()),
+        "peak_after_load_gb": _gb(_peak()),
     }
     nona = Nona([*default_recognizers(), NerRecognizer(model)])
     texts = _messages(args.dataset) + list(LONG.values())
@@ -149,9 +153,9 @@ def memory(args: argparse.Namespace) -> dict[str, object]:
     out |= {
         "messages": len(texts),
         "touch_all": args.touch_all,
-        "rss_after_workload_mb": round(_rss_mb()),
-        "peak_mb": round(_peak_mb()),
-        "footprint_mb": _footprint_mb(),
+        "rss_after_workload_gb": _gb(_rss()),
+        "peak_gb": _gb(_peak()),
+        "footprint_gb": None if (fp := _footprint()) is None else _gb(fp),
     }
     return out
 
@@ -209,16 +213,23 @@ def latency(args: argparse.Namespace) -> dict[str, object]:
             b.terminate()
 
 
+def _at_least_two(value: str) -> int:
+    runs = int(value)
+    if runs < 2:
+        raise argparse.ArgumentTypeError("a p95 needs at least 2 runs")
+    return runs
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = parser.add_subparsers(dest="command", required=True)
     mem = sub.add_parser("memory")
-    mem.add_argument("--dataset", type=Path, default=Path("bench/data/dev.jsonl"))
+    mem.add_argument("--dataset", type=Path, default=Path(__file__).parent / "data" / "dev.jsonl")
     mem.add_argument("--touch-all", action="store_true")
     lat = sub.add_parser("latency")
-    lat.add_argument("--runs", type=int, default=50)
+    lat.add_argument("--runs", type=_at_least_two, default=50)
     lat.add_argument("--load", type=int, default=0, help="busy processes to start first")
     args = parser.parse_args(argv)
     result = memory(args) if args.command == "memory" else latency(args)

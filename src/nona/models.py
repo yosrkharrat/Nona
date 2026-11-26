@@ -324,14 +324,38 @@ def _link_or_copy(source: Path, target: Path) -> None:
         shutil.copyfile(source, target)
 
 
+FileSignature = tuple[int, int, int, int, int]
+
+
+def _signature(path: Path) -> FileSignature:
+    """What changes when a file is replaced, truncated or written: device, inode, size, mtime and ctime (which
+    a user can't set back)."""
+    st = path.stat()
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
 class GlinerModel:
     """Adapts a loaded GLiNER model to `NerModel`. One call at a time: torch modules aren't documented as
-    safe to share across threads, and the proxy runs detection in a worker thread (S5)."""
+    safe to share across threads, and the proxy runs detection in a worker thread (S5).
 
-    def __init__(self, model: Any, identity: str, max_words: int) -> None:
+    `mapped` lists the files the weights are memory-mapped from, with their signature at load. They are read
+    page by page for the life of the process, so before each call each one is checked again (one `stat`):
+    a file written in place would run weights nobody checked, and one truncated or replaced over a network
+    filesystem would crash the process on the next page read. Either way the call fails closed
+    (`ModelError`, so `DetectorError` in the pipeline) until the process restarts and loads it again.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        identity: str,
+        max_words: int,
+        mapped: Sequence[tuple[Path, FileSignature]] = (),
+    ) -> None:
         self._model = model
         self._identity = identity
         self._max_words = max_words
+        self._mapped = tuple(mapped)
         self._lock = threading.Lock()
 
     @property
@@ -344,10 +368,23 @@ class GlinerModel:
 
     def predict(self, text: str, labels: Sequence[str], threshold: float) -> list[NerPrediction]:
         with self._lock:
+            self._check_mapped()
             found = self._model.predict_entities(text, list(labels), threshold=threshold, flat_ner=True)
         return [
             NerPrediction(int(e["start"]), int(e["end"]), str(e["label"]), float(e["score"])) for e in found
         ]
+
+    def _check_mapped(self) -> None:
+        for path, signature in self._mapped:
+            try:
+                same = _signature(path) == signature
+            except OSError:
+                same = False
+            if not same:
+                raise ModelError(
+                    f"{path} changed on disk since the model was loaded from it (the weights are mapped from "
+                    "the file, not copied): restart to load it again"
+                )
 
 
 def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> GlinerModel:
@@ -364,11 +401,12 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
     into memory: GLiNER builds the model on the `meta` device and puts the file's tensors in place
     (`low_cpu_mem_usage`). Only the pages inference reads are resident, and they are clean file pages the
     kernel can drop and read again: most of the 250k-row multilingual embedding table is never read. Loading
-    peaked at 2.3-2.9 GB, and RSS was 1.88 GB after the `dev` split; now loading peaks at about 0.6 GB, and
-    RSS is 1.27 GB after `dev` (ADR-0008, `bench/resources.py`). The file stays mapped for the life of the
+    peaked at 2.9 GB, and RSS was 1.97 GB after the `dev` split; now loading peaks at 0.6 GB, and RSS is
+    1.22-1.33 GB after `dev` (ADR-0008, `bench/resources.py`). The file stays mapped for the life of the
     process: the link goes with the temp folder, the mapping doesn't. `pull` replaces files (`os.replace`),
-    never writes into them, so a running process keeps the file it mapped. A copy (no symlinks) is read into
-    memory as before, since the temp folder holding it is deleted.
+    never writes into them, so a running process keeps the file it mapped; any change to that file makes the
+    next model call fail closed (`GlinerModel`). A copy (no symlinks) is read into memory as before, since the
+    temp folder holding it is deleted.
     """
     root = models_dir() if root is None else root
     folder = check(root, models=models)
@@ -387,6 +425,7 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
             # Map the weights only if they are links into the models folder, which outlives the temp one.
             weights = list(staged[models.gliner].glob("*.safetensors"))
             mapped = bool(weights) and all(w.is_symlink() for w in weights)
+            watched = [(w.resolve(), _signature(w.resolve())) for w in weights] if mapped else []
             config_path = staged[models.gliner] / "gliner_config.json"
             config = json.loads(config_path.read_bytes())
             config["model_name"] = str(staged[models.encoder])
@@ -403,4 +442,4 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
         raise ModelError(f"loading the NER model from {folder} failed ({type(exc).__name__}: {exc})") from exc
     model.eval()
     max_words = int(getattr(model.config, "max_len", 384))
-    return GlinerModel(model, f"{models.gliner.repo}@{models.gliner.revision}", max_words)
+    return GlinerModel(model, f"{models.gliner.repo}@{models.gliner.revision}", max_words, watched)

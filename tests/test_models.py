@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import types
 from pathlib import Path
 from typing import ClassVar
@@ -178,6 +179,9 @@ class _FakeGliner:
 
     def eval(self) -> None:
         pass
+
+    def predict_entities(self, text: str, labels: list[str], **kwargs: object) -> list[dict[str, object]]:
+        return [{"start": 0, "end": 4, "label": labels[0], "score": 0.9}]
 
 
 @pytest.fixture
@@ -417,3 +421,42 @@ def test_weights_written_into_the_temp_folder_are_never_mapped(
     pull(tmp_path, download=FakeHub(), models=FAKE)
     load_ner_model(tmp_path, models=FAKE)
     assert fake_gliner.seen["kwargs"]["low_cpu_mem_usage"] is False  # type: ignore[index]
+
+
+def _weights(root: Path) -> Path:
+    return root / GLINER_DIR / "model.safetensors"
+
+
+@pytest.mark.parametrize("change", ["write in place", "same size", "truncate", "replace", "delete"])
+def test_a_mapped_weights_file_changed_after_loading_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner], change: str
+) -> None:
+    monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)  # large fake weights: linked, so mapped
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    model = load_ner_model(tmp_path, models=FAKE)
+    assert model.predict("Sami", ["person"], 0.5)  # unchanged: fine
+    weights = _weights(tmp_path)
+    data = weights.read_bytes()
+    stat = weights.stat()
+    time.sleep(0.05)  # past the filesystem's timestamp tick (coarse on Linux), so ctime can move
+    if change == "write in place":
+        weights.write_bytes(data + b"!")
+    elif change == "same size":  # same size, and mtime put back: ctime still moves
+        weights.write_bytes(data[:-1] + b"?")
+        os.utime(weights, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    elif change == "truncate":
+        weights.write_bytes(b"")
+    elif change == "replace":  # what `pull` does: a new file, the mapped one lives on
+        (tmp_path / "new").write_bytes(data)
+        os.replace(tmp_path / "new", weights)
+    else:
+        weights.unlink()
+    with pytest.raises(ModelError, match="changed on disk since the model was loaded"):
+        model.predict("Sami", ["person"], 0.5)
+
+
+def test_weights_read_into_memory_are_not_watched(tmp_path: Path, fake_gliner: type[_FakeGliner]) -> None:
+    pull(tmp_path, download=FakeHub(), models=FAKE)  # small fake weights: written into the temp folder
+    model = load_ner_model(tmp_path, models=FAKE)
+    _weights(tmp_path).write_bytes(b"changed")
+    assert model.predict("Sami", ["person"], 0.5)

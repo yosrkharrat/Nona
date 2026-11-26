@@ -111,8 +111,8 @@ _MEMORY = textwrap.dedent(
     for text in texts:
         nona.anonymize(text)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    peak_mb = peak / (1 << 20) if sys.platform == "darwin" else peak / 1024
-    print(json.dumps({"peak_mb": peak_mb, "warnings": [str(w.message) for w in caught]}))
+    peak_bytes = peak if sys.platform == "darwin" else peak * 1024  # bytes on macOS, KiB on Linux
+    print(json.dumps({"peak_bytes": peak_bytes, "warnings": [str(w.message) for w in caught]}))
     """
 )
 
@@ -124,4 +124,4 @@ def test_the_model_fits_in_nfr7_memory() -> None:
     result = json.loads(done.stdout.strip().splitlines()[-1])
     # gliner falls back to reading every weight into memory, with only a warning, when it can't map them.
     assert not [w for w in result["warnings"] if "low_cpu_mem_usage" in w], result["warnings"]
-    assert result["peak_mb"] <= 1500, result
+    assert result["peak_bytes"] <= 1.5e9, result
