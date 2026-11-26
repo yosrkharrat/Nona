@@ -48,8 +48,12 @@ DEFAULT_POLICIES: AbcMapping[EntityType, Policy] = {
 }
 
 
+# Letters the case-insensitive placeholder regex takes for an ASCII one, which `upper()` doesn't map to it.
+_ASCII_CASE = str.maketrans({"\u0130": "I", "\u0131": "I", "\u017f": "S", "\u212a": "K"})
+
+
 def _canonical_type(raw: str) -> EntityType:
-    return EntityType(re.sub(r"[ _]", "_", raw.upper()))
+    return EntityType(re.sub(r"[ _]", "_", raw.translate(_ASCII_CASE).upper()))
 
 
 class Mapping:

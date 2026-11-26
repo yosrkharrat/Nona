@@ -91,11 +91,16 @@ def strict_at(text: str, start: int, end: int) -> bool:
 
 
 def composes_after(text: str, end: int) -> bool:
-    """Whether a combining mark follows `end`, past what normalization drops: on the normalized view it would
-    compose with the value's last letter (`Ksouri` + U+0301 is `Ksourí`)."""
-    while end < len(text) and text[end] in DROPPED:
+    """Whether a combining mark follows `end`, past the marks normalization drops: on the normalized view it
+    would compose with the value's last letter (`Ksouri` + U+0301 is `Ksourí`). A tatweel is a base
+    character, so a mark after one composes with nothing."""
+
+    def mark(c: str) -> bool:
+        return unicodedata.category(c).startswith("M")
+
+    while end < len(text) and text[end] in DROPPED and mark(text[end]):
         end += 1
-    return end < len(text) and unicodedata.category(text[end]).startswith("M")
+    return end < len(text) and mark(text[end])
 
 
 def loose_at(text: str, start: int, end: int) -> bool:

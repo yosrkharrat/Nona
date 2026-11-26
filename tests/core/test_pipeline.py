@@ -230,6 +230,22 @@ def test_a_one_word_name_before_a_combining_mark_round_trips() -> None:
     assert n.restore(conv.messages[1].text, conv.mapping) == "ok Sami\u0301x"
 
 
+def test_a_multi_word_name_after_a_tatweel_and_a_mark_round_trips() -> None:
+    """A tatweel is a base character: the mark after it composes with nothing."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    mapping = n.anonymize_messages(["Mme Sami Ksouri est la"]).mapping
+    assert n.restore("ok PERSON_1ـ\u0301 x", mapping) == "ok Sami Ksouriـ\u0301 x"
+
+
+@pytest.mark.parametrize("text", ["İBAN 1", "RİB 12", "LOCATİON_1", "PER\u017fON_1", "PHONE 1 ok"])
+def test_a_placeholder_with_a_letter_regex_case_folding_takes_for_ascii(text: str) -> None:
+    """`İ` matches `I` case-insensitively but `upper()` keeps it: no crash, in anonymize or restore."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    result = n.anonymize(text)
+    assert n.restore(text, n.anonymize_messages(["Mme Sami est la"]).mapping) is not None
+    assert n.restore(result.text, result.mapping) == canonical_form(text, result)
+
+
 def test_a_phone_before_a_combining_mark_round_trips() -> None:
     n = Nona(policies=ALL_REVERSIBLE)
     mapping = n.anonymize_messages(["phone +216 22 123 456"]).mapping
