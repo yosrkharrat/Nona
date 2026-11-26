@@ -33,6 +33,7 @@ from nona.core.boundaries import (
     NORMALIZED_LOOSE_LEFT,
     NORMALIZED_RIGHT,
     RIGHT,
+    TATWEEL,
     TYPED_PLACEHOLDER,
     self_delimited,
 )
@@ -87,7 +88,8 @@ def known_spans(
     Multi-word forms match on the normalized view (case, spacing and digits don't matter). Single-word forms
     match the original text exactly, at word boundaries, so a known `Amal` doesn't mask *amal* ("hope").
     Boundaries are the ones restoring uses (`core/boundaries.py`): `_` separates, and Arabic proclitics may
-    be attached (`لكنزة`), so a restored value is always caught again. Overlapping occurrences are all
+    be attached (`لكنزة`), so a restored value is always caught again. A single-word name may hold tatweels
+    anywhere (`Ksouriـ`, `لـالقصوري`), since normalization drops them. Overlapping occurrences are all
     found (`a@x.com@x.com` holds `x.com@x.com` twice); the resolver keeps the longest.
     """
     spans: list[Span] = []
@@ -96,16 +98,24 @@ def known_spans(
         if on_normalized:
             spans.extend(to_span(doc, s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.text))
         else:
-            spans.extend(Span(s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.original))
+            spans.extend(
+                Span(s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.original, trim=True)
+            )
     return spans
 
 
-def _occurrences(pattern: re.Pattern[str], text: str) -> list[tuple[int, int]]:
-    """Every match, overlapping ones too: the next search starts one character after the last match began."""
+def _occurrences(pattern: re.Pattern[str], text: str, *, trim: bool = False) -> list[tuple[int, int]]:
+    """Every match, overlapping ones too: the next search starts one character after the last match began.
+    With `trim`, without the tatweels at its edges, so the user's `لـ` stays when the name is restored."""
     out: list[tuple[int, int]] = []
     m = pattern.search(text)
     while m:
-        out.append(m.span())
+        s, e = m.span()
+        while trim and s < e and text[s] == TATWEEL:
+            s += 1
+        while trim and e > s and text[e - 1] == TATWEEL:
+            e -= 1
+        out.append((s, e))
         m = pattern.search(text, m.start() + 1)
     return out
 
@@ -127,7 +137,11 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
         return re.compile(left + r"\s+".join(map(re.escape, words)) + right), True
     if not words:
         return re.compile(r"(?!)"), False  # matches nothing
-    return re.compile(left + re.escape(surface.strip()) + right), False
+    if not name:
+        return re.compile(left + re.escape(surface.strip()) + right), False
+    # Tatweels, which normalization drops, anywhere in a name or at its edges: `Ksouriـ`, `لـالقصوري`
+    body = f"{TATWEEL}*".join(map(re.escape, surface.strip().replace(TATWEEL, "")))
+    return re.compile(f"{left}{TATWEEL}*{body}{TATWEEL}*{right}"), False
 
 
 def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:

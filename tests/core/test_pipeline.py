@@ -169,12 +169,26 @@ def test_a_name_glued_to_a_typed_placeholder_round_trips(text: str) -> None:
 
 @pytest.mark.parametrize("text", ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb"])
 def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
-    """#80: normalization drops a tatweel, so a name's span takes in the ones at its edges, and restore puts
-    the name back (each mention as its entity's canonical form: `Ksouriـ` twice)."""
+    """#80: normalization drops a tatweel, so a name's span leaves out the ones at its edges, and propagation,
+    which restore checks with, takes them in: the name comes back."""
     n = Nona(policies=ALL_REVERSIBLE)
     result = n.anonymize(text)
     assert "PERSON" in result.text
-    assert n.restore(result.text, result.mapping) == canonical_form(text, result)
+    assert n.restore(result.text, result.mapping) == text
+
+
+@pytest.mark.parametrize(
+    ("messages", "last"),
+    [
+        (["Mme Zgolliـ est la", "rani m3a Zgolli"], "rani m3a PERSON_1"),
+        (["السيدة القصوريـ جات", "شفت القصوري اليوم"], "شفت PERSON_1 اليوم"),
+        (["السيدة القصوري جات", "قول لـالقصوري"], "قول لـPERSON_1"),  # a proclitic, then a tatweel
+        (["السيدة القصوري جات", "قول القصـوري"], "قول PERSON_1"),
+    ],
+)
+def test_propagation_finds_a_name_with_or_without_tatweels(messages: list[str], last: str) -> None:
+    conv = Nona(policies=ALL_REVERSIBLE).anonymize_messages(messages)
+    assert conv.messages[-1].text == last
 
 
 def test_a_phone_starting_with_a_sign_round_trips_glued_to_a_letter() -> None:

@@ -23,9 +23,7 @@ from enum import StrEnum
 
 from nona.core.boundaries import (
     ANY_PLACEHOLDER,
-    NAME_TYPES,
     RESERVED_PLACEHOLDER,
-    TATWEEL,
     placeholder_parts,
     placeholder_regex,
 )
@@ -161,10 +159,10 @@ class Pseudonymizer:
         for a, b in itertools.pairwise(ordered):
             if a.overlaps(b):
                 raise ValueError("spans must not overlap; run the resolver first")
-        ordered, seeds = _take_tatweels(original, ordered, seeds or {})
         kept = [s for s in ordered if self.policy(s.type) is not Policy.KEEP]
         kept = sorted([*kept, *self._colliding_literals(original, kept)], key=Span.sort_key)
         reversible = [s for s in kept if self.policy(s.type) is Policy.PSEUDONYMIZE]
+        seeds = seeds or {}
         linked = self._linker.link(
             original,
             reversible,
@@ -224,33 +222,6 @@ class Pseudonymizer:
         return Anonymized(message.text, entities, message.redacted, mapping)
 
 
-def _take_tatweels(
-    original: str, spans: list[Span], seeds: AbcMapping[Span, frozenset[str]]
-) -> tuple[list[Span], dict[Span, frozenset[str]]]:
-    """A name takes in the tatweels at its edges (`Ksouriـ`): normalization drops them, so a span found on the
-    normalized view leaves them out, and a placeholder glued to one can't be restored (#80). A tatweel only
-    stretches the word it is in, so this never joins two words."""
-    out: list[Span] = []
-    moved = dict(seeds)
-    for i, s in enumerate(spans):
-        a, b = s.start, s.end
-        if s.type in NAME_TYPES:
-            lo = out[-1].end if out else 0
-            hi = spans[i + 1].start if i + 1 < len(spans) else len(original)
-            while a > lo and original[a - 1] == TATWEEL:
-                a -= 1
-            while b < hi and original[b] == TATWEEL:
-                b += 1
-        if (a, b) == (s.start, s.end):
-            out.append(s)
-            continue
-        wider = Span(a, b, s.type, s.score, s.detector)
-        out.append(wider)
-        if s in moved:
-            moved[wider] = moved.pop(s)
-    return out, moved
-
-
 def pseudonymize(
     original: str,
     spans: Iterable[Span],
@@ -268,7 +239,9 @@ def restore(text: str, mapping: Mapping) -> str:
     A value is written only where forward propagation finds it again in the restored text, so the client
     can't re-send it in clear (`core/boundaries.py`): `PERSON_1abc` stays, and so does `PERSON_1PERSON_2`,
     which would read `SamiAmal`. A placeholder the user wrote (a literal) is written only where it is found
-    again as one. Checked on the output, again after each round of placeholders put back.
+    again as one. Checked on the output, again after each round of placeholders put back. A round puts back
+    every value that fails, so a value that failed only because of a glued neighbour put back with it stays
+    a placeholder too (`PERSON_2PERSON_1abc`): never a leak, and one round per value would be quadratic.
 
     Glued to a letter, a placeholder counts in its exact issued shape, so `IPHONE_1` from the model is read
     as `PHONE_1`: the user's own value in the user's own answer, a corruption but no leak. Telling it from an

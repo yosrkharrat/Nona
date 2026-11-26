@@ -10,8 +10,10 @@ restored text (`pseudonymize.restore`), and propagation uses these boundaries:
 - up to two Arabic proclitics may be attached in front (`لPERSON_1`, `وبPERSON_1`), as Arabic writes them;
 - a placeholder left glued on either side is a boundary (`سمPERSON_1`, `PERSON_1محمد`): no detection cuts
   through a typed one, so the piece next to it gets its own placeholder, glued to it, and restore must put
-  that value back (#80). Only a placeholder as issued counts, `TYPE_n` in upper case (lower case on the
-  normalized view), and a value right after one can't start with a digit (`PERSON_13li` reads `PERSON_13`).
+  that value back (#80). Only a placeholder as issued counts, `TYPE_n` in upper case, and a value right after
+  one can't start with a digit (`PERSON_13li` reads `PERSON_13`). The normalized view has no case, so there
+  `phone_2` counts too (`amal trabelsiphone_2`), and what is glued before the placeholder isn't checked
+  (`xPERSON_1Sami`): both only make propagation mask more.
   Restore checks on its output, so two values it writes side by side are glued (`SamiAmal`) and neither is
   written;
 - any other letter or digit glued on either side is not a boundary: `PERSON_1abc` and `lPERSON_1` are left
