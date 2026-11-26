@@ -21,7 +21,15 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, placeholder_regex, strict_at
+from nona.core.boundaries import (
+    ANY_PLACEHOLDER,
+    NAME_TYPES,
+    RESERVED_PLACEHOLDER,
+    loose_start,
+    placeholder_regex,
+    self_delimited,
+    strict_at,
+)
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import normalize
 from nona.core.types import Entity, EntityType, Span
@@ -100,8 +108,9 @@ def fold_surface(surface: str) -> str:
 
 
 def reserved_numbers(text: str) -> list[tuple[EntityType, int]]:
-    """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued."""
-    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in ANY_PLACEHOLDER.finditer(text)]
+    """Placeholders the user literally wrote (`PERSON_1`, `person 2`, glued `SamiPERSON_1`): their numbers are
+    never issued."""
+    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in RESERVED_PLACEHOLDER.finditer(text)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,8 +245,13 @@ def restore(text: str, mapping: Mapping) -> str:
         placeholder = f"{etype.value}_{int(m.group(2))}"
         if placeholder not in mapping:
             return m.group(0)
-        if etype in NAME_TYPES and not strict_at(m.string, m.start(), m.end()):
-            return m.group(0)  # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
-        return mapping.value(placeholder)
+        value = mapping.value(placeholder)
+        if etype in NAME_TYPES:
+            # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
+            if not strict_at(m.string, m.start(), m.end()):
+                return m.group(0)
+        elif not loose_start(m.string, m.start()) and not self_delimited(value):
+            return m.group(0)  # `aEMAIL_1`; `aPHONE_1` is restored when the phone starts with `+`
+        return value
 
-    return placeholder_regex(types).sub(replace, text)
+    return placeholder_regex(types, left=False).sub(replace, text)

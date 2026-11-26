@@ -102,6 +102,9 @@ def canonical_form(text: str, result: Anonymized) -> str:
 
 @given(texts)
 @example("PERSON_1@example.com")  # an email whose local part looks like a placeholder
+@example("M.٢PERSON_1")  # #80: a piece glued to a typed placeholder
+@example("a+822 123 4560")  # #80: a phone glued to a letter
+@example("M.Saaـ")  # #80: a name glued to a tatweel
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
     so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone)."""
@@ -140,6 +143,48 @@ def test_a_structured_value_glued_to_a_letter_round_trips() -> None:
         result = n.anonymize(text)
         assert result.text != text
         assert n.restore(result.text, result.mapping) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "M.٢PERSON_1",  # #80, found by Hypothesis
+        "esmi سميرPERSON_1",
+        "PERSON_1محمد m3a",
+        "SamiPERSON_1 w Sami",  # the user's `PERSON_1` is never taken for Sami's
+        "PERSON_1Sami w Sami",
+    ],
+)
+def test_a_name_glued_to_a_typed_placeholder_round_trips(text: str) -> None:
+    """#80: no detection cuts through a typed placeholder, so a name glued to one gets its own placeholder,
+    glued to it, and restore puts the name back."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    result = n.anonymize(text)
+    assert result.text != text
+    assert n.restore(result.text, result.mapping) == text
+
+
+@pytest.mark.parametrize("text", ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb"])
+def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
+    """#80: normalization drops a tatweel, so the name's span leaves it out; restore puts the name back."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    result = n.anonymize(text)
+    assert n.restore(result.text, result.mapping) == text
+
+
+def test_a_phone_starting_with_a_sign_round_trips_glued_to_a_letter() -> None:
+    """#80: `+216…` needs no boundary on its left; restore writes it back where propagation finds it again."""
+    n = Nona()
+    first = n.anonymize("a+216 22 123 456")
+    assert first.text == "aPHONE_1"
+    restored = n.restore(first.text, first.mapping)
+    assert restored == "a+216 22 123 456"
+    assert "22 123 456" not in n.anonymize_messages(["a+216 22 123 456", restored]).messages[1].text
+
+
+def test_a_glued_placeholder_is_reserved() -> None:
+    """`SamiPERSON_1`: the user's `PERSON_1` isn't a typed placeholder there; its number is never issued."""
+    assert Nona().anonymize("SamiPERSON_1 w Sami").text == "PERSON_2PERSON_1 w PERSON_2"
 
 
 def test_arabic_look_ahead_spreads_listed_names_only() -> None:

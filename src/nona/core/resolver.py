@@ -24,7 +24,15 @@ import functools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.boundaries import LEFT, LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, RIGHT, TYPED_PLACEHOLDER
+from nona.core.boundaries import (
+    LEFT,
+    LOOSE_LEFT,
+    LOOSE_RIGHT,
+    NAME_TYPES,
+    RIGHT,
+    TYPED_PLACEHOLDER,
+    self_delimited,
+)
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -98,6 +106,8 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
     boundaries, structured values the loose ones (`core/boundaries.py`). Cached, because the proxy re-runs the
     whole conversation on every request."""
     left, right = (LEFT, RIGHT) if name else (LOOSE_LEFT, LOOSE_RIGHT)
+    if not name and self_delimited(surface.strip()):
+        left = ""  # `a+216 22 123 456`: restore writes it there too
     words = normalize(surface).text.split()
     if len(words) > 1:
         return re.compile(left + r"\s+".join(map(re.escape, words)) + right), True
