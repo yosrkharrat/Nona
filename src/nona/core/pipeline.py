@@ -36,7 +36,7 @@ import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
-from nona.core.boundaries import PROCLITICS
+from nona.core.boundaries import PROCLITICS, TATWEEL
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
 from nona.core.normalize import NormalizedDoc, normalize
@@ -59,6 +59,7 @@ from nona.core.resolver import (
     known_spans,
     placeholder_holes,
     resolve,
+    take_glued_words,
 )
 from nona.core.types import EntityType, Span
 
@@ -112,16 +113,19 @@ def _as_people(
 
 
 def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[Span]) -> list[Span]:
-    """A recognizer name span that is a propagated form behind one or two Arabic clitics starts at the form
-    (module docstring), so `لزكرياء` links to `زكرياء` and restores with its clitic in place."""
+    """A recognizer name span that is a propagated form behind one or two Arabic clitics, and maybe tatweels
+    (`لـ`), starts at the form (module docstring), so `لزكرياء` links to `زكرياء` and restores with its clitic
+    in place."""
     starts = {(p.start, p.end) for p in propagated}
     out: list[Span] = []
     for s in recognized:
-        for n in (1, 2):
+        for n in (1, 2, 3, 4):
+            head = text[s.start : s.start + n]
             if (
                 s.detector != GAZETTEER
                 and (s.start + n, s.end) in starts
-                and all(c in PROCLITICS for c in text[s.start : s.start + n])
+                and all(c in PROCLITICS or c == TATWEEL for c in head)
+                and 1 <= sum(c in PROCLITICS for c in head) <= 2
             ):
                 s = Span(s.start + n, s.end, s.type, s.score, s.detector)
                 break
@@ -202,12 +206,13 @@ class Nona:
             if not any(c.overlaps(s) for s in spans if s not in keep)
         ]
         if not extra:
-            return spans, span_seeds
+            return take_glued_words(spans, text), span_seeds
         hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
         kept = [s for s in spans if s not in hiding]
         final = resolve([*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
         kept_spans = set(final)
-        return final, {s: t for s, t in span_seeds.items() if s in kept_spans}
+        # Only structured values move, and seeds are for PERSON spans.
+        return take_glued_words(final, text), {s: t for s, t in span_seeds.items() if s in kept_spans}
 
     @staticmethod
     def _look_ahead_words(

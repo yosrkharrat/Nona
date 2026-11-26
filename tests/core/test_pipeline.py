@@ -108,6 +108,10 @@ def canonical_form(text: str, result: Anonymized) -> str:
 @example("a@example.com@example.com@example.com")  # overlapping occurrences of a known email
 @example("0/ 22 123 456")  # a phone found with a space in front
 @example("S+3222 123 456")  # a phone glued to a capital
+@example("٢+3222 123 456")  # a phone glued to a digit that normalizes to ASCII
+@example("a::-@example.com")  # an IP and an email back to back
+@example("a@example.com+3222 123 456")  # a phone starting with its sign, right after an email
+@example("M.٢PERSON_1a")  # a typed placeholder glued on both sides
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
     so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone)."""
@@ -203,11 +207,11 @@ def test_propagation_finds_a_name_with_or_without_tatweels(messages: list[str], 
     assert conv.messages[-1].text == last
 
 
-def test_a_phone_starting_with_a_sign_round_trips_glued_to_a_letter() -> None:
-    """#80: `+216…` needs no boundary on its left; restore writes it back where propagation finds it again."""
+def test_a_phone_glued_to_a_word_takes_the_word_in() -> None:
+    """#80: `aPHONE_1` couldn't be restored, so the placeholder takes in the word the phone is glued to."""
     n = Nona()
     first = n.anonymize("a+216 22 123 456")
-    assert first.text == "aPHONE_1"
+    assert first.text == "PHONE_1"
     restored = n.restore(first.text, first.mapping)
     assert restored == "a+216 22 123 456"
     assert "22 123 456" not in n.anonymize_messages(["a+216 22 123 456", restored]).messages[1].text
@@ -229,9 +233,11 @@ def _conversation() -> tuple[Nona, Mapping]:
     [
         "PERSON_1PERSON_2",  # `SamiAmal Trabelsi` would leak `Sami` and `Amal` on the next request
         "xـPERSON_2 ok",  # found on the normalized view, where the tatweel is gone: `xamal trabelsi`
-        "Telephone 1: see",  # not a placeholder: glued, only the exact shape counts
+        "Telephone 1: see",  # glued: not a placeholder
         "smartphone_1",
+        "TELEPHONE_1",
         "PERSON_1abc",
+        "aPHONE_1",  # detection never leaves a placeholder glued: this one is the model's
     ],
 )
 def test_restore_writes_a_value_only_where_propagation_finds_it_again(answer: str) -> None:
@@ -239,9 +245,28 @@ def test_restore_writes_a_value_only_where_propagation_finds_it_again(answer: st
     assert n.restore(answer, mapping) == answer
 
 
-def test_restore_writes_a_glued_value_that_propagation_finds_again() -> None:
-    n, mapping = _conversation()
-    assert n.restore("aPHONE_1, PERSON_1PERSON_9", mapping) == "a+216 22 123 456, SamiPERSON_9"
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "PHONE_9person_2-Person 2",  # glued values a longer span could cut on the next request
+        "PERSON_2PERSON_9xلEMAIL_1",
+        "PERSON_1phone 1-email 1",
+        "SMme phone 1PHONE_9EMAIL_1",
+    ],
+)
+def test_a_restored_answer_leaks_nothing_on_the_next_request(answer: str) -> None:
+    n = Nona(policies=ALL_REVERSIBLE)
+    first = "Sami w Amal Trabelsi, phone +216 22 123 456, mail sami@example.com"
+    restored = n.restore(answer, n.anonymize_messages([first]).mapping)
+    sent = n.anonymize_messages([first, restored]).messages[1].text
+    assert not any(v in sent for v in ["Sami", "Amal", "Trabelsi", "22 123", "sami@"]), sent
+
+
+def test_a_denylist_term_shaped_like_a_placeholder_is_restored_only_where_it_is_caught_again() -> None:
+    n = Nona(denylist=["Card 7"])
+    first = n.anonymize("projet Card 7 ok")
+    assert first.text == "projet CUSTOM_1 ok"
+    assert n.restore("عندCUSTOM_1, CUSTOM_1", first.mapping) == "عندCUSTOM_1, Card 7"
 
 
 def test_a_glued_placeholder_the_user_typed_in_a_later_message_round_trips() -> None:
@@ -281,9 +306,9 @@ def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> Non
     assert n.restore(text, Mapping({"PERSON_1": "Sami"})) == text
 
 
-def test_a_glued_placeholder_is_reserved() -> None:
-    """`SamiPERSON_1`: the user's `PERSON_1` isn't a typed placeholder there; its number is never issued."""
-    assert Nona().anonymize("SamiPERSON_1 w Sami").text == "PERSON_2PERSON_1 w PERSON_2"
+def test_a_name_glued_to_a_typed_placeholder_is_masked_with_it() -> None:
+    """The model doesn't see that typed placeholder: only odd text loses it."""
+    assert Nona().anonymize("esmi سميرPERSON_1 w PERSON_1محمد").text == "esmi PERSON_2 w PERSON_3"
 
 
 def test_arabic_look_ahead_spreads_listed_names_only() -> None:

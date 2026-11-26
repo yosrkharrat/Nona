@@ -24,19 +24,7 @@ import functools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.boundaries import (
-    LEFT,
-    LOOSE_LEFT,
-    LOOSE_RIGHT,
-    NAME_TYPES,
-    NORMALIZED_LEFT,
-    NORMALIZED_LOOSE_LEFT,
-    NORMALIZED_RIGHT,
-    RIGHT,
-    TATWEEL,
-    TYPED_PLACEHOLDER,
-    self_delimited,
-)
+from nona.core.boundaries import LEFT, LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, RIGHT, TATWEEL, TYPED_PLACEHOLDER
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -89,8 +77,8 @@ def known_spans(
     match the original text exactly, at word boundaries, so a known `Amal` doesn't mask *amal* ("hope").
     Boundaries are the ones restoring uses (`core/boundaries.py`): `_` separates, and Arabic proclitics may
     be attached (`لكنزة`), so a restored value is always caught again. A single-word name may hold tatweels
-    anywhere (`Ksouriـ`, `لـالقصوري`), since normalization drops them. Overlapping occurrences are all
-    found (`a@x.com@x.com` holds `x.com@x.com` twice); the resolver keeps the longest.
+    anywhere (`Ksouriـ`, `لـالقصوري`), since normalization drops them. Overlapping occurrences are all found
+    (`a@x.com@x.com` holds `x.com@x.com` twice); the resolver keeps the longest.
     """
     spans: list[Span] = []
     for etype, surface in dict.fromkeys(known):
@@ -98,22 +86,20 @@ def known_spans(
         if on_normalized:
             spans.extend(to_span(doc, s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.text))
         else:
-            spans.extend(
-                Span(s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.original, trim=True)
-            )
+            spans.extend(Span(s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.original))
     return spans
 
 
-def _occurrences(pattern: re.Pattern[str], text: str, *, trim: bool = False) -> list[tuple[int, int]]:
-    """Every match, overlapping ones too: the next search starts one character after the last match began.
-    With `trim`, without the tatweels at its edges, so the user's `لـ` stays when the name is restored."""
+def _occurrences(pattern: re.Pattern[str], text: str) -> list[tuple[int, int]]:
+    """Every match, overlapping ones too (the next search starts one character after the last match began),
+    without the tatweels at its edges, so the user's `لـ` stays when the name is restored."""
     out: list[tuple[int, int]] = []
     m = pattern.search(text)
     while m:
         s, e = m.span()
-        while trim and s < e and text[s] == TATWEEL:
+        while s < e and text[s] == TATWEEL:
             s += 1
-        while trim and e > s and text[e - 1] == TATWEEL:
+        while e > s and text[e - 1] == TATWEEL:
             e -= 1
         out.append((s, e))
         m = pattern.search(text, m.start() + 1)
@@ -125,21 +111,16 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
     """The pattern for one known form, and whether it runs on the normalized view. Names use the strict
     boundaries, structured values the loose ones (`core/boundaries.py`). Cached, because the proxy re-runs the
     whole conversation on every request."""
+    left, right = (LEFT, RIGHT) if name else (LOOSE_LEFT, LOOSE_RIGHT)
+    if not name and surface.strip() and not surface.strip()[0].isalnum():
+        left = ""  # a value that starts with a sign (`+216…`) needs no boundary on its left (#80)
     words = normalize(surface).text.split()
-    on_normalized = len(words) > 1
-    if name:
-        left, right = (NORMALIZED_LEFT, NORMALIZED_RIGHT) if on_normalized else (LEFT, RIGHT)
-    else:
-        left, right = (NORMALIZED_LOOSE_LEFT if on_normalized else LOOSE_LEFT), LOOSE_RIGHT
-        if self_delimited(surface.strip()):
-            left = ""  # `a+216 22 123 456`: restore writes it there too
-    if on_normalized:
+    if len(words) > 1:
         return re.compile(left + r"\s+".join(map(re.escape, words)) + right), True
     if not words:
         return re.compile(r"(?!)"), False  # matches nothing
     if not name:
         return re.compile(left + re.escape(surface.strip()) + right), False
-    # Tatweels, which normalization drops, anywhere in a name or at its edges: `Ksouriـ`, `لـالقصوري`
     body = f"{TATWEEL}*".join(map(re.escape, surface.strip().replace(TATWEEL, "")))
     return re.compile(f"{left}{TATWEEL}*{body}{TATWEEL}*{right}"), False
 
@@ -157,9 +138,20 @@ def cut_at_placeholders(
     span: Span, original: str, holes: Sequence[tuple[int, int]] | None = None
 ) -> list[Span]:
     """The pieces of a span on either side of every typed placeholder it overlaps, spaces trimmed; the span
-    itself when it overlaps none. `holes` from `placeholder_holes`, computed here if not given."""
+    itself when it overlaps none. `holes` from `placeholder_holes`, computed here if not given.
+
+    A piece glued to a typed placeholder (`سميرPERSON_1`, `PERSON_1محمد`, `M.٢PERSON_1`) is masked together
+    with it: its own placeholder would be glued to the typed one, where restore can't write it back (#80).
+    The model then doesn't see that typed placeholder, which only odd text loses."""
     holes = placeholder_holes(original) if holes is None else holes
     inside = [(a, b) for a, b in holes if a < span.end and span.start < b]
+    glued = [(a, b) for a, b in holes if a <= span.end and span.start <= b]
+    if not glued:
+        return [span]
+    return _join_glued(_pieces(span, original, inside), glued, original)
+
+
+def _pieces(span: Span, original: str, inside: Sequence[tuple[int, int]]) -> list[Span]:
     if not inside:
         return [span]
     bounds = [span.start, *(x for h in inside for x in h), span.end]
@@ -173,6 +165,31 @@ def cut_at_placeholders(
         if a < b:
             pieces.append(Span(a, b, span.type, span.score, span.detector))
     return pieces
+
+
+def _word_char(c: str) -> bool:
+    return c.isalnum() or c == TATWEEL
+
+
+def _join_glued(pieces: list[Span], holes: Sequence[tuple[int, int]], original: str) -> list[Span]:
+    """Each piece with the typed placeholders it touches and the letters glued to those (`PERSON_1a`), and
+    pieces joined through one."""
+    out: list[Span] = []
+    for p in pieces:
+        a, b = p.start, p.end
+        for h_start, h_end in holes:
+            if h_end == a:
+                a = h_start
+                while a > 0 and _word_char(original[a - 1]):
+                    a -= 1
+            if h_start == b:
+                b = h_end
+                while b < len(original) and _word_char(original[b]):
+                    b += 1
+        if out and out[-1].end >= a:
+            a = out.pop().start
+        out.append(p if (a, b) == (p.start, p.end) else Span(a, b, p.type, p.score, p.detector))
+    return out
 
 
 def resolve(
@@ -204,3 +221,27 @@ def resolve(
         if not any(span.overlaps(k) for k in kept):
             kept.append(span)
     return sorted(kept, key=Span.sort_key)
+
+
+_ASCII_WORD = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+
+
+def _ascii_word(c: str) -> bool:
+    """Whether `c` is, or normalizes to, an ASCII letter or digit (`٢` → `2`, `ﬁ` → `fi`): `LOOSE_LEFT` fails
+    after it on the original text or on the normalized view."""
+    return c in _ASCII_WORD or any(x in _ASCII_WORD for x in normalize(c).text)
+
+
+def take_glued_words(spans: list[Span], original: str) -> list[Span]:
+    """A structured value glued to a word on its left (`a+216 22 123 456`, a phone starting with its sign)
+    takes the word in: its placeholder would be glued to the word, where restore can't write it back (#80).
+    `spans` resolved, in order."""
+    out: list[Span] = []
+    for s in spans:
+        a = s.start
+        if s.type not in NAME_TYPES:
+            floor = out[-1].end if out else 0
+            while a > floor and _ascii_word(original[a - 1]):
+                a -= 1
+        out.append(s if a == s.start else Span(a, s.end, s.type, s.score, s.detector))
+    return out

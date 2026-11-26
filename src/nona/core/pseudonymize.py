@@ -21,12 +21,7 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import (
-    ANY_PLACEHOLDER,
-    RESERVED_PLACEHOLDER,
-    placeholder_parts,
-    placeholder_regex,
-)
+from nona.core.boundaries import ANY_PLACEHOLDER, loose_start, placeholder_regex
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import normalize
 from nona.core.resolver import known_spans
@@ -106,9 +101,8 @@ def fold_surface(surface: str) -> str:
 
 
 def reserved_numbers(text: str) -> list[tuple[EntityType, int]]:
-    """Placeholders the user literally wrote (`PERSON_1`, `person 2`, glued `SamiPERSON_1`): their numbers are
-    never issued."""
-    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in RESERVED_PLACEHOLDER.finditer(text)]
+    """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued."""
+    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in ANY_PLACEHOLDER.finditer(text)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,9 +185,8 @@ class Pseudonymizer:
         """Placeholders the user wrote whose number was already issued (see `core/linking.py`)."""
         out: list[Span] = []
         for m in ANY_PLACEHOLDER.finditer(original):
-            type_name, number = placeholder_parts(m)
-            span = Span(m.start(), m.end(), _canonical_type(type_name), 1.0, LITERAL_DETECTOR)
-            if self._linker.issued(span.type, number) and not any(span.overlaps(k) for k in kept):
+            span = Span(m.start(), m.end(), _canonical_type(m.group(1)), 1.0, LITERAL_DETECTOR)
+            if self._linker.issued(span.type, int(m.group(2))) and not any(span.overlaps(k) for k in kept):
                 out.append(span)
         return out
 
@@ -238,23 +231,27 @@ def restore(text: str, mapping: Mapping) -> str:
 
     A value is written only where forward propagation finds it again in the restored text, so the client
     can't re-send it in clear (`core/boundaries.py`): `PERSON_1abc` stays, and so does `PERSON_1PERSON_2`,
-    which would read `SamiAmal`. A placeholder the user wrote (a literal) is written only where it is found
-    again as one. Checked on the output, again after each round of placeholders put back. A round puts back
-    every value that fails, so a value that failed only because of a glued neighbour put back with it stays
-    a placeholder too (`PERSON_2PERSON_1abc`): never a leak, and one round per value would be quadratic.
+    which would read `SamiAmal`. A value shaped like a placeholder (one the user wrote, a literal) must also
+    be found again as a placeholder. Checked on the output, again after each round of placeholders put back.
 
-    Glued to a letter, a placeholder counts in its exact issued shape, so `IPHONE_1` from the model is read
-    as `PHONE_1`: the user's own value in the user's own answer, a corruption but no leak. Telling it from an
-    issued `PHONE_1` glued to a capital (`S+216…`) would need the anonymized text, which restore doesn't have.
+    A placeholder glued after another one counts only exactly as issued (`IP_ADDRESS_1EMAIL_1`, never the
+    `phone 1` of `PHONE_9phone 1`). A round puts back every value that fails, so a value that failed only
+    because of a glued neighbour put back with it stays a placeholder too: never a leak, and one round per
+    value would be quadratic.
     """
     if not len(mapping):
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
     found: list[_Found] = []
-    for m in placeholder_regex(types).finditer(text):
-        type_name, number = placeholder_parts(m)
-        etype = _canonical_type(type_name)
-        placeholder = f"{etype.value}_{number}"
+    previous = -1
+    for m in placeholder_regex(types, left=False).finditer(text):
+        etype = _canonical_type(m.group(1))
+        placeholder = f"{etype.value}_{int(m.group(2))}"
+        # Two values detected back to back get glued placeholders (`IP_ADDRESS_1EMAIL_1`): one exactly as
+        # issued, right after another, is taken too, and the check below decides.
+        if not loose_start(text, m.start()) and not (m.start() == previous and m.group(0) == placeholder):
+            continue
+        previous = m.end()
         if placeholder in mapping:
             found.append((m.start(), m.end(), etype, mapping.value(placeholder)))
     while True:
@@ -266,36 +263,11 @@ def restore(text: str, mapping: Mapping) -> str:
 
 
 _Found = tuple[int, int, EntityType, str]  # placeholder start and end, type, value
-
-
-def _found_again(out: str, found: list[_Found], placed: list[tuple[int, int]]) -> list[_Found]:
-    """The values that forward propagation finds again where restore wrote them in `out` (`placed`), and the
-    literals found again as placeholders. One propagation pass per distinct value."""
-    doc = normalize(out)
-    literals = {m.span() for m in ANY_PLACEHOLDER.finditer(out)}
-    spans = {
-        (etype, value): {(s.start, s.end) for s in known_spans(doc, [(etype, value)])}
-        for etype, value in dict.fromkeys((f[2], f[3]) for f in found)
-        if not RESERVED_PLACEHOLDER.fullmatch(value)
-    }
-    kept: list[_Found] = []
-    for f, (start, end) in zip(found, placed, strict=True):
-        etype, value = f[2], f[3]
-        if RESERVED_PLACEHOLDER.fullmatch(value):
-            ok = (start, end) in literals
-        else:
-            at = spans[etype, value]
-            ok = (start, end) in at or any(s <= start and end <= e for s, e in at)
-        if ok:
-            kept.append(f)
-    return kept
-
-
 _EDGES = " \t\n\r\f\v\u0640"  # spaces, and tatweels, which propagation leaves out of a name's span
 
 
 def _write(text: str, found: list[_Found]) -> tuple[str, list[tuple[int, int]]]:
-    """`text` with each placeholder replaced by its value, and where each value went, without spaces."""
+    """`text` with each placeholder replaced by its value, and where each value went (`_EDGES` left out)."""
     parts: list[str] = []
     placed: list[tuple[int, int]] = []
     pos = size = 0
@@ -310,3 +282,23 @@ def _write(text: str, found: list[_Found]) -> tuple[str, list[tuple[int, int]]]:
         pos = end
     parts.append(text[pos:])
     return "".join(parts), placed
+
+
+def _found_again(out: str, found: list[_Found], placed: list[tuple[int, int]]) -> list[_Found]:
+    """The values that forward propagation finds again where restore wrote them in `out` (`placed`). One
+    propagation pass per distinct value."""
+    doc = normalize(out)
+    literals = {m.span() for m in ANY_PLACEHOLDER.finditer(out)}
+    spans = {
+        key: {(s.start, s.end) for s in known_spans(doc, [key])}
+        for key in dict.fromkeys((f[2], f[3]) for f in found)
+    }
+    kept: list[_Found] = []
+    for f, (start, end) in zip(found, placed, strict=True):
+        at = spans[f[2], f[3]]
+        ok = (start, end) in at or any(s <= start and end <= e for s, e in at)
+        if ok and ANY_PLACEHOLDER.fullmatch(f[3].strip()):
+            ok = (start, end) in literals
+        if ok:
+            kept.append(f)
+    return kept
