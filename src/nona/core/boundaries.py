@@ -7,9 +7,9 @@ caught by a plain `\\w` boundary. So both use these boundaries:
 
 - `_` separates words (`file_PERSON_1.pdf`, `PERSON_1_2024`);
 - up to two Arabic proclitics may be attached in front (`لPERSON_1`, `وبPERSON_1`), as Arabic writes them;
-- what normalization drops (tatweels, Arabic short vowels and marks) is looked past: up to two of them on
-  the left, also around up to two proclitics (`ـلSami`, `لـالقصوري`, `لِسامي`), any number on the right
-  (`Ksouriـ`). What follows them still decides, so a known `أمين` (Amin) isn't found in `أمينـة` (Amina), #80.
+- what normalization drops (tatweels, Arabic short vowels and marks) is looked past, on the left also
+  around the proclitics (`ـلSami`, `لـــالقصوري`, `لِسامي`), on the right too (`Ksouriـ`). What is beyond
+  them still decides, so a known `أمين` (Amin) isn't found in `أمينـة` (Amina) or `تَأمين`, #80.
   Multi-word values are found on the normalized view, so restore checks them there too;
 - any other letter or digit glued on either side is not a boundary: `PERSON_1abc` and `lPERSON_1` are left
   as they are, so they can't leak either. That includes a placeholder detection leaves glued, which restore
@@ -27,8 +27,8 @@ Arabic letter, is restored and caught again like any other.
 
 from __future__ import annotations
 
-import itertools
 import re
+import unicodedata
 from collections.abc import Iterable
 
 from nona.core.normalize import DROPPED
@@ -38,26 +38,17 @@ NAME_TYPES = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGAN
 
 PROCLITICS = "وفبلك"
 TATWEEL = "\u0640"
-_NOT_WORD = r"(?<![^\W_])"  # not preceded by a letter or digit (`_` is fine)
 _DROPPED = "".join(sorted(DROPPED))
-# What may sit between a word boundary and a value: up to two proclitics and up to two dropped characters,
-# in any order. Fixed-width look-behinds, one per shape, behind a one-character gate.
-_SHAPES = [
-    shape
-    for n in (1, 2, 3, 4)
-    for shape in itertools.product("PD", repeat=n)
-    if shape.count("P") <= 2 and shape.count("D") <= 2
-]
-_PREFIXES = "|".join(
-    f"(?<={_NOT_WORD}" + "".join(f"[{PROCLITICS}]" if c == "P" else f"[{_DROPPED}]" for c in s) + ")"
-    for s in _SHAPES
-)
-LEFT = rf"(?:{_NOT_WORD}|(?<=[{PROCLITICS}{_DROPPED}])(?:{_PREFIXES}))"
+# Not preceded by a letter, a digit or what normalization drops (`_` is fine): `تَأمين` holds no `أمين`.
+_NOT_WORD = rf"(?<![^\W_])(?<![{_DROPPED}])"
+# A name may start after up to two proclitics, with any number of dropped characters around them (`ـلSami`,
+# `لـــالقصوري`, `لِسامي`). Python's look-behind is fixed-width, so the prefix is in the match and the name
+# is its group `v` (`resolver.known_spans`).
+NAME_START = rf"{_NOT_WORD}[{_DROPPED}]*(?:[{PROCLITICS}][{_DROPPED}]*){{0,2}}"
 RIGHT = rf"(?=[{_DROPPED}]*+(?![^\W_]))"  # not followed by a letter or digit, past what normalization drops
 LOOSE_LEFT = r"(?<![A-Za-z0-9])"
 LOOSE_RIGHT = r"(?!\d)"
 
-_STRICT_START = re.compile(LEFT)
 _STRICT_END = re.compile(RIGHT)
 _LOOSE_START = re.compile(LOOSE_LEFT)
 _LOOSE_END = re.compile(LOOSE_RIGHT)
@@ -91,8 +82,21 @@ TYPED_PLACEHOLDER = re.compile(
 
 
 def strict_at(text: str, start: int, end: int) -> bool:
-    """Whether `text[start:end]` sits at strict boundaries (see above)."""
-    return bool(_STRICT_START.match(text, start)) and bool(_STRICT_END.match(text, end))
+    """Whether `text[start:end]` sits at strict boundaries (see above): `NAME_START` before it, walked back
+    here, and `RIGHT` after it, not followed by a combining mark, which would compose with the value's last
+    letter on the normalized view (`Ksouri` + U+0301 is `Ksourí`)."""
+    i, proclitics = start, 0
+    while i > 0 and (text[i - 1] in DROPPED or (text[i - 1] in PROCLITICS and proclitics < 2)):
+        proclitics += text[i - 1] in PROCLITICS
+        i -= 1
+    if i > 0 and text[i - 1].isalnum():
+        return False
+    j = end
+    while j < len(text) and text[j] in DROPPED:
+        j += 1
+    return bool(_STRICT_END.match(text, end)) and not (
+        j < len(text) and unicodedata.category(text[j]).startswith("M")
+    )
 
 
 def loose_at(text: str, start: int, end: int) -> bool:

@@ -15,7 +15,6 @@ text, goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactl
 from __future__ import annotations
 
 import bisect
-import functools
 import itertools
 import re
 from collections.abc import Iterable
@@ -239,6 +238,7 @@ def restore(text: str, mapping: Mapping) -> str:
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
     view = _NormalizedView(text)
+    multi_word: dict[str, bool] = {}  # per call: values are personal data, never kept across calls
 
     def replace(m: re.Match[str]) -> str:
         etype = _canonical_type(m.group(1))
@@ -249,17 +249,13 @@ def restore(text: str, mapping: Mapping) -> str:
         if name and not strict_at(m.string, m.start(), m.end()):
             return m.group(0)
         value = mapping.value(placeholder)
-        if _multi_word(value) and not view.at(m.start(), m.end(), name):
+        if value not in multi_word:
+            multi_word[value] = len(normalize(value).text.split()) > 1  # found on the normalized view
+        if multi_word[value] and not view.at(m.start(), m.end(), name):
             return m.group(0)
         return value
 
     return placeholder_regex(types).sub(replace, text)
-
-
-@functools.lru_cache(maxsize=4096)
-def _multi_word(value: str) -> bool:
-    """Whether propagation looks for `value` on the normalized view (`resolver._known_pattern`)."""
-    return len(normalize(value).text.split()) > 1
 
 
 class _NormalizedView:

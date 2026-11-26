@@ -24,8 +24,8 @@ import functools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.boundaries import LEFT, LOOSE_LEFT, LOOSE_RIGHT, NAME_TYPES, RIGHT, TATWEEL, TYPED_PLACEHOLDER
-from nona.core.normalize import NormalizedDoc, normalize
+from nona.core.boundaries import LOOSE_LEFT, LOOSE_RIGHT, NAME_START, NAME_TYPES, RIGHT, TYPED_PLACEHOLDER
+from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
 
@@ -76,19 +76,21 @@ def known_spans(
     Multi-word forms match on the normalized view (case, spacing and digits don't matter). Single-word forms
     match the original text exactly, at word boundaries, so a known `Amal` doesn't mask *amal* ("hope").
     Boundaries are the ones restoring uses (`core/boundaries.py`): `_` separates, and Arabic proclitics may
-    be attached (`لكنزة`), so a restored value is always caught again. A single-word name may also hold
-    tatweels between its letters (`القصـوري`), since normalization drops them.
+    be attached (`لكنزة`), so a restored value is always caught again. A single-word name may also hold what
+    normalization drops between its letters (`القصـوري`, `القصُوري`).
     """
     spans: list[Span] = []
     for etype, surface in dict.fromkeys(known):
         pattern, on_normalized = _known_pattern(surface, etype in NAME_TYPES)
+        # Group `v`: a name's match holds the proclitics before it (`NAME_START`).
         if on_normalized:
             spans.extend(
-                to_span(doc, m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.text)
+                to_span(doc, m.start("v"), m.end("v"), etype, 1.0, detector)
+                for m in pattern.finditer(doc.text)
             )
         else:
             spans.extend(
-                Span(m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.original)
+                Span(m.start("v"), m.end("v"), etype, 1.0, detector) for m in pattern.finditer(doc.original)
             )
     return spans
 
@@ -98,16 +100,19 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
     """The pattern for one known form, and whether it runs on the normalized view. Names use the strict
     boundaries, structured values the loose ones (`core/boundaries.py`). Cached, because the proxy re-runs the
     whole conversation on every request."""
-    left, right = (LEFT, RIGHT) if name else (LOOSE_LEFT, LOOSE_RIGHT)
+    left, right = (NAME_START, RIGHT) if name else (LOOSE_LEFT, LOOSE_RIGHT)
     words = normalize(surface).text.split()
     if len(words) > 1:
-        return re.compile(left + r"\s+".join(map(re.escape, words)) + right), True
+        body = r"\s+".join(map(re.escape, words))
+        return re.compile(f"{left}(?P<v>{body}){right}"), True
     if not words:
         return re.compile(r"(?!)"), False  # matches nothing
     if not name:
-        return re.compile(left + re.escape(surface.strip()) + right), False
-    body = f"{TATWEEL}*".join(map(re.escape, surface.strip().replace(TATWEEL, "")))
-    return re.compile(left + body + right), False
+        return re.compile(f"{left}(?P<v>{re.escape(surface.strip())}){right}"), False
+    # What normalization drops may sit anywhere in the name (`القصـوري`, `القصُوري`).
+    dropped = f"[{''.join(sorted(DROPPED))}]*"
+    body = dropped.join(map(re.escape, "".join(c for c in surface.strip() if c not in DROPPED)))
+    return re.compile(f"{left}(?P<v>{body}){right}"), False
 
 
 def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]]:

@@ -36,10 +36,10 @@ import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
-from nona.core.boundaries import PROCLITICS, TATWEEL
+from nona.core.boundaries import PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
-from nona.core.normalize import NormalizedDoc, normalize
+from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
     Anonymized,
@@ -112,18 +112,18 @@ def _as_people(
 
 
 def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[Span]) -> list[Span]:
-    """A recognizer name span that is a propagated form behind one or two Arabic clitics, and maybe tatweels
-    (`لـ`), starts at the form (module docstring), so `لزكرياء` links to `زكرياء` and restores with its clitic
-    in place."""
+    """A recognizer name span that is a propagated form behind one or two Arabic clitics, maybe with what
+    normalization drops around them (`لـ`, `لِ`), starts at the form (module docstring), so `لزكرياء` links to
+    `زكرياء` and restores with its clitic in place."""
     starts = {(p.start, p.end) for p in propagated}
     out: list[Span] = []
     for s in recognized:
-        for n in (1, 2, 3, 4):
+        for n in range(1, 7):
             head = text[s.start : s.start + n]
             if (
                 s.detector != GAZETTEER
                 and (s.start + n, s.end) in starts
-                and all(c in PROCLITICS or c == TATWEEL for c in head)
+                and all(c in PROCLITICS or c in DROPPED for c in head)
                 and 1 <= sum(c in PROCLITICS for c in head) <= 2
             ):
                 s = Span(s.start + n, s.end, s.type, s.score, s.detector)

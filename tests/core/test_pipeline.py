@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
 from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
-from nona.core.normalize import normalize
+from nona.core.normalize import DROPPED, normalize
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -94,11 +94,19 @@ texts = st.lists(st.sampled_from(PIECES), max_size=40).map("".join)
 
 def _glued_to_ascii(result: Anonymized) -> bool:
     """Whether an issued placeholder touches an ASCII letter or digit in the anonymized text, or a character
-    that normalizes to one (`٢`, `ﬁ`), where propagation looks for multi-word values (#87)."""
+    that normalizes to one (`٢`, `ﬁ`), past what normalization drops (`aـPHONE_1`): propagation looks for
+    multi-word values on the normalized view (#87). A structured value may be followed by a letter (loose
+    boundaries), so only a digit counts after one."""
+
+    def ascii_word(c: str, digits_only: bool) -> bool:
+        return any(x.isascii() and (x.isdigit() if digits_only else x.isalnum()) for x in normalize(c).text)
+
     for e in result.entities:
+        name = e.type in {EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION, EntityType.CUSTOM}
         for m in re.finditer(re.escape(e.placeholder) + r"(?!\d)", result.text):
-            around = result.text[max(m.start() - 1, 0) : m.start()] + result.text[m.end() : m.end() + 1]
-            if any(x.isascii() and x.isalnum() for c in around for x in normalize(c).text):
+            before = result.text[: m.start()].rstrip("".join(DROPPED))[-1:]
+            after = result.text[m.end() :].lstrip("".join(DROPPED))[:1]
+            if any(ascii_word(c, False) for c in before) or any(ascii_word(c, not name) for c in after):
                 return True
     return False
 
@@ -118,6 +126,7 @@ def canonical_form(text: str, result: Anonymized) -> str:
 @example("PERSON_1@example.com")  # an email whose local part looks like a placeholder
 @example("M.Saaـ")  # #80: a name glued to a tatweel
 @example("٢+2522 123 456")  # a phone glued to a digit that normalizes to ASCII
+@example("aـ+2522 123 456")  # a phone glued to a letter past a tatweel
 @example("xphone" + "1" * 5000)  # #80: `int()` refuses more than 4300 digits
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
@@ -183,6 +192,10 @@ def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
     ("messages", "last"),
     [
         (["سامي", "قلت وـبـسامي"], "قلت وـبـPERSON_1"),  # two proclitics and two tatweels
+        (["السيدة القصوري جات", "قول لـــالقصوري"], "قول لـــPERSON_1"),  # any number of tatweels
+        (["السيدة القصوري جات", "قول القصُوري"], "قول PERSON_1"),  # a short vowel inside the name
+        (["أمين", "تَأمين جات"], "تَأمين جات"),  # a short vowel before it: `تأمين` (insurance) isn't Amin
+        (["السيد لطفي جا", "قلت ولطفي و للطفي"], "قلت وPERSON_1 و لPERSON_1"),  # a name starting with `ل`
         (["سامي", "قلت لِسامي"], "قلت لِPERSON_1"),  # a short vowel on the proclitic
         (["أمين", "أمينَة جات"], "أمينَة جات"),  # a short vowel inside a word: Amina isn't Amin
         (["Mme Zgolliـ est la", "rani m3a Zgolli"], "rani m3a PERSON_1"),
@@ -197,10 +210,13 @@ def test_propagation_and_tatweels(messages: list[str], last: str) -> None:
     assert conv.messages[-1].text == last
 
 
-@pytest.mark.parametrize("answer", ["قلت سَـلPERSON_1 اليوم", "™PERSON_1", " ٢PHONE_1"])
+@pytest.mark.parametrize(
+    "answer", ["قلت سَـلPERSON_1 اليوم", "™PERSON_1", " ٢PHONE_1", "ok PERSON_1\u0301 la", "aـPHONE_1"]
+)
 def test_a_multi_word_value_is_restored_only_where_the_normalized_view_finds_it(answer: str) -> None:
     """Propagation looks for a multi-word value on the normalized view, where `سَـل` is `سل` glued to the name,
-    `™` is `tm` and `٢` is `2`: restore leaves the placeholder there."""
+    `™` is `tm` and `٢` is `2`, and where a combining mark would compose with the name's last letter (`í`):
+    restore leaves the placeholder there."""
     n = Nona(policies=ALL_REVERSIBLE)
     first = n.anonymize_messages(["سامي الطرابلسي, phone +216 22 123 456"])
     assert first.mapping.value("PERSON_1") == "سامي الطرابلسي"
