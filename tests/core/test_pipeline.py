@@ -167,7 +167,19 @@ def test_a_name_glued_to_a_typed_placeholder_round_trips(text: str) -> None:
     assert n.restore(result.text, result.mapping) == text
 
 
-@pytest.mark.parametrize("text", ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "M. Samiـ",
+        "M. ـSami",
+        "Mme Ksouriـ w Ksouri",
+        "M.ـSb",
+        "PERSON_1ـSami",  # cut at a typed placeholder: the value keeps its tatweel
+        "M. SamiـPERSON_1",
+        " .ـلSami",  # a tatweel, then a proclitic
+        "قول ـلسامي",
+    ],
+)
 def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
     """#80: normalization drops a tatweel, so a name's span leaves out the ones at its edges, and propagation,
     which restore checks with, takes them in: the name comes back."""
@@ -258,6 +270,15 @@ def test_a_literal_is_restored_only_where_it_is_found_again_as_one() -> None:
     conv = n.anonymize_messages(["Sami Trabelsi est la", "person 1 hi"])
     assert conv.mapping.value("PERSON_2") == "person 1"
     assert n.restore("xPERSON_2, PERSON_2", conv.mapping) == "xPERSON_2, person 1"
+
+
+@pytest.mark.parametrize("text", ["xphone" + "1" * 5000, "phone " + "1" * 5000, "xPERSON_" + "1" * 5000])
+def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> None:
+    """`int()` refuses more than 4300 digits: placeholder numbers have at most 6, as issued."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    result = n.anonymize(text)
+    assert n.restore(result.text, result.mapping) == canonical_form(text, result)
+    assert n.restore(text, Mapping({"PERSON_1": "Sami"})) == text
 
 
 def test_a_glued_placeholder_is_reserved() -> None:

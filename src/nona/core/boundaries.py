@@ -61,7 +61,8 @@ def _before_placeholder(lower: bool) -> str:
 
 
 _NOT_WORD = r"(?<![^\W_])"  # not preceded by a letter or digit (`_` is fine)
-_PROCLITIC = rf"(?<={_NOT_WORD}[{PROCLITICS}])|(?<={_NOT_WORD}[{PROCLITICS}]{{2}})"
+# Up to two proclitics, maybe behind a tatweel (`ـلSami`); a tatweel after them is in the name's pattern.
+_PROCLITIC = "|".join(rf"(?<={_NOT_WORD}{t}[{PROCLITICS}]{{{n}}})" for t in ("", TATWEEL) for n in (1, 2))
 # On the original text: placeholders in upper case, as issued.
 LEFT = rf"(?:{_NOT_WORD}|{_PROCLITIC}|{_after_placeholder(False)})"
 RIGHT = rf"(?:(?![^\W_])|{_before_placeholder(False)})"  # not followed by a letter or digit
@@ -84,8 +85,8 @@ def placeholder_regex(types: Iterable[EntityType]) -> re.Pattern[str]:
     if not names:
         return re.compile(r"(?!)")  # matches nothing
     exact = "|".join(sorted((t.value for t in types), key=len, reverse=True))
-    loose = LOOSE_LEFT + "(?i:(" + "|".join(names) + "))[ _]?(\\d+)"
-    return re.compile("(?:" + loose + "|(" + exact + ")_(\\d+))" + LOOSE_RIGHT)
+    loose = LOOSE_LEFT + "(?i:(" + "|".join(names) + "))[ _]?(\\d{1,6})"
+    return re.compile("(?:" + loose + "|(" + exact + ")_(\\d{1,6}))" + LOOSE_RIGHT)
 
 
 def placeholder_parts(m: re.Match[str]) -> tuple[str, int]:
@@ -100,7 +101,7 @@ ANY_PLACEHOLDER = placeholder_regex(EntityType)
 RESERVED_PLACEHOLDER = re.compile(
     "("
     + "|".join(sorted({_type_pattern(t) for t in EntityType}, key=len, reverse=True))
-    + r")[ _]?(\d+)(?!\d)",
+    + r")[ _]?(\d{1,6})(?!\d)",
     re.IGNORECASE,
 )
 # Exactly as issued: upper case, `_`, a short number. `PERSON_1`, never `card 4242424242424242`.

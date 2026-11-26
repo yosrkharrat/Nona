@@ -291,6 +291,9 @@ def _found_again(out: str, found: list[_Found], placed: list[tuple[int, int]]) -
     return kept
 
 
+_EDGES = " \t\n\r\f\v\u0640"  # spaces, and tatweels, which propagation leaves out of a name's span
+
+
 def _write(text: str, found: list[_Found]) -> tuple[str, list[tuple[int, int]]]:
     """`text` with each placeholder replaced by its value, and where each value went, without spaces."""
     parts: list[str] = []
@@ -299,7 +302,8 @@ def _write(text: str, found: list[_Found]) -> tuple[str, list[tuple[int, int]]]:
     for start, end, _, value in found:
         parts.append(text[pos:start])
         size += start - pos
-        lead, trail = len(value) - len(value.lstrip()), len(value) - len(value.rstrip())
+        lead = len(value) - len(value.lstrip(_EDGES))
+        trail = len(value) - len(value.rstrip(_EDGES))
         placed.append((size + lead, size + len(value) - trail))
         parts.append(value)
         size += len(value)
