@@ -463,22 +463,36 @@ def test_a_mapped_weights_file_changed_after_loading_fails_closed(
         model.predict("Sami", ["person"], 0.5)
 
 
-def test_a_metadata_change_to_the_mapped_weights_is_hashed_once_and_kept(
+def test_a_permission_change_to_the_mapped_weights_keeps_them_usable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
 ) -> None:
     model = _mapped_model(tmp_path, monkeypatch)
     weights = _weights(tmp_path)
-    hashed: list[Path] = []
-    real = models._sha256
-    monkeypatch.setattr(models, "_sha256", lambda path: hashed.append(path) or real(path))
-    weights.chmod(0o444)  # `chmod a-w`, `touch`, a hard link: ctime or mtime move, the bytes don't
-    _later(weights)
+    weights.chmod(0o444)  # `chmod a-w`, an xattr, a backup tool's hard link: only ctime moves
+    os.link(weights, tmp_path / "backup")
     try:
-        assert model.predict("Sami", ["person"], 0.5)
         assert model.predict("Sami", ["person"], 0.5)
     finally:
         weights.chmod(0o644)
-    assert len(hashed) == 1, "hashed once, then the new signature is the known good one"
+
+
+def test_a_stat_that_fails_once_fails_only_that_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    real = models._signature
+    calls = iter([OSError(24, "Too many open files")])
+
+    def flaky(path: Path) -> models.FileSignature:
+        error = next(calls, None)
+        if error is not None:
+            raise error
+        return real(path)
+
+    monkeypatch.setattr(models, "_signature", flaky)
+    with pytest.raises(ModelError, match="can't check the model file"):
+        model.predict("Sami", ["person"], 0.5)
+    assert model.predict("Sami", ["person"], 0.5)
 
 
 def test_a_changed_mapped_file_keeps_failing_even_once_put_back(
@@ -487,12 +501,13 @@ def test_a_changed_mapped_file_keeps_failing_even_once_put_back(
     model = _mapped_model(tmp_path, monkeypatch)
     weights = _weights(tmp_path)
     data = weights.read_bytes()
+    st = weights.stat()
     weights.write_bytes(data[:-1] + b"?")
     _later(weights)
     with pytest.raises(ModelError):
         model.predict("Sami", ["person"], 0.5)
     weights.write_bytes(data)
-    monkeypatch.setattr(models, "_sha256", lambda path: pytest.fail("hashed again after failing"))
+    os.utime(weights, ns=(st.st_atime_ns, st.st_mtime_ns))  # bytes and signature back as at load
     with pytest.raises(ModelError, match="restart"):
         model.predict("Sami", ["person"], 0.5)
 

@@ -324,43 +324,32 @@ def _link_or_copy(source: Path, target: Path) -> None:
         shutil.copyfile(source, target)
 
 
-FileSignature = tuple[int, int, int, int, int]
+FileSignature = tuple[int, int, int, int]
 
 
 def _signature(path: Path) -> FileSignature:
-    """What changes when a file is replaced, truncated or written: device, inode, size, mtime and ctime (which
-    a user can't set back, but which `chmod`, `touch` or a new hard link move too)."""
+    """What changes when a file is replaced, truncated or written: device, inode, size and mtime. Not ctime,
+    which `chmod`, an xattr or a backup tool's hard link move without touching the bytes."""
     st = path.stat()
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-
-
-@dataclass(slots=True)
-class MappedFile:
-    """A file the weights are memory-mapped from, its pinned hash, and its signature when last known good."""
-
-    path: Path
-    sha256: str
-    signature: FileSignature
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 class GlinerModel:
     """Adapts a loaded GLiNER model to `NerModel`. One call at a time: torch modules aren't documented as
     safe to share across threads, and the proxy runs detection in a worker thread (S5).
 
-    `mapped` lists the files the weights are memory-mapped from. They are read page by page for the life of
-    the process, so before each call each one's signature is checked again (one `stat`). A file written in
-    place would run weights nobody checked, and one truncated or replaced over a network filesystem would
-    crash the process on a page read. So:
+    `mapped` lists the files the weights are memory-mapped from, with their signature at load. They are read
+    page by page for the life of the process, so before each call each one is checked again (one `stat`): a
+    file written in place would run weights nobody checked, and one truncated or replaced over a network
+    filesystem would crash the process on a page read. A changed signature fails the call closed
+    (`ModelError`, so `DetectorError` in the pipeline), and every later one, until the process restarts and
+    loads the model again; so does a missing file. A `stat` that fails otherwise (a full file table, a network
+    error) fails only that call.
 
-    - Same device, inode and size, but a new mtime or ctime (`chmod`, `touch`, an xattr, a hard link made
-      by a backup tool, or a same-size write): the file is hashed once (1-2 s) against its pinned SHA-256.
-      If it matches, nothing changed that matters, and the new signature is kept.
-    - Anything else (a different hash, size or inode, or a missing file): the call fails closed
-      (`ModelError`, so `DetectorError` in the pipeline), and so does every later one, without hashing
-      again, until the process restarts and loads the model again.
-
-    This guards the time between calls. A file truncated in the middle of a call (about 200 ms) can still
-    crash the process on the next page read: `pull` never does that, it replaces files.
+    Not caught: a write that keeps the size and sets mtime back. It takes write access to the models folder,
+    which could as well swap same-size weights before the next start (loading checks their size; `pull`
+    checks their hash). And the check runs between calls: a file truncated during one (about 200 ms) can
+    still crash the process. `pull` never does either: it replaces files.
     """
 
     def __init__(
@@ -368,7 +357,7 @@ class GlinerModel:
         model: Any,
         identity: str,
         max_words: int,
-        mapped: Sequence[MappedFile] = (),
+        mapped: Sequence[tuple[Path, FileSignature]] = (),
     ) -> None:
         self._model = model
         self._identity = identity
@@ -396,22 +385,19 @@ class GlinerModel:
     def _check_mapped(self) -> None:
         if self._broken is not None:
             raise ModelError(self._broken)
-        for f in self._mapped:
+        for path, signature in self._mapped:
             try:
-                now = _signature(f.path)
-                if now == f.signature:
-                    continue
-                # Same file and size, only times moved: keep it if its bytes are still the pinned ones.
-                if now[:3] == f.signature[:3] and _sha256(f.path) == f.sha256 and _signature(f.path) == now:
-                    f.signature = now
-                    continue
-            except OSError:
-                pass
-            self._broken = (
-                f"{f.path} changed on disk since the model was loaded from it (the weights are mapped from "
-                "the file, not copied): restart to load it again"
-            )
-            raise ModelError(self._broken)
+                now: FileSignature | None = _signature(path)
+            except FileNotFoundError:
+                now = None  # gone: a change, like any other
+            except OSError as exc:  # maybe transient: this call fails closed, the next one checks again
+                raise ModelError(f"can't check the model file {path}: {exc}") from exc
+            if now != signature:
+                self._broken = (
+                    f"{path} changed on disk since the model was loaded from it (the weights are mapped from "
+                    "the file, not copied): restart to load it again"
+                )
+                raise ModelError(self._broken)
 
 
 def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> GlinerModel:
@@ -452,12 +438,7 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
             # Map the weights only if they are links into the models folder, which outlives the temp one.
             weights = list(staged[models.gliner].glob("*.safetensors"))
             mapped = bool(weights) and all(w.is_symlink() for w in weights)
-            pins = {f.name: f.sha256 for f in models.gliner.files}
-            watched = (
-                [MappedFile(w.resolve(), pins[w.name], _signature(w.resolve())) for w in weights]
-                if mapped
-                else []
-            )
+            watched = [(w.resolve(), _signature(w.resolve())) for w in weights] if mapped else []
             config_path = staged[models.gliner] / "gliner_config.json"
             config = json.loads(config_path.read_bytes())
             config["model_name"] = str(staged[models.encoder])
