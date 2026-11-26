@@ -29,6 +29,9 @@ from nona.core.boundaries import (
     LOOSE_LEFT,
     LOOSE_RIGHT,
     NAME_TYPES,
+    NORMALIZED_LEFT,
+    NORMALIZED_LOOSE_LEFT,
+    NORMALIZED_RIGHT,
     RIGHT,
     TYPED_PLACEHOLDER,
     self_delimited,
@@ -112,11 +115,15 @@ def _known_pattern(surface: str, name: bool) -> tuple[re.Pattern[str], bool]:
     """The pattern for one known form, and whether it runs on the normalized view. Names use the strict
     boundaries, structured values the loose ones (`core/boundaries.py`). Cached, because the proxy re-runs the
     whole conversation on every request."""
-    left, right = (LEFT, RIGHT) if name else (LOOSE_LEFT, LOOSE_RIGHT)
-    if not name and self_delimited(surface.strip()):
-        left = ""  # `a+216 22 123 456`: restore writes it there too
     words = normalize(surface).text.split()
-    if len(words) > 1:
+    on_normalized = len(words) > 1
+    if name:
+        left, right = (NORMALIZED_LEFT, NORMALIZED_RIGHT) if on_normalized else (LEFT, RIGHT)
+    else:
+        left, right = (NORMALIZED_LOOSE_LEFT if on_normalized else LOOSE_LEFT), LOOSE_RIGHT
+        if self_delimited(surface.strip()):
+            left = ""  # `a+216 22 123 456`: restore writes it there too
+    if on_normalized:
         return re.compile(left + r"\s+".join(map(re.escape, words)) + right), True
     if not words:
         return re.compile(r"(?!)"), False  # matches nothing

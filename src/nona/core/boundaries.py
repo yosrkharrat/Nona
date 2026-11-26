@@ -10,12 +10,10 @@ restored text (`pseudonymize.restore`), and propagation uses these boundaries:
 - up to two Arabic proclitics may be attached in front (`لPERSON_1`, `وبPERSON_1`), as Arabic writes them;
 - a placeholder left glued on either side is a boundary (`سمPERSON_1`, `PERSON_1محمد`): no detection cuts
   through a typed one, so the piece next to it gets its own placeholder, glued to it, and restore must put
-  that value back (#80). Before the value: `TYPE_n` exactly, any case. After it, Python's fixed-width
-  look-behind can't list the types, so any `x_n` shape counts (`file_1محمد`); a looser boundary only makes
-  propagation mask more. Restore checks on its output, so two values it writes side by side are glued
-  (`SamiAmal`) and neither is written;
-- a tatweel (`ـ`, which normalization drops) is not a letter here: `سميرـ`, `Ksouriـ`. Multi-word values are
-  found on the normalized view, without it, so `xـAmal Trabelsi` isn't restored;
+  that value back (#80). Only a placeholder as issued counts, `TYPE_n` in upper case (lower case on the
+  normalized view), and a value right after one can't start with a digit (`PERSON_13li` reads `PERSON_13`).
+  Restore checks on its output, so two values it writes side by side are glued (`SamiAmal`) and neither is
+  written;
 - any other letter or digit glued on either side is not a boundary: `PERSON_1abc` and `lPERSON_1` are left
   as they are, so they can't leak either.
 
@@ -42,18 +40,35 @@ from nona.core.types import EntityType
 NAME_TYPES = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION, EntityType.CUSTOM})
 
 PROCLITICS = "وفبلك"
-_TYPE_NAMES = "|".join(sorted((t.value for t in EntityType), key=len, reverse=True))
-# Right after a placeholder (`PERSON_1محمد`): the `(?<=\d)` gate keeps the common case to one check.
-_AFTER_PLACEHOLDER = "(?<=\\d)(?:" + "|".join(rf"(?<=[A-Za-z]_\d{{{n}}})" for n in range(1, 7)) + ")"
-# Right before one (`سمPERSON_1`), as issued, in any case: propagation also runs on the lowercased view.
-_BEFORE_PLACEHOLDER = rf"(?=(?i:{_TYPE_NAMES})_\d{{1,6}}(?!\d))"
-_NOT_WORD = r"(?<![^\W_\u0640])"  # not preceded by a letter or digit (`_` and a tatweel are fine)
+TATWEEL = "\u0640"
+_TYPES = sorted((t.value for t in EntityType), key=len, reverse=True)
+
+
+def _after_placeholder(lower: bool) -> str:
+    """Right after a placeholder as issued (`PERSON_1محمد`), before anything but a digit (`PERSON_13li`
+    reads `PERSON_13`). One fixed-width look-behind per type and length; the gate keeps the common case to
+    one check."""
+    names = [n.lower() if lower else n for n in _TYPES]
+    return r"(?<=\d)(?!\d)(?:" + "|".join(rf"(?<={n}_\d{{{k}}})" for n in names for k in range(1, 7)) + ")"
+
+
+def _before_placeholder(lower: bool) -> str:
+    """Right before a placeholder as issued (`سمPERSON_1`)."""
+    names = [n.lower() if lower else n for n in _TYPES]
+    return rf"(?=(?:{'|'.join(names)})_\d{{1,6}}(?!\d))"
+
+
+_NOT_WORD = r"(?<![^\W_])"  # not preceded by a letter or digit (`_` is fine)
 _PROCLITIC = rf"(?<={_NOT_WORD}[{PROCLITICS}])|(?<={_NOT_WORD}[{PROCLITICS}]{{2}})"
-LEFT = rf"(?:{_NOT_WORD}|{_PROCLITIC}|{_AFTER_PLACEHOLDER})"
-# Not followed by a letter or digit, unless it is a placeholder.
-RIGHT = rf"(?:(?![^\W_\u0640])|{_BEFORE_PLACEHOLDER})"
-LOOSE_LEFT = rf"(?:(?<![A-Za-z0-9])|{_AFTER_PLACEHOLDER})"
+# On the original text: placeholders in upper case, as issued.
+LEFT = rf"(?:{_NOT_WORD}|{_PROCLITIC}|{_after_placeholder(False)})"
+RIGHT = rf"(?:(?![^\W_])|{_before_placeholder(False)})"  # not followed by a letter or digit
+LOOSE_LEFT = rf"(?:(?<![A-Za-z0-9])|{_after_placeholder(False)})"
 LOOSE_RIGHT = r"(?!\d)"
+# On the normalized view, which is lower case.
+NORMALIZED_LEFT = rf"(?:{_NOT_WORD}|{_PROCLITIC}|{_after_placeholder(True)})"
+NORMALIZED_RIGHT = rf"(?:(?![^\W_])|{_before_placeholder(True)})"
+NORMALIZED_LOOSE_LEFT = rf"(?:(?<![A-Za-z0-9])|{_after_placeholder(True)})"
 
 
 def _type_pattern(etype: EntityType) -> str:

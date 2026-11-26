@@ -21,7 +21,14 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import ANY_PLACEHOLDER, RESERVED_PLACEHOLDER, placeholder_parts, placeholder_regex
+from nona.core.boundaries import (
+    ANY_PLACEHOLDER,
+    NAME_TYPES,
+    RESERVED_PLACEHOLDER,
+    TATWEEL,
+    placeholder_parts,
+    placeholder_regex,
+)
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import normalize
 from nona.core.resolver import known_spans
@@ -154,10 +161,10 @@ class Pseudonymizer:
         for a, b in itertools.pairwise(ordered):
             if a.overlaps(b):
                 raise ValueError("spans must not overlap; run the resolver first")
+        ordered, seeds = _take_tatweels(original, ordered, seeds or {})
         kept = [s for s in ordered if self.policy(s.type) is not Policy.KEEP]
         kept = sorted([*kept, *self._colliding_literals(original, kept)], key=Span.sort_key)
         reversible = [s for s in kept if self.policy(s.type) is Policy.PSEUDONYMIZE]
-        seeds = seeds or {}
         linked = self._linker.link(
             original,
             reversible,
@@ -217,6 +224,33 @@ class Pseudonymizer:
         return Anonymized(message.text, entities, message.redacted, mapping)
 
 
+def _take_tatweels(
+    original: str, spans: list[Span], seeds: AbcMapping[Span, frozenset[str]]
+) -> tuple[list[Span], dict[Span, frozenset[str]]]:
+    """A name takes in the tatweels at its edges (`Ksouriـ`): normalization drops them, so a span found on the
+    normalized view leaves them out, and a placeholder glued to one can't be restored (#80). A tatweel only
+    stretches the word it is in, so this never joins two words."""
+    out: list[Span] = []
+    moved = dict(seeds)
+    for i, s in enumerate(spans):
+        a, b = s.start, s.end
+        if s.type in NAME_TYPES:
+            lo = out[-1].end if out else 0
+            hi = spans[i + 1].start if i + 1 < len(spans) else len(original)
+            while a > lo and original[a - 1] == TATWEEL:
+                a -= 1
+            while b < hi and original[b] == TATWEEL:
+                b += 1
+        if (a, b) == (s.start, s.end):
+            out.append(s)
+            continue
+        wider = Span(a, b, s.type, s.score, s.detector)
+        out.append(wider)
+        if s in moved:
+            moved[wider] = moved.pop(s)
+    return out, moved
+
+
 def pseudonymize(
     original: str,
     spans: Iterable[Span],
@@ -233,12 +267,17 @@ def restore(text: str, mapping: Mapping) -> str:
 
     A value is written only where forward propagation finds it again in the restored text, so the client
     can't re-send it in clear (`core/boundaries.py`): `PERSON_1abc` stays, and so does `PERSON_1PERSON_2`,
-    which would read `SamiAmal`. Checked on the output, again after each round of placeholders put back.
+    which would read `SamiAmal`. A placeholder the user wrote (a literal) is written only where it is found
+    again as one. Checked on the output, again after each round of placeholders put back.
+
+    Glued to a letter, a placeholder counts in its exact issued shape, so `IPHONE_1` from the model is read
+    as `PHONE_1`: the user's own value in the user's own answer, a corruption but no leak. Telling it from an
+    issued `PHONE_1` glued to a capital (`S+216…`) would need the anonymized text, which restore doesn't have.
     """
     if not len(mapping):
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
-    found: list[tuple[int, int, EntityType, str]] = []
+    found: list[_Found] = []
     for m in placeholder_regex(types).finditer(text):
         type_name, number = placeholder_parts(m)
         etype = _canonical_type(type_name)
@@ -246,26 +285,51 @@ def restore(text: str, mapping: Mapping) -> str:
         if placeholder in mapping:
             found.append((m.start(), m.end(), etype, mapping.value(placeholder)))
     while True:
-        parts: list[str] = []
-        placed: list[tuple[int, int]] = []
-        pos = size = 0
-        for start, end, _, value in found:
-            parts.append(text[pos:start])
-            size += start - pos
-            lead, trail = len(value) - len(value.lstrip()), len(value) - len(value.rstrip())
-            placed.append((size + lead, size + len(value) - trail))  # spaces around a value aren't found
-            parts.append(value)
-            size += len(value)
-            pos = end
-        parts.append(text[pos:])
-        out = "".join(parts)
-        doc = normalize(out)
-        kept = [
-            f
-            for f, (start, end) in zip(found, placed, strict=True)
-            if RESERVED_PLACEHOLDER.fullmatch(f[3])  # a placeholder the user wrote: not personal data
-            or any(s.start <= start and end <= s.end for s in known_spans(doc, [(f[2], f[3])]))
-        ]
+        out, placed = _write(text, found)
+        kept = _found_again(out, found, placed)
         if len(kept) == len(found):
             return out
         found = kept
+
+
+_Found = tuple[int, int, EntityType, str]  # placeholder start and end, type, value
+
+
+def _found_again(out: str, found: list[_Found], placed: list[tuple[int, int]]) -> list[_Found]:
+    """The values that forward propagation finds again where restore wrote them in `out` (`placed`), and the
+    literals found again as placeholders. One propagation pass per distinct value."""
+    doc = normalize(out)
+    literals = {m.span() for m in ANY_PLACEHOLDER.finditer(out)}
+    spans = {
+        (etype, value): {(s.start, s.end) for s in known_spans(doc, [(etype, value)])}
+        for etype, value in dict.fromkeys((f[2], f[3]) for f in found)
+        if not RESERVED_PLACEHOLDER.fullmatch(value)
+    }
+    kept: list[_Found] = []
+    for f, (start, end) in zip(found, placed, strict=True):
+        etype, value = f[2], f[3]
+        if RESERVED_PLACEHOLDER.fullmatch(value):
+            ok = (start, end) in literals
+        else:
+            at = spans[etype, value]
+            ok = (start, end) in at or any(s <= start and end <= e for s, e in at)
+        if ok:
+            kept.append(f)
+    return kept
+
+
+def _write(text: str, found: list[_Found]) -> tuple[str, list[tuple[int, int]]]:
+    """`text` with each placeholder replaced by its value, and where each value went, without spaces."""
+    parts: list[str] = []
+    placed: list[tuple[int, int]] = []
+    pos = size = 0
+    for start, end, _, value in found:
+        parts.append(text[pos:start])
+        size += start - pos
+        lead, trail = len(value) - len(value.lstrip()), len(value) - len(value.rstrip())
+        placed.append((size + lead, size + len(value) - trail))
+        parts.append(value)
+        size += len(value)
+        pos = end
+    parts.append(text[pos:])
+    return "".join(parts), placed

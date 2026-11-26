@@ -169,10 +169,12 @@ def test_a_name_glued_to_a_typed_placeholder_round_trips(text: str) -> None:
 
 @pytest.mark.parametrize("text", ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb"])
 def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
-    """#80: normalization drops a tatweel, so the name's span leaves it out; restore puts the name back."""
+    """#80: normalization drops a tatweel, so a name's span takes in the ones at its edges, and restore puts
+    the name back (each mention as its entity's canonical form: `Ksouriـ` twice)."""
     n = Nona(policies=ALL_REVERSIBLE)
     result = n.anonymize(text)
-    assert n.restore(result.text, result.mapping) == text
+    assert "PERSON" in result.text
+    assert n.restore(result.text, result.mapping) == canonical_form(text, result)
 
 
 def test_a_phone_starting_with_a_sign_round_trips_glued_to_a_letter() -> None:
@@ -221,6 +223,27 @@ def test_a_glued_placeholder_the_user_typed_in_a_later_message_round_trips() -> 
     n = Nona(policies=ALL_REVERSIBLE)
     conv = n.anonymize_messages(["Amal is here", "SamiPERSON_1 w Sami"])
     assert n.restore(conv.messages[1].text, conv.mapping) == "SamiPERSON_1 w Sami"
+
+
+@pytest.mark.parametrize(
+    ("messages", "last"),
+    [
+        (["أمين", "أمينـة جات"], "أمينـة جات"),  # a tatweel stretches a word: Amina isn't Amin
+        (["phone 22 123 456", "ref_2022 123 456"], "ref_2022 123 456"),  # not after a real placeholder
+        (["Sami w Ahmed", "Samiphone_1 ok covid_19Ahmed"], "Samiphone_1 ok covid_19Ahmed"),
+    ],
+)
+def test_propagation_stays_out_of_longer_words(messages: list[str], last: str) -> None:
+    conv = Nona(policies=ALL_REVERSIBLE).anonymize_messages(messages)
+    assert conv.messages[-1].text == last
+
+
+def test_a_literal_is_restored_only_where_it_is_found_again_as_one() -> None:
+    """`xperson 1` would go upstream as `person 1`, read as the person issued `PERSON_1`."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    conv = n.anonymize_messages(["Sami Trabelsi est la", "person 1 hi"])
+    assert conv.mapping.value("PERSON_2") == "person 1"
+    assert n.restore("xPERSON_2, PERSON_2", conv.mapping) == "xPERSON_2, person 1"
 
 
 def test_a_glued_placeholder_is_reserved() -> None:
