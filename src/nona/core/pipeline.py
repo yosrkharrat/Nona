@@ -59,7 +59,6 @@ from nona.core.resolver import (
     known_spans,
     placeholder_holes,
     resolve,
-    take_glued_words,
 )
 from nona.core.types import EntityType, Span
 
@@ -206,13 +205,12 @@ class Nona:
             if not any(c.overlaps(s) for s in spans if s not in keep)
         ]
         if not extra:
-            return take_glued_words(spans, text), span_seeds
+            return spans, span_seeds
         hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
         kept = [s for s in spans if s not in hiding]
         final = resolve([*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
         kept_spans = set(final)
-        # Only structured values move, and seeds are for PERSON spans.
-        return take_glued_words(final, text), {s: t for s, t in span_seeds.items() if s in kept_spans}
+        return final, {s: t for s, t in span_seeds.items() if s in kept_spans}
 
     @staticmethod
     def _look_ahead_words(

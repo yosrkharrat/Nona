@@ -21,10 +21,9 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import ANY_PLACEHOLDER, loose_start, placeholder_regex
+from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, placeholder_regex, strict_at
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import normalize
-from nona.core.resolver import known_spans
 from nona.core.types import Entity, EntityType, Span
 
 
@@ -227,78 +226,18 @@ def pseudonymize(
 
 
 def restore(text: str, mapping: Mapping) -> str:
-    """Put the original values back for every issued placeholder; leave anything else untouched.
-
-    A value is written only where forward propagation finds it again in the restored text, so the client
-    can't re-send it in clear (`core/boundaries.py`): `PERSON_1abc` stays, and so does `PERSON_1PERSON_2`,
-    which would read `SamiAmal`. A value shaped like a placeholder (one the user wrote, a literal) must also
-    be found again as a placeholder. Checked on the output, again after each round of placeholders put back.
-
-    A placeholder glued after another one counts only exactly as issued (`IP_ADDRESS_1EMAIL_1`, never the
-    `phone 1` of `PHONE_9phone 1`). A round puts back every value that fails, so a value that failed only
-    because of a glued neighbour put back with it stays a placeholder too: never a leak, and one round per
-    value would be quadratic.
-    """
+    """Put the original values back for every issued placeholder; leave anything else untouched."""
     if not len(mapping):
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
-    found: list[_Found] = []
-    previous = -1
-    for m in placeholder_regex(types, left=False).finditer(text):
+
+    def replace(m: re.Match[str]) -> str:
         etype = _canonical_type(m.group(1))
         placeholder = f"{etype.value}_{int(m.group(2))}"
-        # Two values detected back to back get glued placeholders (`IP_ADDRESS_1EMAIL_1`): one exactly as
-        # issued, right after another, is taken too, and the check below decides.
-        if not loose_start(text, m.start()) and not (m.start() == previous and m.group(0) == placeholder):
-            continue
-        previous = m.end()
-        if placeholder in mapping:
-            found.append((m.start(), m.end(), etype, mapping.value(placeholder)))
-    while True:
-        out, placed = _write(text, found)
-        kept = _found_again(out, found, placed)
-        if len(kept) == len(found):
-            return out
-        found = kept
+        if placeholder not in mapping:
+            return m.group(0)
+        if etype in NAME_TYPES and not strict_at(m.string, m.start(), m.end()):
+            return m.group(0)  # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
+        return mapping.value(placeholder)
 
-
-_Found = tuple[int, int, EntityType, str]  # placeholder start and end, type, value
-_EDGES = " \t\n\r\f\v\u0640"  # spaces, and tatweels, which propagation leaves out of a name's span
-
-
-def _write(text: str, found: list[_Found]) -> tuple[str, list[tuple[int, int]]]:
-    """`text` with each placeholder replaced by its value, and where each value went (`_EDGES` left out)."""
-    parts: list[str] = []
-    placed: list[tuple[int, int]] = []
-    pos = size = 0
-    for start, end, _, value in found:
-        parts.append(text[pos:start])
-        size += start - pos
-        lead = len(value) - len(value.lstrip(_EDGES))
-        trail = len(value) - len(value.rstrip(_EDGES))
-        placed.append((size + lead, size + len(value) - trail))
-        parts.append(value)
-        size += len(value)
-        pos = end
-    parts.append(text[pos:])
-    return "".join(parts), placed
-
-
-def _found_again(out: str, found: list[_Found], placed: list[tuple[int, int]]) -> list[_Found]:
-    """The values that forward propagation finds again where restore wrote them in `out` (`placed`). One
-    propagation pass per distinct value."""
-    doc = normalize(out)
-    literals = {m.span() for m in ANY_PLACEHOLDER.finditer(out)}
-    spans = {
-        key: {(s.start, s.end) for s in known_spans(doc, [key])}
-        for key in dict.fromkeys((f[2], f[3]) for f in found)
-    }
-    kept: list[_Found] = []
-    for f, (start, end) in zip(found, placed, strict=True):
-        at = spans[f[2], f[3]]
-        ok = (start, end) in at or any(s <= start and end <= e for s, e in at)
-        if ok and ANY_PLACEHOLDER.fullmatch(f[3].strip()):
-            ok = (start, end) in literals
-        if ok:
-            kept.append(f)
-    return kept
+    return placeholder_regex(types).sub(replace, text)

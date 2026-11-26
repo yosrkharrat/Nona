@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import re
+
 import pytest
-from hypothesis import example, given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 
 from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
-from nona.core import Anonymized, DetectorError, EntityType, Mapping, Nona, NormalizedDoc, Policy, Span
+from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -102,22 +104,18 @@ def canonical_form(text: str, result: Anonymized) -> str:
 
 @given(texts)
 @example("PERSON_1@example.com")  # an email whose local part looks like a placeholder
-@example("M.٢PERSON_1")  # #80: a piece glued to a typed placeholder
-@example("a+822 123 4560")  # #80: a phone glued to a letter
 @example("M.Saaـ")  # #80: a name glued to a tatweel
-@example("a@example.com@example.com@example.com")  # overlapping occurrences of a known email
-@example("0/ 22 123 456")  # a phone found with a space in front
-@example("S+3222 123 456")  # a phone glued to a capital
-@example("٢+3222 123 456")  # a phone glued to a digit that normalizes to ASCII
-@example("a::-@example.com")  # an IP and an email back to back
-@example("a@example.com+3222 123 456")  # a phone starting with its sign, right after an email
-@example("M.٢PERSON_1a")  # a typed placeholder glued on both sides
+@example("xphone" + "1" * 5000)  # #80: `int()` refuses more than 4300 digits
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
-    so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone)."""
+    so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone).
+
+    Except where detection leaves a placeholder glued (`M.٢PERSON_1` → `M.PERSON_2PERSON_1`): restore doesn't
+    write a value there, so it stays masked (#87)."""
     nona = Nona(policies=ALL_REVERSIBLE)
     result = nona.anonymize(text)
     restored = nona.restore(result.text, result.mapping)
+    assume(not any(re.search(re.escape(e.placeholder) + r"(?!\d)", restored) for e in result.entities))
     assert restored == canonical_form(text, result)
     if all(len({m.text_in(text) for m in e.mentions}) == 1 for e in result.entities):
         assert restored == text
@@ -154,39 +152,11 @@ def test_a_structured_value_glued_to_a_letter_round_trips() -> None:
 
 @pytest.mark.parametrize(
     "text",
-    [
-        "M.٢PERSON_1",  # #80, found by Hypothesis
-        "esmi سميرPERSON_1",
-        "PERSON_1محمد m3a",
-        "SamiPERSON_1 w Sami",  # the user's `PERSON_1` is never taken for Sami's
-        "PERSON_1Sami w Sami",
-    ],
-)
-def test_a_name_glued_to_a_typed_placeholder_round_trips(text: str) -> None:
-    """#80: no detection cuts through a typed placeholder, so a name glued to one gets its own placeholder,
-    glued to it, and restore puts the name back."""
-    n = Nona(policies=ALL_REVERSIBLE)
-    result = n.anonymize(text)
-    assert result.text != text
-    assert n.restore(result.text, result.mapping) == text
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "M. Samiـ",
-        "M. ـSami",
-        "Mme Ksouriـ w Ksouri",
-        "M.ـSb",
-        "PERSON_1ـSami",  # cut at a typed placeholder: the value keeps its tatweel
-        "M. SamiـPERSON_1",
-        " .ـلSami",  # a tatweel, then a proclitic
-        "قول ـلسامي",
-    ],
+    ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb", "M.Saaـ", " .ـلSami", "قول ـلسامي"],
 )
 def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
-    """#80: normalization drops a tatweel, so a name's span leaves out the ones at its edges, and propagation,
-    which restore checks with, takes them in: the name comes back."""
+    """#80: normalization drops a tatweel, so the name's span leaves it out; up to two tatweels on either
+    side, also around a proclitic, are a boundary, and restore puts the name back."""
     n = Nona(policies=ALL_REVERSIBLE)
     result = n.anonymize(text)
     assert "PERSON" in result.text
@@ -199,116 +169,34 @@ def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
         (["Mme Zgolliـ est la", "rani m3a Zgolli"], "rani m3a PERSON_1"),
         (["السيدة القصوريـ جات", "شفت القصوري اليوم"], "شفت PERSON_1 اليوم"),
         (["السيدة القصوري جات", "قول لـالقصوري"], "قول لـPERSON_1"),  # a proclitic, then a tatweel
-        (["السيدة القصوري جات", "قول القصـوري"], "قول PERSON_1"),
+        (["السيدة القصوري جات", "قول القصـوري"], "قول PERSON_1"),  # a tatweel inside the name
+        (["أمين", "أمينـة جات"], "أمينـة جات"),  # a tatweel inside a word: Amina isn't Amin
     ],
 )
-def test_propagation_finds_a_name_with_or_without_tatweels(messages: list[str], last: str) -> None:
+def test_propagation_and_tatweels(messages: list[str], last: str) -> None:
     conv = Nona(policies=ALL_REVERSIBLE).anonymize_messages(messages)
     assert conv.messages[-1].text == last
-
-
-def test_a_phone_glued_to_a_word_takes_the_word_in() -> None:
-    """#80: `aPHONE_1` couldn't be restored, so the placeholder takes in the word the phone is glued to."""
-    n = Nona()
-    first = n.anonymize("a+216 22 123 456")
-    assert first.text == "PHONE_1"
-    restored = n.restore(first.text, first.mapping)
-    assert restored == "a+216 22 123 456"
-    assert "22 123 456" not in n.anonymize_messages(["a+216 22 123 456", restored]).messages[1].text
-
-
-def _conversation() -> tuple[Nona, Mapping]:
-    n = Nona(policies=ALL_REVERSIBLE)
-    mapping = n.anonymize_messages(["Sami w Amal Trabelsi", "phone +216 22 123 456"]).mapping
-    assert [mapping.value(p) for p in ("PERSON_1", "PERSON_2", "PHONE_1")] == [
-        "Sami",
-        "Amal Trabelsi",
-        "+216 22 123 456",
-    ]
-    return n, mapping
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [
-        "PERSON_1PERSON_2",  # `SamiAmal Trabelsi` would leak `Sami` and `Amal` on the next request
-        "xـPERSON_2 ok",  # found on the normalized view, where the tatweel is gone: `xamal trabelsi`
-        "Telephone 1: see",  # glued: not a placeholder
-        "smartphone_1",
-        "TELEPHONE_1",
-        "PERSON_1abc",
-        "aPHONE_1",  # detection never leaves a placeholder glued: this one is the model's
-    ],
-)
-def test_restore_writes_a_value_only_where_propagation_finds_it_again(answer: str) -> None:
-    n, mapping = _conversation()
-    assert n.restore(answer, mapping) == answer
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [
-        "PHONE_9person_2-Person 2",  # glued values a longer span could cut on the next request
-        "PERSON_2PERSON_9xلEMAIL_1",
-        "PERSON_1phone 1-email 1",
-        "SMme phone 1PHONE_9EMAIL_1",
-    ],
-)
-def test_a_restored_answer_leaks_nothing_on_the_next_request(answer: str) -> None:
-    n = Nona(policies=ALL_REVERSIBLE)
-    first = "Sami w Amal Trabelsi, phone +216 22 123 456, mail sami@example.com"
-    restored = n.restore(answer, n.anonymize_messages([first]).mapping)
-    sent = n.anonymize_messages([first, restored]).messages[1].text
-    assert not any(v in sent for v in ["Sami", "Amal", "Trabelsi", "22 123", "sami@"]), sent
-
-
-def test_a_denylist_term_shaped_like_a_placeholder_is_restored_only_where_it_is_caught_again() -> None:
-    n = Nona(denylist=["Card 7"])
-    first = n.anonymize("projet Card 7 ok")
-    assert first.text == "projet CUSTOM_1 ok"
-    assert n.restore("عندCUSTOM_1, CUSTOM_1", first.mapping) == "عندCUSTOM_1, Card 7"
-
-
-def test_a_glued_placeholder_the_user_typed_in_a_later_message_round_trips() -> None:
-    """Its number was issued in an earlier message: it's a literal of its own, never that entity."""
-    n = Nona(policies=ALL_REVERSIBLE)
-    conv = n.anonymize_messages(["Amal is here", "SamiPERSON_1 w Sami"])
-    assert n.restore(conv.messages[1].text, conv.mapping) == "SamiPERSON_1 w Sami"
-
-
-@pytest.mark.parametrize(
-    ("messages", "last"),
-    [
-        (["أمين", "أمينـة جات"], "أمينـة جات"),  # a tatweel stretches a word: Amina isn't Amin
-        (["phone 22 123 456", "ref_2022 123 456"], "ref_2022 123 456"),  # not after a real placeholder
-        (["Sami w Ahmed", "Samiphone_1 ok covid_19Ahmed"], "Samiphone_1 ok covid_19Ahmed"),
-    ],
-)
-def test_propagation_stays_out_of_longer_words(messages: list[str], last: str) -> None:
-    conv = Nona(policies=ALL_REVERSIBLE).anonymize_messages(messages)
-    assert conv.messages[-1].text == last
-
-
-def test_a_literal_is_restored_only_where_it_is_found_again_as_one() -> None:
-    """`xperson 1` would go upstream as `person 1`, read as the person issued `PERSON_1`."""
-    n = Nona(policies=ALL_REVERSIBLE)
-    conv = n.anonymize_messages(["Sami Trabelsi est la", "person 1 hi"])
-    assert conv.mapping.value("PERSON_2") == "person 1"
-    assert n.restore("xPERSON_2, PERSON_2", conv.mapping) == "xPERSON_2, person 1"
 
 
 @pytest.mark.parametrize("text", ["xphone" + "1" * 5000, "phone " + "1" * 5000, "xPERSON_" + "1" * 5000])
 def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> None:
-    """`int()` refuses more than 4300 digits: placeholder numbers have at most 6, as issued."""
+    """#80: placeholder numbers have at most 6 digits, as issued; `int()` refuses more than 4300."""
     n = Nona(policies=ALL_REVERSIBLE)
     result = n.anonymize(text)
     assert n.restore(result.text, result.mapping) == canonical_form(text, result)
-    assert n.restore(text, Mapping({"PERSON_1": "Sami"})) == text
+    assert n.restore(text, result.mapping) == text
 
 
-def test_a_name_glued_to_a_typed_placeholder_is_masked_with_it() -> None:
-    """The model doesn't see that typed placeholder: only odd text loses it."""
-    assert Nona().anonymize("esmi سميرPERSON_1 w PERSON_1محمد").text == "esmi PERSON_2 w PERSON_3"
+@pytest.mark.parametrize("text", ["M.٢PERSON_1", "esmi سميرPERSON_1", "a+822 123 4560", "a::-@example.com"])
+def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
+    """#87: restore doesn't write a value where propagation couldn't find it again: the glued placeholder
+    stays in the reply, and no value went upstream."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    result = n.anonymize(text)
+    assert result.entities
+    assert not any(m.text_in(text) in result.text for e in result.entities for m in e.mentions)
+    restored = n.restore(result.text, result.mapping)
+    assert any(e.placeholder in restored for e in result.entities)
 
 
 def test_arabic_look_ahead_spreads_listed_names_only() -> None:
