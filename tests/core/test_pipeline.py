@@ -6,7 +6,7 @@ from hypothesis import strategies as st
 
 from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
-from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
+from nona.core import Anonymized, DetectorError, EntityType, Mapping, Nona, NormalizedDoc, Policy, Span
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -105,6 +105,9 @@ def canonical_form(text: str, result: Anonymized) -> str:
 @example("M.٢PERSON_1")  # #80: a piece glued to a typed placeholder
 @example("a+822 123 4560")  # #80: a phone glued to a letter
 @example("M.Saaـ")  # #80: a name glued to a tatweel
+@example("a@example.com@example.com@example.com")  # overlapping occurrences of a known email
+@example("0/ 22 123 456")  # a phone found with a space in front
+@example("S+3222 123 456")  # a phone glued to a capital
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
     so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone)."""
@@ -180,6 +183,44 @@ def test_a_phone_starting_with_a_sign_round_trips_glued_to_a_letter() -> None:
     restored = n.restore(first.text, first.mapping)
     assert restored == "a+216 22 123 456"
     assert "22 123 456" not in n.anonymize_messages(["a+216 22 123 456", restored]).messages[1].text
+
+
+def _conversation() -> tuple[Nona, Mapping]:
+    n = Nona(policies=ALL_REVERSIBLE)
+    mapping = n.anonymize_messages(["Sami w Amal Trabelsi", "phone +216 22 123 456"]).mapping
+    assert [mapping.value(p) for p in ("PERSON_1", "PERSON_2", "PHONE_1")] == [
+        "Sami",
+        "Amal Trabelsi",
+        "+216 22 123 456",
+    ]
+    return n, mapping
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "PERSON_1PERSON_2",  # `SamiAmal Trabelsi` would leak `Sami` and `Amal` on the next request
+        "xـPERSON_2 ok",  # found on the normalized view, where the tatweel is gone: `xamal trabelsi`
+        "Telephone 1: see",  # not a placeholder: glued, only the exact shape counts
+        "smartphone_1",
+        "PERSON_1abc",
+    ],
+)
+def test_restore_writes_a_value_only_where_propagation_finds_it_again(answer: str) -> None:
+    n, mapping = _conversation()
+    assert n.restore(answer, mapping) == answer
+
+
+def test_restore_writes_a_glued_value_that_propagation_finds_again() -> None:
+    n, mapping = _conversation()
+    assert n.restore("aPHONE_1, PERSON_1PERSON_9", mapping) == "a+216 22 123 456, SamiPERSON_9"
+
+
+def test_a_glued_placeholder_the_user_typed_in_a_later_message_round_trips() -> None:
+    """Its number was issued in an earlier message: it's a literal of its own, never that entity."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    conv = n.anonymize_messages(["Amal is here", "SamiPERSON_1 w Sami"])
+    assert n.restore(conv.messages[1].text, conv.mapping) == "SamiPERSON_1 w Sami"
 
 
 def test_a_glued_placeholder_is_reserved() -> None:

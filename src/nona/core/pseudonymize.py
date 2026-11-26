@@ -21,17 +21,10 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import (
-    ANY_PLACEHOLDER,
-    NAME_TYPES,
-    RESERVED_PLACEHOLDER,
-    loose_start,
-    placeholder_regex,
-    self_delimited,
-    strict_at,
-)
+from nona.core.boundaries import ANY_PLACEHOLDER, RESERVED_PLACEHOLDER, placeholder_parts, placeholder_regex
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import normalize
+from nona.core.resolver import known_spans
 from nona.core.types import Entity, EntityType, Span
 
 
@@ -193,8 +186,9 @@ class Pseudonymizer:
         """Placeholders the user wrote whose number was already issued (see `core/linking.py`)."""
         out: list[Span] = []
         for m in ANY_PLACEHOLDER.finditer(original):
-            span = Span(m.start(), m.end(), _canonical_type(m.group(1)), 1.0, LITERAL_DETECTOR)
-            if self._linker.issued(span.type, int(m.group(2))) and not any(span.overlaps(k) for k in kept):
+            type_name, number = placeholder_parts(m)
+            span = Span(m.start(), m.end(), _canonical_type(type_name), 1.0, LITERAL_DETECTOR)
+            if self._linker.issued(span.type, number) and not any(span.overlaps(k) for k in kept):
                 out.append(span)
         return out
 
@@ -235,23 +229,43 @@ def pseudonymize(
 
 
 def restore(text: str, mapping: Mapping) -> str:
-    """Put the original values back for every issued placeholder; leave anything else untouched."""
+    """Put the original values back for every issued placeholder; leave anything else untouched.
+
+    A value is written only where forward propagation finds it again in the restored text, so the client
+    can't re-send it in clear (`core/boundaries.py`): `PERSON_1abc` stays, and so does `PERSON_1PERSON_2`,
+    which would read `SamiAmal`. Checked on the output, again after each round of placeholders put back.
+    """
     if not len(mapping):
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
-
-    def replace(m: re.Match[str]) -> str:
-        etype = _canonical_type(m.group(1))
-        placeholder = f"{etype.value}_{int(m.group(2))}"
-        if placeholder not in mapping:
-            return m.group(0)
-        value = mapping.value(placeholder)
-        if etype in NAME_TYPES:
-            # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
-            if not strict_at(m.string, m.start(), m.end()):
-                return m.group(0)
-        elif not loose_start(m.string, m.start()) and not self_delimited(value):
-            return m.group(0)  # `aEMAIL_1`; `aPHONE_1` is restored when the phone starts with `+`
-        return value
-
-    return placeholder_regex(types, left=False).sub(replace, text)
+    found: list[tuple[int, int, EntityType, str]] = []
+    for m in placeholder_regex(types).finditer(text):
+        type_name, number = placeholder_parts(m)
+        etype = _canonical_type(type_name)
+        placeholder = f"{etype.value}_{number}"
+        if placeholder in mapping:
+            found.append((m.start(), m.end(), etype, mapping.value(placeholder)))
+    while True:
+        parts: list[str] = []
+        placed: list[tuple[int, int]] = []
+        pos = size = 0
+        for start, end, _, value in found:
+            parts.append(text[pos:start])
+            size += start - pos
+            lead, trail = len(value) - len(value.lstrip()), len(value) - len(value.rstrip())
+            placed.append((size + lead, size + len(value) - trail))  # spaces around a value aren't found
+            parts.append(value)
+            size += len(value)
+            pos = end
+        parts.append(text[pos:])
+        out = "".join(parts)
+        doc = normalize(out)
+        kept = [
+            f
+            for f, (start, end) in zip(found, placed, strict=True)
+            if RESERVED_PLACEHOLDER.fullmatch(f[3])  # a placeholder the user wrote: not personal data
+            or any(s.start <= start and end <= s.end for s in known_spans(doc, [(f[2], f[3])]))
+        ]
+        if len(kept) == len(found):
+            return out
+        found = kept

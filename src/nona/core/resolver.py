@@ -84,20 +84,27 @@ def known_spans(
     Multi-word forms match on the normalized view (case, spacing and digits don't matter). Single-word forms
     match the original text exactly, at word boundaries, so a known `Amal` doesn't mask *amal* ("hope").
     Boundaries are the ones restoring uses (`core/boundaries.py`): `_` separates, and Arabic proclitics may
-    be attached (`لكنزة`), so a restored value is always caught again.
+    be attached (`لكنزة`), so a restored value is always caught again. Overlapping occurrences are all
+    found (`a@x.com@x.com` holds `x.com@x.com` twice); the resolver keeps the longest.
     """
     spans: list[Span] = []
     for etype, surface in dict.fromkeys(known):
         pattern, on_normalized = _known_pattern(surface, etype in NAME_TYPES)
         if on_normalized:
-            spans.extend(
-                to_span(doc, m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.text)
-            )
+            spans.extend(to_span(doc, s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.text))
         else:
-            spans.extend(
-                Span(m.start(), m.end(), etype, 1.0, detector) for m in pattern.finditer(doc.original)
-            )
+            spans.extend(Span(s, e, etype, 1.0, detector) for s, e in _occurrences(pattern, doc.original))
     return spans
+
+
+def _occurrences(pattern: re.Pattern[str], text: str) -> list[tuple[int, int]]:
+    """Every match, overlapping ones too: the next search starts one character after the last match began."""
+    out: list[tuple[int, int]] = []
+    m = pattern.search(text)
+    while m:
+        out.append(m.span())
+        m = pattern.search(text, m.start() + 1)
+    return out
 
 
 @functools.lru_cache(maxsize=4096)
