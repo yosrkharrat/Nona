@@ -14,6 +14,8 @@ text, goes upstream as a fresh placeholder (`PHONE_2`) and is restored to exactl
 
 from __future__ import annotations
 
+import bisect
+import functools
 import itertools
 import re
 from collections.abc import Iterable
@@ -21,9 +23,9 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, placeholder_regex, strict_at
+from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, loose_at, placeholder_regex, strict_at
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
-from nona.core.normalize import normalize
+from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.types import Entity, EntityType, Span
 
 
@@ -226,18 +228,52 @@ def pseudonymize(
 
 
 def restore(text: str, mapping: Mapping) -> str:
-    """Put the original values back for every issued placeholder; leave anything else untouched."""
+    """Put the original values back for every issued placeholder; leave anything else untouched.
+
+    A value is written only where forward propagation would find it again (`core/boundaries.py`): a name at
+    strict boundaries (`PERSON_1abc` stays, propagation couldn't catch `Samiabc`), and a multi-word value,
+    which propagation looks for on the normalized view, at its boundaries there too (`سَـلPERSON_1` stays:
+    normalized, `سل` glues to the name).
+    """
     if not len(mapping):
         return text
     types = {_canonical_type(p.rsplit("_", 1)[0]) for p in mapping.placeholders}
+    view = _NormalizedView(text)
 
     def replace(m: re.Match[str]) -> str:
         etype = _canonical_type(m.group(1))
         placeholder = f"{etype.value}_{int(m.group(2))}"
         if placeholder not in mapping:
             return m.group(0)
-        if etype in NAME_TYPES and not strict_at(m.string, m.start(), m.end()):
-            return m.group(0)  # `PERSON_1abc`: propagation couldn't catch `Samiabc` again, so don't write it
-        return mapping.value(placeholder)
+        name = etype in NAME_TYPES
+        if name and not strict_at(m.string, m.start(), m.end()):
+            return m.group(0)
+        value = mapping.value(placeholder)
+        if _multi_word(value) and not view.at(m.start(), m.end(), name):
+            return m.group(0)
+        return value
 
     return placeholder_regex(types).sub(replace, text)
+
+
+@functools.lru_cache(maxsize=4096)
+def _multi_word(value: str) -> bool:
+    """Whether propagation looks for `value` on the normalized view (`resolver._known_pattern`)."""
+    return len(normalize(value).text.split()) > 1
+
+
+class _NormalizedView:
+    """Boundaries of a placeholder on the normalized view of the text, normalized once, when first needed."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._doc: NormalizedDoc | None = None
+        self._starts: list[int] = []
+
+    def at(self, start: int, end: int, name: bool) -> bool:
+        if self._doc is None:
+            self._doc = normalize(self._text)
+            self._starts = [o_start for o_start, _ in self._doc.origin]
+        # A placeholder is ASCII, one normalized character per character.
+        n_start, n_end = bisect.bisect_left(self._starts, start), bisect.bisect_left(self._starts, end)
+        return (strict_at if name else loose_at)(self._doc.text, n_start, n_end)

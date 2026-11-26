@@ -7,9 +7,10 @@ caught by a plain `\\w` boundary. So both use these boundaries:
 
 - `_` separates words (`file_PERSON_1.pdf`, `PERSON_1_2024`);
 - up to two Arabic proclitics may be attached in front (`لPERSON_1`, `وبPERSON_1`), as Arabic writes them;
-- up to two tatweels (`ـ`, which normalization drops) may sit on either side, also around a proclitic
-  (`Ksouriـ`, `ـلSami`, `لـالقصوري`), but a tatweel inside a word isn't a boundary: a known `أمين` (Amin)
-  isn't found in `أمينـة` (Amina), #80;
+- what normalization drops (tatweels, Arabic short vowels and marks) is looked past: up to two of them on
+  the left, also around up to two proclitics (`ـلSami`, `لـالقصوري`, `لِسامي`), any number on the right
+  (`Ksouriـ`). What follows them still decides, so a known `أمين` (Amin) isn't found in `أمينـة` (Amina), #80.
+  Multi-word values are found on the normalized view, so restore checks them there too;
 - any other letter or digit glued on either side is not a boundary: `PERSON_1abc` and `lPERSON_1` are left
   as they are, so they can't leak either. That includes a placeholder detection leaves glued, which restore
   doesn't write back (`سميرPERSON_1`, `aPHONE_1`, `IP_ADDRESS_1EMAIL_1`): it stays masked, #87.
@@ -30,6 +31,7 @@ import itertools
 import re
 from collections.abc import Iterable
 
+from nona.core.normalize import DROPPED
 from nona.core.types import EntityType
 
 NAME_TYPES = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION, EntityType.CUSTOM})
@@ -37,20 +39,28 @@ NAME_TYPES = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGAN
 PROCLITICS = "وفبلك"
 TATWEEL = "\u0640"
 _NOT_WORD = r"(?<![^\W_])"  # not preceded by a letter or digit (`_` is fine)
-# What may sit between a word boundary and a value: up to two proclitics and up to two tatweels, in any order.
-_PREFIXES = [
-    "".join(p)
-    for n in (1, 2, 3)
-    for p in itertools.product((f"[{PROCLITICS}]", TATWEEL), repeat=n)
-    if p.count(TATWEEL) <= 2 and n - p.count(TATWEEL) <= 2
+_DROPPED = "".join(sorted(DROPPED))
+# What may sit between a word boundary and a value: up to two proclitics and up to two dropped characters,
+# in any order. Fixed-width look-behinds, one per shape, behind a one-character gate.
+_SHAPES = [
+    shape
+    for n in (1, 2, 3, 4)
+    for shape in itertools.product("PD", repeat=n)
+    if shape.count("P") <= 2 and shape.count("D") <= 2
 ]
-LEFT = "(?:" + "|".join([_NOT_WORD, *(f"(?<={_NOT_WORD}{p})" for p in _PREFIXES)]) + ")"
-RIGHT = rf"(?={TATWEEL}{{0,2}}(?![^\W_]))"  # not followed by a letter or digit, past up to two tatweels
+_PREFIXES = "|".join(
+    f"(?<={_NOT_WORD}" + "".join(f"[{PROCLITICS}]" if c == "P" else f"[{_DROPPED}]" for c in s) + ")"
+    for s in _SHAPES
+)
+LEFT = rf"(?:{_NOT_WORD}|(?<=[{PROCLITICS}{_DROPPED}])(?:{_PREFIXES}))"
+RIGHT = rf"(?=[{_DROPPED}]*+(?![^\W_]))"  # not followed by a letter or digit, past what normalization drops
 LOOSE_LEFT = r"(?<![A-Za-z0-9])"
 LOOSE_RIGHT = r"(?!\d)"
 
 _STRICT_START = re.compile(LEFT)
 _STRICT_END = re.compile(RIGHT)
+_LOOSE_START = re.compile(LOOSE_LEFT)
+_LOOSE_END = re.compile(LOOSE_RIGHT)
 
 
 def _type_pattern(etype: EntityType) -> str:
@@ -83,3 +93,8 @@ TYPED_PLACEHOLDER = re.compile(
 def strict_at(text: str, start: int, end: int) -> bool:
     """Whether `text[start:end]` sits at strict boundaries (see above)."""
     return bool(_STRICT_START.match(text, start)) and bool(_STRICT_END.match(text, end))
+
+
+def loose_at(text: str, start: int, end: int) -> bool:
+    """Whether `text[start:end]` sits at loose boundaries (see above)."""
+    return bool(_LOOSE_START.match(text, start)) and bool(_LOOSE_END.match(text, end))

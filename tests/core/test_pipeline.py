@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
 from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
+from nona.core.normalize import normalize
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -91,6 +92,17 @@ PIECES = [
 texts = st.lists(st.sampled_from(PIECES), max_size=40).map("".join)
 
 
+def _glued_to_ascii(result: Anonymized) -> bool:
+    """Whether an issued placeholder touches an ASCII letter or digit in the anonymized text, or a character
+    that normalizes to one (`٢`, `ﬁ`), where propagation looks for multi-word values (#87)."""
+    for e in result.entities:
+        for m in re.finditer(re.escape(e.placeholder) + r"(?!\d)", result.text):
+            around = result.text[max(m.start() - 1, 0) : m.start()] + result.text[m.end() : m.end() + 1]
+            if any(x.isascii() and x.isalnum() for c in around for x in normalize(c).text):
+                return True
+    return False
+
+
 def canonical_form(text: str, result: Anonymized) -> str:
     """`text` with every pseudonymized mention written as its entity's canonical form."""
     parts, pos = [], 0
@@ -105,17 +117,21 @@ def canonical_form(text: str, result: Anonymized) -> str:
 @given(texts)
 @example("PERSON_1@example.com")  # an email whose local part looks like a placeholder
 @example("M.Saaـ")  # #80: a name glued to a tatweel
+@example("٢+2522 123 456")  # a phone glued to a digit that normalizes to ASCII
 @example("xphone" + "1" * 5000)  # #80: `int()` refuses more than 4300 digits
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
     so x itself comes back when no entity has two forms (`22 123 456` and `22.123.456` are one phone).
 
-    Except where detection leaves a placeholder glued (`M.٢PERSON_1` → `M.PERSON_2PERSON_1`): restore doesn't
-    write a value there, so it stays masked (#87)."""
+    Except where detection leaves a placeholder glued to an ASCII letter or digit, also once normalized
+    (`M.٢PERSON_1` → `M.PERSON_2PERSON_1`, `aPHONE_1`, `٢PHONE_1`): restore doesn't write a value there, so
+    it stays masked (#87). That is judged on the anonymized text, without the boundaries restore uses, so a
+    restore regression still fails.
+    """
     nona = Nona(policies=ALL_REVERSIBLE)
     result = nona.anonymize(text)
+    assume(not _glued_to_ascii(result))
     restored = nona.restore(result.text, result.mapping)
-    assume(not any(re.search(re.escape(e.placeholder) + r"(?!\d)", restored) for e in result.entities))
     assert restored == canonical_form(text, result)
     if all(len({m.text_in(text) for m in e.mentions}) == 1 for e in result.entities):
         assert restored == text
@@ -166,6 +182,9 @@ def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
 @pytest.mark.parametrize(
     ("messages", "last"),
     [
+        (["سامي", "قلت وـبـسامي"], "قلت وـبـPERSON_1"),  # two proclitics and two tatweels
+        (["سامي", "قلت لِسامي"], "قلت لِPERSON_1"),  # a short vowel on the proclitic
+        (["أمين", "أمينَة جات"], "أمينَة جات"),  # a short vowel inside a word: Amina isn't Amin
         (["Mme Zgolliـ est la", "rani m3a Zgolli"], "rani m3a PERSON_1"),
         (["السيدة القصوريـ جات", "شفت القصوري اليوم"], "شفت PERSON_1 اليوم"),
         (["السيدة القصوري جات", "قول لـالقصوري"], "قول لـPERSON_1"),  # a proclitic, then a tatweel
@@ -176,6 +195,16 @@ def test_a_name_glued_to_a_tatweel_round_trips(text: str) -> None:
 def test_propagation_and_tatweels(messages: list[str], last: str) -> None:
     conv = Nona(policies=ALL_REVERSIBLE).anonymize_messages(messages)
     assert conv.messages[-1].text == last
+
+
+@pytest.mark.parametrize("answer", ["قلت سَـلPERSON_1 اليوم", "™PERSON_1", " ٢PHONE_1"])
+def test_a_multi_word_value_is_restored_only_where_the_normalized_view_finds_it(answer: str) -> None:
+    """Propagation looks for a multi-word value on the normalized view, where `سَـل` is `سل` glued to the name,
+    `™` is `tm` and `٢` is `2`: restore leaves the placeholder there."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    first = n.anonymize_messages(["سامي الطرابلسي, phone +216 22 123 456"])
+    assert first.mapping.value("PERSON_1") == "سامي الطرابلسي"
+    assert n.restore(answer, first.mapping) == answer
 
 
 @pytest.mark.parametrize("text", ["xphone" + "1" * 5000, "phone " + "1" * 5000, "xPERSON_" + "1" * 5000])
@@ -196,7 +225,7 @@ def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
     assert result.entities
     assert not any(m.text_in(text) in result.text for e in result.entities for m in e.mentions)
     restored = n.restore(result.text, result.mapping)
-    assert any(e.placeholder in restored for e in result.entities)
+    assert any(re.search(re.escape(e.placeholder) + r"(?!\d)", restored) for e in result.entities)
 
 
 def test_arabic_look_ahead_spreads_listed_names_only() -> None:
