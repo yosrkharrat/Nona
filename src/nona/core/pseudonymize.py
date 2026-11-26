@@ -22,7 +22,14 @@ from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nona.core.boundaries import ANY_PLACEHOLDER, NAME_TYPES, loose_at, placeholder_regex, strict_at
+from nona.core.boundaries import (
+    ANY_PLACEHOLDER,
+    NAME_TYPES,
+    composes_after,
+    loose_at,
+    placeholder_regex,
+    strict_at,
+)
 from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.types import Entity, EntityType, Span
@@ -267,9 +274,11 @@ class _NormalizedView:
         self._starts: list[int] = []
 
     def at(self, start: int, end: int, name: bool) -> bool:
+        if name and composes_after(self._text, end):
+            return False
         if self._doc is None:
             self._doc = normalize(self._text)
             self._starts = [o_start for o_start, _ in self._doc.origin]
-        # A placeholder is ASCII, one normalized character per character.
-        n_start, n_end = bisect.bisect_left(self._starts, start), bisect.bisect_left(self._starts, end)
-        return (strict_at if name else loose_at)(self._doc.text, n_start, n_end)
+        # A placeholder is ASCII, one normalized character per character, even if a mark follows it.
+        n_start = bisect.bisect_left(self._starts, start)
+        return (strict_at if name else loose_at)(self._doc.text, n_start, n_start + end - start)

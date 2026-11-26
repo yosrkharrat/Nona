@@ -118,15 +118,14 @@ def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[
     starts = {(p.start, p.end) for p in propagated}
     out: list[Span] = []
     for s in recognized:
-        for n in range(1, 7):
-            head = text[s.start : s.start + n]
-            if (
-                s.detector != GAZETTEER
-                and (s.start + n, s.end) in starts
-                and all(c in PROCLITICS or c in DROPPED for c in head)
-                and 1 <= sum(c in PROCLITICS for c in head) <= 2
-            ):
-                s = Span(s.start + n, s.end, s.type, s.score, s.detector)
+        i, proclitics = s.start, 0
+        while s.detector != GAZETTEER and i < s.end and (text[i] in DROPPED or text[i] in PROCLITICS):
+            proclitics += text[i] in PROCLITICS
+            i += 1
+            if 1 <= proclitics <= 2 and (i, s.end) in starts:
+                s = Span(i, s.end, s.type, s.score, s.detector)
+                break
+            if proclitics > 2:
                 break
         out.append(s)
     return out

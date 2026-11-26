@@ -125,8 +125,6 @@ def canonical_form(text: str, result: Anonymized) -> str:
 @given(texts)
 @example("PERSON_1@example.com")  # an email whose local part looks like a placeholder
 @example("M.Saaـ")  # #80: a name glued to a tatweel
-@example("٢+2522 123 456")  # a phone glued to a digit that normalizes to ASCII
-@example("aـ+2522 123 456")  # a phone glued to a letter past a tatweel
 @example("xphone" + "1" * 5000)  # #80: `int()` refuses more than 4300 digits
 def test_restore_inverts_anonymize_on_arbitrary_text(text: str) -> None:
     """FR-8: restore(anonymize(x)) == x up to linking. Each mention comes back as its entity's canonical form,
@@ -223,6 +221,21 @@ def test_a_multi_word_value_is_restored_only_where_the_normalized_view_finds_it(
     assert n.restore(answer, first.mapping) == answer
 
 
+def test_a_one_word_name_before_a_combining_mark_round_trips() -> None:
+    """Propagation finds a one-word name on the original text, where a decomposed accent after it is no
+    letter; only a multi-word value, found on the normalized view, would compose with it."""
+    n = Nona(policies=ALL_REVERSIBLE)
+    conv = n.anonymize_messages(["Mme Sami est la", "ok Sami\u0301x"])
+    assert conv.messages[1].text == "ok PERSON_1\u0301x"
+    assert n.restore(conv.messages[1].text, conv.mapping) == "ok Sami\u0301x"
+
+
+def test_a_phone_before_a_combining_mark_round_trips() -> None:
+    n = Nona(policies=ALL_REVERSIBLE)
+    mapping = n.anonymize_messages(["phone +216 22 123 456"]).mapping
+    assert n.restore("x PHONE_1\u0301٢ y", mapping) == "x +216 22 123 456\u0301٢ y"
+
+
 @pytest.mark.parametrize("text", ["xphone" + "1" * 5000, "phone " + "1" * 5000, "xPERSON_" + "1" * 5000])
 def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> None:
     """#80: placeholder numbers have at most 6 digits, as issued; `int()` refuses more than 4300."""
@@ -232,7 +245,17 @@ def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> Non
     assert n.restore(text, result.mapping) == text
 
 
-@pytest.mark.parametrize("text", ["M.٢PERSON_1", "esmi سميرPERSON_1", "a+822 123 4560", "a::-@example.com"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "M.٢PERSON_1",
+        "esmi سميرPERSON_1",
+        "a+822 123 4560",
+        "a::-@example.com",
+        "٢+2522 123 456",  # glued to `2` on the normalized view
+        "aـ+2522 123 456",  # glued to `a` past a tatweel
+    ],
+)
 def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
     """#87: restore doesn't write a value where propagation couldn't find it again: the glued placeholder
     stays in the reply, and no value went upstream."""

@@ -37,7 +37,6 @@ from nona.core.types import EntityType
 NAME_TYPES = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION, EntityType.CUSTOM})
 
 PROCLITICS = "وفبلك"
-TATWEEL = "\u0640"
 _DROPPED = "".join(sorted(DROPPED))
 # Not preceded by a letter, a digit or what normalization drops (`_` is fine): `تَأمين` holds no `أمين`.
 _NOT_WORD = rf"(?<![^\W_])(?<![{_DROPPED}])"
@@ -83,20 +82,20 @@ TYPED_PLACEHOLDER = re.compile(
 
 def strict_at(text: str, start: int, end: int) -> bool:
     """Whether `text[start:end]` sits at strict boundaries (see above): `NAME_START` before it, walked back
-    here, and `RIGHT` after it, not followed by a combining mark, which would compose with the value's last
-    letter on the normalized view (`Ksouri` + U+0301 is `Ksourí`)."""
+    here, and `RIGHT` after it."""
     i, proclitics = start, 0
     while i > 0 and (text[i - 1] in DROPPED or (text[i - 1] in PROCLITICS and proclitics < 2)):
         proclitics += text[i - 1] in PROCLITICS
         i -= 1
-    if i > 0 and text[i - 1].isalnum():
-        return False
-    j = end
-    while j < len(text) and text[j] in DROPPED:
-        j += 1
-    return bool(_STRICT_END.match(text, end)) and not (
-        j < len(text) and unicodedata.category(text[j]).startswith("M")
-    )
+    return not (i > 0 and text[i - 1].isalnum()) and bool(_STRICT_END.match(text, end))
+
+
+def composes_after(text: str, end: int) -> bool:
+    """Whether a combining mark follows `end`, past what normalization drops: on the normalized view it would
+    compose with the value's last letter (`Ksouri` + U+0301 is `Ksourí`)."""
+    while end < len(text) and text[end] in DROPPED:
+        end += 1
+    return end < len(text) and unicodedata.category(text[end]).startswith("M")
 
 
 def loose_at(text: str, start: int, end: int) -> bool:
