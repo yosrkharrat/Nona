@@ -1,6 +1,6 @@
 # ADR-0008: NER model choice
 
-- Status: **Proposed** (S4 spike, #71). Becomes Accepted when the recognizer (#72) meets the conditions below. Part 2 (quality) addressed conditions 1 and 2; 3 and 4 are part 3.
+- Status: **Proposed** (S4 spike, #71). Becomes Accepted when the recognizer (#72) meets the conditions below. Part 2 (quality) addressed conditions 1 and 2. Part 3 meets condition 3 (NFR-7); condition 4 (NFR-6) is measured and **not met** (see part 3).
 - Date: 2026-11-23
 - Related: [deep dive A](../design/04-deep-dives.md#a-detection-in-mixed-french--arabic--darija--arabizi) (layer 2), [ADR-0004](0004-causal-entity-linking.md), [ADR-0007](0007-release-supply-chain.md), NFR-3, NFR-6, NFR-7, NFR-12
 
@@ -114,6 +114,46 @@ Left, and why:
 - Words that are also given names stay off `NEVER_NAMES`, as a span is cut at them whatever its score: `Rani` ("I am") and `ken` ("if") are masked when the model takes them (5 of the 28 tokens), while `Wala`, `Bahi` or `يسر` (Yosr) are never cut out of a name.
 - **Lowercase name parts next to a found name can leak from a low-score span** (#83): a low span must look like a name, so `m3a Mootez ben salah` masks only `Mootez`. As before #79.
 - `NEVER_NAMES` and the speech verbs are a first list, to be checked by a native speaker as #50's were. A Darija word missing from it is over-masked, never leaked. Everything here was tuned on `dev`: #75 checks it once on the frozen `test`.
+
+## Implementation (#72, part 3: resources)
+
+Conditions 3 and 4, measured with [`bench/resources.py`](../../bench/resources.py) on the M-series Mac of the spike (10 cores, torch on 4 threads), one model process at a time. GB here are MiB / 1000, as in the spike. Three synthetic messages of about 300 tokens, counted with the model's own tokenizer: French (299), Arabizi and French (290), Arabic (304).
+
+**NFR-7 (≤ 1.5 GB) is met.** The loader read the 1.16 GB of fp32 weights into memory after building a randomly initialized model of the same size, hence the 2.3–2.9 GB peak; under the `dev` workload it stayed at 1.88 GB, over the limit. It now asks GLiNER to build the model on torch's `meta` device and put the safetensors file's tensors in place (`low_cpu_mem_usage=True`): the weights stay **mapped from the file**, and only the pages inference reads are resident. Two thirds of the parameters are the 250k-row multilingual embedding table, and a workload only reads the rows of the tokens it sees. `dev` results are byte-identical.
+
+| | Load | RSS after loading | Peak | RSS after `dev` + the 3 long messages | Physical footprint |
+|---|---|---|---|---|---|
+| Part 2 (weights read into memory) | 8–17 s | 1.65 GB | 2.76 GB | 1.88 GB | 1.54 GB |
+| **Part 3 (weights mapped)** | **2 s** | **0.57 GB** | **1.27 GB** | **1.27 GB** | **0.48 GB** |
+| Part 3, every weight page read (upper bound) | | | 1.97 GB | 1.97 GB | 0.48 GB |
+
+The upper bound reads the whole embedding table, which only a process that has seen tokens of every script would do. Above the 0.48 GB footprint, RSS is **clean file pages**: shared with the page cache, never swapped, and dropped by the kernel under memory pressure (read again from disk if needed). A `model` test loads the model in a fresh process, anonymizes long messages in four languages and checks the peak stays under 1.5 GB (1.14 GB; 2.75 GB with the old loader), and that GLiNER didn't fall back to reading the weights, which it does with only a warning. Only a symlinked weights file is mapped: where the loader has to copy it into its temporary folder (no symlinks), it reads it as before, since that folder is deleted after loading. A running process keeps the file it mapped: `pull` replaces files and never writes into them.
+
+**NFR-6 (added overhead p95 ≤ 150 ms for 300 tokens) is not met.** Everything Nona adds before a request is sent (normalize, recognizers, resolve, link, rewrite), with a fresh detection cache per run, p50 / p95 over 50 runs:
+
+| Message | Rules only, quiet | With the model, quiet (load ≈ 3) | Rules only, 6 busy processes | With the model, 6 busy processes (load ≈ 10) |
+|---|---|---|---|---|
+| French, 299 tokens | 3.5 / 4.1 ms | 198 / **214 ms** | 4.1 / 8.3 ms | 687 / **772 ms** |
+| Arabizi + French, 290 | 2.4 / 2.5 ms | 196 / **230 ms** | 3.0 / 6.0 ms | 615 / **816 ms** |
+| Arabic, 304 | 3.2 / 3.3 ms | 217 / **245 ms** | 3.9 / 7.5 ms | 628 / **837 ms** |
+
+The model is nearly all of it: one call takes 195–207 ms at p50, in the encoder's matrix products (addmm and attention bmm, 62% of CPU time). It is compute-bound: 4 threads is the fastest setting (1: 393 ms, 2: 322 ms, 4 to 8: 281–284 ms on a 410-token draft). 03's budget assumed 80–120 ms for this step.
+
+What was tried, on the same messages and `dev`:
+
+| Option | Model call, p50 / p95 | RSS | `dev` | Verdict |
+|---|---|---|---|---|
+| torch fp32, mapped (shipped) | 195–207 / 215–227 ms | 1.27 GB | as part 2 | NFR-7 ✓, NFR-6 ✗ |
+| torch bf16 (`dtype`, cast on read) | 1586 ms (French) | 1.10 GB, peak 2.2 GB | scores lower | 5.7× slower on this CPU |
+| torch dynamic int8 (`quantize`, qnnpack) | 460 ms (French) | 1.88 GB, peak 2.8 GB | no entity at all | broken |
+| ONNX Runtime int8 (gliner's export) | 121–130 / 141–154 ms | 1.56 GB | direct leak 1.4% → 21.8%, held-out PERSON 4.2% → 64.6% | broken |
+| ONNX Runtime fp32 (gliner's export) | 117–137 / 146–152 ms | 2.3–2.5 GB | byte-identical | NFR-6 at the limit, NFR-7 ✗ |
+
+The ONNX runs were at load ≈ 5. ONNX Runtime keeps its own copy of the weights (disabling prepacking and the memory arena didn't change that, and made it slower), exporting peaks at 4.8 GB and takes a minute, and it adds `onnxruntime` and a derived 1.1 GB file to the supply chain (ADR-0007). Under load, none of these comes near 150 ms.
+
+**No second model call on the original text** (left open by part 2): it would add one more model call, about 200 ms, on every Arabizi message, for one more held-out name on `dev`.
+
+Open, for the owner: NFR-6 with the model. See #72.
 
 ## Consequences
 

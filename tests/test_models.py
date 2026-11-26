@@ -190,8 +190,9 @@ def fake_gliner(monkeypatch: pytest.MonkeyPatch, isolated_offline: None) -> type
 
 
 def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
-    tmp_path: Path, fake_gliner: type[_FakeGliner]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
 ) -> None:
+    monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)  # the fake weights are large: linked, not written
     pull(tmp_path, download=FakeHub(), models=FAKE)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for p in tmp_path.rglob("*"):
@@ -209,7 +210,8 @@ def test_load_points_gliner_at_the_pinned_encoder_offline_without_writing(
     assert seen["gliner_files"] == ["gliner_config.json", "model.safetensors"]
     assert seen["encoder_files"] == {n: d for (r, n), d in FILES.items() if r == "org/encoder"}
     assert seen["weights"] == FILES[("org/gliner", "model.safetensors")]
-    assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True}
+    # Linked weights are mapped from the file, not read into memory (NFR-7).
+    assert seen["kwargs"] == {"local_files_only": True, "load_tokenizer": True, "low_cpu_mem_usage": True}
     assert seen["offline"] == ("1", "1")
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     assert model.identity == f"org/gliner@{'a' * 40}"
@@ -324,6 +326,7 @@ def test_pull_after_a_load_says_to_use_another_process(
 def test_load_copies_the_weights_where_symlinks_are_not_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
 ) -> None:
+    monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)
     pull(tmp_path, download=FakeHub(), models=FAKE)
 
     def refuse(*args: object, **kwargs: object) -> None:
@@ -336,6 +339,8 @@ def test_load_copies_the_weights_where_symlinks_are_not_allowed(
     monkeypatch.setattr(os, "link", no_hard_links)
     load_ner_model(tmp_path, models=FAKE)
     assert fake_gliner.seen["weights"] == FILES[("org/gliner", "model.safetensors")]
+    # The copy is in the temp folder, deleted after loading: read it into memory, never map it.
+    assert fake_gliner.seen["kwargs"]["low_cpu_mem_usage"] is False  # type: ignore[index]
 
 
 def test_a_file_dropped_next_to_the_pinned_encoder_is_never_seen_by_the_loader(
@@ -403,3 +408,12 @@ def test_the_hint_quotes_for_the_shell_in_use(windows: bool, expected: str) -> N
     from nona.cli import shell_quote
 
     assert shell_quote("D:\\my models", windows=windows) == expected
+
+
+def test_weights_written_into_the_temp_folder_are_never_mapped(
+    tmp_path: Path, fake_gliner: type[_FakeGliner]
+) -> None:
+    # Small enough to be written from verified bytes into the temp folder, which is deleted after loading.
+    pull(tmp_path, download=FakeHub(), models=FAKE)
+    load_ner_model(tmp_path, models=FAKE)
+    assert fake_gliner.seen["kwargs"]["low_cpu_mem_usage"] is False  # type: ignore[index]

@@ -359,6 +359,16 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
     `tokenizer.json`, which transformers would prefer) is never seen, the small files can't change between
     the check and the load, and a read-only or shared models folder works. The weights are read through
     the link: checked by size here, by hash only in `pull` (hashing 1.1 GB on every start is too slow).
+
+    **Memory (NFR-7).** Through a link, the weights are memory-mapped from the safetensors file, not read
+    into memory: GLiNER builds the model on the `meta` device and puts the file's tensors in place
+    (`low_cpu_mem_usage`). Only the pages inference reads are resident, and they are clean file pages the
+    kernel can drop and read again: most of the 250k-row multilingual embedding table is never read. Loading
+    peaked at 2.3-2.9 GB, and RSS was 1.88 GB after the `dev` split; now loading peaks at about 0.6 GB, and
+    RSS is 1.27 GB after `dev` (ADR-0008, `bench/resources.py`). The file stays mapped for the life of the
+    process: the link goes with the temp folder, the mapping doesn't. `pull` replaces files (`os.replace`),
+    never writes into them, so a running process keeps the file it mapped. A copy (no symlinks) is read into
+    memory as before, since the temp folder holding it is deleted.
     """
     root = models_dir() if root is None else root
     folder = check(root, models=models)
@@ -374,12 +384,18 @@ def load_ner_model(root: Path | None = None, *, models: ModelSet = PINNED) -> Gl
                         (target / f.name).write_bytes(small[(repo.repo, f.name)])
                     else:
                         _link_or_copy((root / repo.folder / f.name).resolve(), target / f.name)
+            # Map the weights only if they are links into the models folder, which outlives the temp one.
+            weights = list(staged[models.gliner].glob("*.safetensors"))
+            mapped = bool(weights) and all(w.is_symlink() for w in weights)
             config_path = staged[models.gliner] / "gliner_config.json"
             config = json.loads(config_path.read_bytes())
             config["model_name"] = str(staged[models.encoder])
             config_path.write_text(json.dumps(config), encoding="utf-8")
             model = GLiNER.from_pretrained(
-                str(staged[models.gliner]), local_files_only=True, load_tokenizer=True
+                str(staged[models.gliner]),
+                local_files_only=True,
+                load_tokenizer=True,
+                low_cpu_mem_usage=mapped,
             )
     except ModelError:
         raise
