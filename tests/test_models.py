@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import sys
-import time
 import types
 from pathlib import Path
 from typing import ClassVar
@@ -427,23 +426,32 @@ def _weights(root: Path) -> Path:
     return root / GLINER_DIR / "model.safetensors"
 
 
-@pytest.mark.parametrize("change", ["write in place", "same size", "truncate", "replace", "delete"])
-def test_a_mapped_weights_file_changed_after_loading_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner], change: str
-) -> None:
+def _mapped_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> models.GlinerModel:
     monkeypatch.setattr(models, "_HASHED_ON_LOAD_MAX", 100)  # large fake weights: linked, so mapped
     pull(tmp_path, download=FakeHub(), models=FAKE)
     model = load_ner_model(tmp_path, models=FAKE)
     assert model.predict("Sami", ["person"], 0.5)  # unchanged: fine
+    return model
+
+
+def _later(path: Path) -> None:
+    """Move mtime 10 s forward: a signature change that doesn't wait for the filesystem's timestamp tick."""
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**10))
+
+
+@pytest.mark.parametrize("change", ["write in place", "same size", "truncate", "replace", "delete"])
+def test_a_mapped_weights_file_changed_after_loading_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner], change: str
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
     weights = _weights(tmp_path)
     data = weights.read_bytes()
-    stat = weights.stat()
-    time.sleep(0.05)  # past the filesystem's timestamp tick (coarse on Linux), so ctime can move
     if change == "write in place":
         weights.write_bytes(data + b"!")
-    elif change == "same size":  # same size, and mtime put back: ctime still moves
+    elif change == "same size":  # same inode and size: only the pinned hash tells
         weights.write_bytes(data[:-1] + b"?")
-        os.utime(weights, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        _later(weights)
     elif change == "truncate":
         weights.write_bytes(b"")
     elif change == "replace":  # what `pull` does: a new file, the mapped one lives on
@@ -452,6 +460,40 @@ def test_a_mapped_weights_file_changed_after_loading_fails_closed(
     else:
         weights.unlink()
     with pytest.raises(ModelError, match="changed on disk since the model was loaded"):
+        model.predict("Sami", ["person"], 0.5)
+
+
+def test_a_metadata_change_to_the_mapped_weights_is_hashed_once_and_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    weights = _weights(tmp_path)
+    hashed: list[Path] = []
+    real = models._sha256
+    monkeypatch.setattr(models, "_sha256", lambda path: hashed.append(path) or real(path))
+    weights.chmod(0o444)  # `chmod a-w`, `touch`, a hard link: ctime or mtime move, the bytes don't
+    _later(weights)
+    try:
+        assert model.predict("Sami", ["person"], 0.5)
+        assert model.predict("Sami", ["person"], 0.5)
+    finally:
+        weights.chmod(0o644)
+    assert len(hashed) == 1, "hashed once, then the new signature is the known good one"
+
+
+def test_a_changed_mapped_file_keeps_failing_even_once_put_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_gliner: type[_FakeGliner]
+) -> None:
+    model = _mapped_model(tmp_path, monkeypatch)
+    weights = _weights(tmp_path)
+    data = weights.read_bytes()
+    weights.write_bytes(data[:-1] + b"?")
+    _later(weights)
+    with pytest.raises(ModelError):
+        model.predict("Sami", ["person"], 0.5)
+    weights.write_bytes(data)
+    monkeypatch.setattr(models, "_sha256", lambda path: pytest.fail("hashed again after failing"))
+    with pytest.raises(ModelError, match="restart"):
         model.predict("Sami", ["person"], 0.5)
 
 

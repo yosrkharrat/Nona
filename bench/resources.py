@@ -91,7 +91,7 @@ def _gb(n_bytes: float) -> float:
 def _rss() -> int:
     ps = shutil.which("ps") or "ps"
     out = subprocess.run([ps, "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True)  # noqa: S603
-    return int(out.stdout.strip()) * 1024  # KiB
+    return int(out.stdout.strip()) * 1024  # ps reports KiB
 
 
 def _peak() -> int:
@@ -108,7 +108,11 @@ def _footprint() -> float | None:
     for line in out.splitlines():
         if line.startswith("Physical footprint:"):
             value = line.split(":", 1)[1].strip()
-            return float(value[:-1]) * {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30}[value[-1]]
+            unit = {"B": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}.get(value[-1:])
+            try:
+                return float(value[:-1]) * unit if unit else None
+            except ValueError:
+                return None
     return None
 
 
