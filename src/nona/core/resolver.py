@@ -13,10 +13,14 @@ CIN on the same 8 digits). The resolver:
 4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
    the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
 5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
-   A name span that loses to a span it only partly overlaps keeps its words outside that span, as pieces
-   that compete like any other span (#89): the model's confident `Zorgati Sami` against the gazetteer's
-   longer `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear. A piece needs two letters or digits, so
-   a clitic left in front of a name (`ل`) isn't masked on its own. A span inside another is dropped whole.
+   A name span that loses to spans it only partly overlaps keeps what lies outside them, as pieces that
+   compete like any other span (#89): the model's confident `Zorgati Sami` against the gazetteer's longer
+   `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear. A piece is trimmed to letters and digits and
+   needs two of them. One or two Arabic proclitics glued to the start of the span that won (`علي و` +
+   `كريم`, `وب` + `كريم`) stay out of the piece, as restoring leaves them in place: a piece glued to a
+   placeholder would never be restored (#87). A piece goes through steps 1 and 4 like a recognizer span. A
+   denylist term cut this way masks its pieces too: half of a term the user hid is not left in clear. A
+   span inside another is dropped whole.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -30,7 +34,15 @@ import itertools
 import re
 from collections.abc import Iterable, Sequence
 
-from nona.core.boundaries import LOOSE_LEFT, LOOSE_RIGHT, NAME_START, NAME_TYPES, RIGHT, TYPED_PLACEHOLDER
+from nona.core.boundaries import (
+    LOOSE_LEFT,
+    LOOSE_RIGHT,
+    NAME_START,
+    NAME_TYPES,
+    PROCLITICS,
+    RIGHT,
+    TYPED_PLACEHOLDER,
+)
 from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -126,14 +138,25 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
 
 
 def _outside(span: Span, others: Sequence[Span], original: str) -> list[Span]:
-    """The pieces of `span` outside all of `others`, trimmed to letters and digits, with at least two."""
+    """The pieces of `span` outside all of `others`, trimmed to letters and digits, with at least two, and
+    without proclitics glued to the start of one of `others` (module docstring)."""
     bounds = [span.start]
     for o in sorted(others, key=lambda o: o.start):
         bounds += [o.start, o.end]
     bounds.append(span.end)
+    starts = {o.start for o in others}
     pieces: list[Span] = []
     for a, b in zip(bounds[0::2], bounds[1::2], strict=True):
         a, b = max(a, span.start), min(b, span.end)
+        if b in starts and b < len(original) and original[b].isalnum():
+            f = b  # the start of the word the other span starts inside
+            while f > a and (original[f - 1].isalnum() or original[f - 1] in DROPPED):
+                f -= 1
+            glued = original[f:b]
+            if 1 <= sum(c in PROCLITICS for c in glued) <= 2 and all(
+                c in PROCLITICS or c in DROPPED for c in glued
+            ):
+                b = f
         while a < b and not original[a].isalnum():
             a += 1
         while b > a and not original[b - 1].isalnum():
@@ -205,6 +228,8 @@ def resolve(
             kept.append(span)
         elif span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
             for piece in _outside(span, clash, original):
-                if _fold(piece.text_in(original)) not in allowed:
+                if _fold(piece.text_in(original)) not in allowed and (
+                    (piece.start, piece.end) not in known or piece.detector in (PROPAGATION, DENYLIST)
+                ):
                     heapq.heappush(pending, (_rank(piece), next(order), piece))
     return sorted(kept, key=Span.sort_key)

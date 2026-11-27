@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import random
+import re
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
-from nona.core.boundaries import NAME_TYPES
+from nona.core.boundaries import NAME_TYPES, PROCLITICS
 from nona.core.resolver import denylist_spans, resolve
 
 P, PH, CIN, IBAN, RIB = (
@@ -17,6 +19,8 @@ P, PH, CIN, IBAN, RIB = (
     EntityType.RIB,
 )
 TEXT = "x" * 100
+# Spaces, punctuation, Arabic proclitics and Arabizi for the properties: pieces are trimmed, clitics left out.
+MIXED = ("Sami Ben-Ali, وبكريم لسامي m3a x3 ف " * 4)[:100]
 
 
 def s(start: int, end: int, etype: EntityType = P, score: float = 1.0, detector: str = "d") -> Span:
@@ -65,6 +69,23 @@ def test_a_clitic_left_in_front_of_a_name_is_not_masked_alone() -> None:
     assert resolve([s(0, 5), full], text) == [full]
 
 
+@pytest.mark.parametrize("text", ["علي وكريم بن صالح", "وبكريم بن صالح"])
+def test_proclitics_glued_to_the_winning_name_stay_out_of_the_piece(text: str) -> None:
+    # A piece glued to a placeholder (`PERSON_2PERSON_1`) would never be restored (#87).
+    name = s(text.index("كريم"), len(text), detector="propagation")
+    loser = s(0, text.index(" بن"), score=0.9, detector="ner")
+    result = resolve([loser, name], text)
+    assert [r.text_in(text) for r in result] == [*(["علي"] if text.startswith("علي") else []), "كريم بن صالح"]
+
+
+def test_a_piece_with_the_extent_of_a_propagated_name_gives_way() -> None:
+    # `Sfax` was LOCATION_1: a PERSON piece of the model's `Sfax Sami` must not retype it (step 4).
+    text = "Sfax Sami Ben Ali"
+    known = s(0, 4, EntityType.LOCATION, detector="propagation")
+    model, gazetteer = s(0, 9, score=0.95, detector="ner"), s(5, 17, score=0.9, detector="gazetteer")
+    assert resolve([known, model, gazetteer], text) == [known, gazetteer]
+
+
 def test_a_piece_on_the_allowlist_stays_in_clear() -> None:
     text = "Clinique Sami Mo3ez Sami"
     gazetteer = s(9, 24)
@@ -109,7 +130,7 @@ spans_strategy = st.lists(
 def test_result_is_non_overlapping_and_independent_of_input_order(
     spans: list[Span], rng: random.Random
 ) -> None:
-    result = resolve(spans, TEXT)
+    result = resolve(spans, MIXED)
     assert all(not a.overlaps(b) for i, a in enumerate(result) for b in result[i + 1 :])
     # Each span kept is a candidate, or a piece of a name candidate it lost a partial overlap with (#89).
     assert all(
@@ -125,20 +146,28 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
     )
     shuffled = spans[:]
     rng.shuffle(shuffled)
-    assert resolve(shuffled, TEXT) == result
+    assert resolve(shuffled, MIXED) == result
 
 
 @given(spans_strategy)
 def test_no_name_candidate_loses_two_characters_in_a_row(spans: list[Span]) -> None:
-    """#89: what a name span loses to a partial overlap is masked as its own pieces, down to one character
-    between two other spans."""
-    covered = {i for r in resolve(spans, TEXT) for i in range(r.start, r.end)}
+    """#89: what a name span loses to a partial overlap is masked as its own pieces. Left in clear: fewer
+    than two letters or digits, or one or two proclitics glued to the start of a span kept."""
+    kept = resolve(spans, MIXED)
+    covered = {i for r in kept for i in range(r.start, r.end)}
+    starts = {r.start for r in kept}
     for c in spans:
-        if c.type in NAME_TYPES and c.score >= 0.5:
-            gap = 0
-            for i in range(c.start, c.end):
-                gap = 0 if i in covered else gap + 1
-                assert gap < 2, (c, sorted(covered))
+        if c.type not in NAME_TYPES or c.score < 0.5:
+            continue
+        for m in re.finditer(
+            r"[^\x00]+", "".join("\x00" if i in covered else MIXED[i] for i in range(c.start, c.end))
+        ):
+            run = m.group()
+            tail = re.search(r"\w*\Z", run)
+            glued = tail.group() if tail and c.start + m.end() in starts else ""
+            if 1 <= len(glued) <= 2 and all(ch in PROCLITICS for ch in glued):
+                run = run[: -len(glued)]  # proclitics glued to the span kept right after
+            assert sum(ch.isalnum() for ch in run) < 2, (c, m.group(), kept)
 
 
 def test_a_span_is_cut_at_a_typed_placeholder() -> None:
