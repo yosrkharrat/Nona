@@ -13,14 +13,15 @@ CIN on the same 8 digits). The resolver:
 4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
    the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
 5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
-   A name span that loses to spans it only partly overlaps keeps what lies outside them, as pieces that
-   compete like any other span (#89): the model's confident `Zorgati Sami` against the gazetteer's longer
-   `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear. A piece is trimmed to letters and digits and
-   needs two of them. One or two Arabic proclitics glued to the start of the span that won (`علي و` +
-   `كريم`, `وب` + `كريم`) stay out of the piece, as restoring leaves them in place: a piece glued to a
-   placeholder would never be restored (#87). A piece goes through steps 1 and 4 like a recognizer span. A
-   denylist term cut this way masks its pieces too: half of a term the user hid is not left in clear. A
-   span inside another is dropped whole.
+   A name span that loses to spans it only partly overlaps keeps its **whole words** that touch none of them
+   and no propagated name, as pieces that compete like any other span (#89): the model's confident
+   `Zorgati Sami` against the gazetteer's longer `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear.
+   A word is a run of letters, digits and what normalizing drops (tatweel, Arabic marks). A word the
+   winner cuts stays as the winner leaves it, as before #89 (`و` in `وكريم`, `ـــ` in `عليـــ`): a piece
+   is never glued to a placeholder, which restoring would never write back (#87), and never holds a
+   propagated name, which keeps its placeholder and type (step 4: `بصفاقس`). A piece needs two letters or
+   digits, and goes through the allowlist. A denylist term cut this way masks its pieces too: half of a
+   term the user hid is not left in clear. A span inside another is dropped whole.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -39,7 +40,6 @@ from nona.core.boundaries import (
     LOOSE_RIGHT,
     NAME_START,
     NAME_TYPES,
-    PROCLITICS,
     RIGHT,
     TYPED_PLACEHOLDER,
 )
@@ -137,31 +137,44 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
     return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
 
 
-def _outside(span: Span, others: Sequence[Span], original: str) -> list[Span]:
-    """The pieces of `span` outside all of `others`, trimmed to letters and digits, with at least two, and
-    without proclitics glued to the start of one of `others` (module docstring)."""
-    bounds = [span.start]
-    for o in sorted(others, key=lambda o: o.start):
-        bounds += [o.start, o.end]
-    bounds.append(span.end)
-    starts = {o.start for o in others}
+def _letter(c: str) -> bool:
+    """A character of a word: a letter or digit, or what normalizing drops (`DROPPED`)."""
+    return c.isalnum() or c in DROPPED
+
+
+def _outside(span: Span, blockers: Sequence[Span], original: str) -> list[Span]:
+    """The pieces of `span` (module docstring, step 5): runs of its whole words that overlap none of
+    `blockers`, with two letters or digits at least. Never `span` itself, as one of `blockers` overlaps it."""
+    words: list[tuple[int, int]] = []
+    i = span.start
+    while i < span.end:
+        if _letter(original[i]):
+            j = i
+            while j < span.end and _letter(original[j]):
+                j += 1
+            words.append((i, j))
+            i = j
+        else:
+            i += 1
+
+    def free(a: int, b: int) -> bool:
+        return not any(o.start < b and a < o.end for o in blockers)
+
+    runs: list[list[tuple[int, int]]] = []
+    previous_free = False
+    for a, b in words:
+        if not free(a, b):
+            previous_free = False
+            continue
+        if previous_free and free(runs[-1][-1][1], a):
+            runs[-1].append((a, b))
+        else:
+            runs.append([(a, b)])
+        previous_free = True
     pieces: list[Span] = []
-    for a, b in zip(bounds[0::2], bounds[1::2], strict=True):
-        a, b = max(a, span.start), min(b, span.end)
-        if b in starts and b < len(original) and original[b].isalnum():
-            f = b  # the start of the word the other span starts inside
-            while f > a and (original[f - 1].isalnum() or original[f - 1] in DROPPED):
-                f -= 1
-            glued = original[f:b]
-            if 1 <= sum(c in PROCLITICS for c in glued) <= 2 and all(
-                c in PROCLITICS or c in DROPPED for c in glued
-            ):
-                b = f
-        while a < b and not original[a].isalnum():
-            a += 1
-        while b > a and not original[b - 1].isalnum():
-            b -= 1
-        if sum(c.isalnum() for c in original[a:b]) >= 2:
+    for run in runs:
+        a, b = run[0][0], run[-1][1]
+        if sum(c.isalnum() and c not in DROPPED for c in original[a:b]) >= 2:
             pieces.append(Span(a, b, span.type, span.score, span.detector))
     return pieces
 
@@ -212,7 +225,8 @@ def resolve(
             for piece in (cut_at_placeholders(s, original, holes) if s.type in NAME_TYPES else [s])
         ]
     candidates = [s for s in spans if s.score >= min_score and _fold(s.text_in(original)) not in allowed]
-    known = {(s.start, s.end) for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES}
+    propagated = [s for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES]
+    known = {(s.start, s.end) for s in propagated}
     if known:
         candidates = [
             s for s in candidates if s.detector in (PROPAGATION, DENYLIST) or (s.start, s.end) not in known
@@ -227,9 +241,7 @@ def resolve(
         if not clash:
             kept.append(span)
         elif span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
-            for piece in _outside(span, clash, original):
-                if _fold(piece.text_in(original)) not in allowed and (
-                    (piece.start, piece.end) not in known or piece.detector in (PROPAGATION, DENYLIST)
-                ):
+            for piece in _outside(span, [*clash, *propagated], original):
+                if _fold(piece.text_in(original)) not in allowed:
                     heapq.heappush(pending, (_rank(piece), next(order), piece))
     return sorted(kept, key=Span.sort_key)

@@ -8,7 +8,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
-from nona.core.boundaries import NAME_TYPES, PROCLITICS
+from nona.core.boundaries import NAME_TYPES
+from nona.core.normalize import DROPPED
 from nona.core.resolver import denylist_spans, resolve
 
 P, PH, CIN, IBAN, RIB = (
@@ -19,8 +20,8 @@ P, PH, CIN, IBAN, RIB = (
     EntityType.RIB,
 )
 TEXT = "x" * 100
-# Spaces, punctuation, Arabic proclitics and Arabizi for the properties: pieces are trimmed, clitics left out.
-MIXED = ("Sami Ben-Ali, وبكريم لسامي m3a x3 ف " * 4)[:100]
+# For the properties: spaces, punctuation, Arabic clitics, a tatweel and a mark, Arabizi, one-letter words.
+MIXED = ("Sami Ben-Ali, وبكريم عليـــ القصُوري m3a x3 ف " * 4)[:100]
 
 
 def s(start: int, end: int, etype: EntityType = P, score: float = 1.0, detector: str = "d") -> Span:
@@ -83,6 +84,29 @@ def test_a_piece_with_the_extent_of_a_propagated_name_gives_way() -> None:
     text = "Sfax Sami Ben Ali"
     known = s(0, 4, EntityType.LOCATION, detector="propagation")
     model, gazetteer = s(0, 9, score=0.95, detector="ner"), s(5, 17, score=0.9, detector="gazetteer")
+    assert resolve([known, model, gazetteer], text) == [known, gazetteer]
+
+
+@pytest.mark.parametrize(
+    ("text", "winner", "loser"),
+    [
+        ("سامي بن عليـــ قالي", "سامي بن علي", "بن عليـــ"),  # a tatweel left after the name
+        ("Abdelkarim Trabelsi", "karim Trabelsi", "Abdelkarim"),  # a word glued to the name
+    ],
+)
+def test_a_word_the_winner_cuts_stays_as_the_winner_leaves_it(text: str, winner: str, loser: str) -> None:
+    # A piece glued to the placeholder (`PERSON_1PERSON_2`) would never be restored (#87).
+    w = s(text.index(winner), text.index(winner) + len(winner), detector="propagation")
+    lo = s(text.index(loser), text.index(loser) + len(loser), score=0.9, detector="ner")
+    assert resolve([w, lo], text) == [w]
+
+
+def test_a_piece_never_holds_a_propagated_name_behind_a_clitic() -> None:
+    # `صفاقس` was LOCATION_1: the model's PERSON `بصفاقس سامي` must not make it a person (step 4).
+    text = "بصفاقس سامي بن علي الطرابلسي"
+    known = s(1, 6, EntityType.LOCATION, detector="propagation")
+    model = s(0, 11, score=0.95, detector="ner")
+    gazetteer = s(7, len(text), score=0.9, detector="gazetteer")
     assert resolve([known, model, gazetteer], text) == [known, gazetteer]
 
 
@@ -150,24 +174,19 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
 
 
 @given(spans_strategy)
-def test_no_name_candidate_loses_two_characters_in_a_row(spans: list[Span]) -> None:
-    """#89: what a name span loses to a partial overlap is masked as its own pieces. Left in clear: fewer
-    than two letters or digits, or one or two proclitics glued to the start of a span kept."""
+def test_every_word_of_a_name_candidate_stays_masked(spans: list[Span]) -> None:
+    """#89: a name span that loses a partial overlap keeps its untouched words as pieces, so every word of
+    it with two letters or digits overlaps a span kept (a word the winner cuts overlaps the winner)."""
     kept = resolve(spans, MIXED)
-    covered = {i for r in kept for i in range(r.start, r.end)}
-    starts = {r.start for r in kept}
     for c in spans:
         if c.type not in NAME_TYPES or c.score < 0.5:
             continue
-        for m in re.finditer(
-            r"[^\x00]+", "".join("\x00" if i in covered else MIXED[i] for i in range(c.start, c.end))
-        ):
-            run = m.group()
-            tail = re.search(r"\w*\Z", run)
-            glued = tail.group() if tail and c.start + m.end() in starts else ""
-            if 1 <= len(glued) <= 2 and all(ch in PROCLITICS for ch in glued):
-                run = run[: -len(glued)]  # proclitics glued to the span kept right after
-            assert sum(ch.isalnum() for ch in run) < 2, (c, m.group(), kept)
+        # Words as the resolver reads them, clipped to the candidate (a random span may cut one).
+        for m in re.finditer(f"[\\w{''.join(DROPPED)}]+", MIXED[: c.end]):
+            a, b = max(m.start(), c.start), m.end()
+            if a >= b or sum(ch.isalnum() and ch not in DROPPED for ch in MIXED[a:b]) < 2:
+                continue
+            assert any(k.start < b and a < k.end for k in kept), (c, MIXED[a:b], kept)
 
 
 def test_a_span_is_cut_at_a_typed_placeholder() -> None:
