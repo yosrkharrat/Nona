@@ -23,7 +23,9 @@ CIN on the same 8 digits). The resolver:
    or by the losing span's own edge, stays as before (`و` in `وكريم`, `ـــ` in `عليـــ`): a piece is never
    glued to a placeholder, which restoring would never write back (#87). A piece needs two letters or
    digits, and goes through the allowlist. A denylist term's pieces ignore propagated names: its policy
-   wins (step 4). A span inside another is dropped whole.
+   wins (step 4). A span inside another is dropped whole. A piece kept comes out with `PIECE_DETECTOR`:
+   the linker masks it on its own and never links or propagates it, since it holds whatever words the span
+   lost (`de` from `de Sami`).
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -47,6 +49,7 @@ from nona.core.boundaries import (
     RIGHT,
     TYPED_PLACEHOLDER,
 )
+from nona.core.linking import PIECE_DETECTOR
 from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -299,6 +302,7 @@ def _fill(kept: list[Span], candidates: Sequence[Span], original: str, allowed: 
 
     for span in sorted(lost, key=lambda s: (s.detector != PROPAGATION, _rank(s))):
         cut(span)
+    first = len(kept)
     while pending:
         piece = heapq.heappop(pending)[2]
         if alive[piece]:
@@ -307,4 +311,6 @@ def _fill(kept: list[Span], candidates: Sequence[Span], original: str, allowed: 
             cut(piece)
         else:
             kept.append(piece)
-    return sorted(kept, key=Span.sort_key)
+    # Kept pieces are marked: each is masked on its own, and never links or propagates (`core/linking.py`).
+    pieces = [Span(p.start, p.end, p.type, p.score, PIECE_DETECTOR) for p in kept[first:]]
+    return sorted([*kept[:first], *pieces], key=Span.sort_key)

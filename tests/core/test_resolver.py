@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
 from nona.core.boundaries import NAME_TYPES
+from nona.core.linking import PIECE_DETECTOR
 from nona.core.resolver import PRIORITY, denylist_spans, letters, resolve, word_char
 
 P, PH, CIN, IBAN, RIB = (
@@ -55,7 +56,7 @@ def test_a_name_keeps_its_words_outside_a_longer_partial_overlap() -> None:
     model, gazetteer = s(0, 12, score=0.95, detector="ner"), s(8, 23, score=0.9, detector="gazetteer")
     result = resolve([model, gazetteer], text)
     assert [r.text_in(text) for r in result] == ["Zorgati", "Sami Mo3ez Sami"]
-    assert result[0] == s(0, 7, score=0.95, detector="ner")
+    assert result[0] == s(0, 7, score=0.95, detector=PIECE_DETECTOR)
 
 
 def test_a_name_inside_a_longer_span_is_dropped_whole() -> None:
@@ -157,7 +158,11 @@ def test_a_card_inside_a_person_piece_stays_a_card() -> None:
     card = s(5, 21, EntityType.CARD, detector="card")
     person = s(0, 27, score=0.95, detector="ner")
     gazetteer = s(22, len(text), score=0.9, detector="gazetteer")
-    assert resolve([card, person, gazetteer], text) == [s(0, 4, score=0.95, detector="ner"), card, gazetteer]
+    assert resolve([card, person, gazetteer], text) == [
+        s(0, 4, score=0.95, detector=PIECE_DETECTOR),
+        card,
+        gazetteer,
+    ]
 
 
 def test_a_piece_keeps_the_combining_marks_of_its_words() -> None:
@@ -244,7 +249,7 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
         r in spans
         or any(
             c.type in NAME_TYPES
-            and (c.type, c.score, c.detector) == (r.type, r.score, r.detector)
+            and (c.type, c.score, PIECE_DETECTOR) == (r.type, r.score, r.detector)
             and c.start <= r.start
             and r.end <= c.end
             for c in spans
