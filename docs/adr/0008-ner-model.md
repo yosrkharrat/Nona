@@ -1,6 +1,6 @@
 # ADR-0008: NER model choice
 
-- Status: **Proposed** (S4 spike, #71). Becomes Accepted when the recognizer (#72) meets the conditions below. Part 2 (quality) addressed conditions 1 and 2. Part 3 meets condition 3 (NFR-7) on the measured workload; condition 4 (NFR-6) is measured and **not met** (see part 3).
+- Status: **Accepted** (2026-11-27, #72). Proposed after the S4 spike (#71), with the conditions below. Part 2 (quality) addressed conditions 1 and 2. Part 3 measured conditions 3 and 4, and the owner amended NFR-6 and NFR-7 (see *Decision on NFR-6 and NFR-7*).
 - Date: 2026-11-23
 - Related: [deep dive A](../design/04-deep-dives.md#a-detection-in-mixed-french--arabic--darija--arabizi) (layer 2), [ADR-0004](0004-causal-entity-linking.md), [ADR-0007](0007-release-supply-chain.md), NFR-3, NFR-6, NFR-7, NFR-12
 
@@ -119,7 +119,7 @@ Left, and why:
 
 Conditions 3 and 4, measured with [`bench/resources.py`](../../bench/resources.py) on the M-series Mac of the spike (10 cores, torch on 4 threads), one model process at a time. GB are 10⁹ bytes. Three synthetic messages of about 300 tokens, counted with the model's own tokenizer: French (299), Arabizi and French (290), Arabic (304).
 
-**NFR-7 (≤ 1.5 GB RSS) is met on the measured workload**, with the caveat below. The loader read the 1.16 GB of fp32 weights into memory after building a randomly initialized model of the same size: loading peaked at 2.9 GB, and RSS stayed at 1.97 GB after `dev`, over the limit. It now asks GLiNER to build the model on torch's `meta` device and put the safetensors file's tensors in place (`low_cpu_mem_usage=True`): the weights stay **mapped from the file**, and only the pages inference reads are resident. Two thirds of the parameters are the 250k-row multilingual embedding table, and a workload only reads the rows of the tokens it sees. `dev` results are byte-identical.
+**NFR-7 (≤ 1.5 GB) is met**: 1.22–1.33 GB of RSS on the measured workload, and a 0.50–0.51 GB footprint even with every weight page read, which is what NFR-7 counts since #72 (see the caveat below). The loader read the 1.16 GB of fp32 weights into memory after building a randomly initialized model of the same size: loading peaked at 2.9 GB, and RSS stayed at 1.97 GB after `dev`, over the limit. It now asks GLiNER to build the model on torch's `meta` device and put the safetensors file's tensors in place (`low_cpu_mem_usage=True`): the weights stay **mapped from the file**, and only the pages inference reads are resident. Two thirds of the parameters are the 250k-row multilingual embedding table, and a workload only reads the rows of the tokens it sees. `dev` results are byte-identical.
 
 | | Load | RSS after loading | Peak RSS | RSS after `dev` + the 3 long messages | Physical footprint |
 |---|---|---|---|---|---|
@@ -127,13 +127,13 @@ Conditions 3 and 4, measured with [`bench/resources.py`](../../bench/resources.p
 | **Part 3 (weights mapped)**, 4 runs | **2 s** | **0.60 GB** | **1.22–1.33 GB** | **1.22–1.33 GB** | **0.50 GB** |
 | Part 3, every weight page read (upper bound) | | | 1.97–2.07 GB | 1.97–2.07 GB | 0.51 GB |
 
-**The caveat:** RSS grows with the vocabulary a process has seen, up to the upper bound, which reads the whole embedding table, as a process that had seen tokens of every script would. Everything above the 0.5 GB footprint is **clean file pages**: shared with the page cache, never swapped, dropped by the kernel under memory pressure and read again from disk if needed. NFR-7 is written in RSS, which counts them; whether it should count only what the kernel can't reclaim (the footprint) is the owner's call, open in #72.
+**The caveat:** RSS grows with the vocabulary a process has seen, up to the upper bound, which reads the whole embedding table, as a process that had seen tokens of every script would. Everything above the 0.5 GB footprint is **clean file pages**: shared with the page cache, never swapped, dropped by the kernel under memory pressure and read again from disk if needed. NFR-7 was written in RSS, which counts them, so it held only for the workload measured; the owner amended it to count what the kernel can't reclaim (the footprint).
 
 - A `model` test loads the model in a fresh process, anonymizes long messages in four languages, and checks the peak stays ≤ 1.5 GB (1.19 GB; 2.88 GB with the old loader) and that GLiNER didn't fall back to reading the weights, which it does with only a warning.
 - Only a symlinked weights file is mapped. Where the loader has to copy it into its temporary folder (no symlinks), it reads it as before, since that folder is deleted after loading.
 - **The mapped file is read for the life of the process**, so it must not change: written in place, the process would run weights nobody checked; truncated, or replaced over a network filesystem, the next page read would crash it. `pull` replaces files and never writes into them, but the loader doesn't rely on that: it records the file's device, inode, size and mtime and checks them again before every model call (one `stat`). Any change, or a missing file, fails closed (`ModelError`, so `DetectorError`) on that call and every later one, until the process restarts, also after a `touch` that left the bytes alone or a network mount that dropped for a moment (nothing is hashed: a new mtime counts as a write); that includes a file `pull` replaced, which would be safe on a local disk, but the process should restart to use the new file anyway. A `stat` that fails otherwise (a full file table, a network error) fails only that call. ctime isn't compared: `chmod`, an xattr or a backup tool's hard link move it without touching the bytes. Not caught: a write that keeps the size and sets mtime back, which takes write access to the models folder, the same access that could swap same-size weights before the next start (loading checks their size, `pull` their hash); and a file truncated during a call (about 200 ms), which can still crash the process.
 
-**NFR-6 (added overhead p95 ≤ 150 ms for 300 tokens) is not met.** Everything Nona adds before a request is sent (normalize, recognizers, resolve, link, rewrite), with a fresh detection cache per run, p50 / p95 over 50 runs:
+**NFR-6 as first written (added overhead p95 ≤ 150 ms for 300 tokens) is not met with the model.** Everything Nona adds before a request is sent (normalize, recognizers, resolve, link, rewrite), with a fresh detection cache per run, p50 / p95 over 50 runs:
 
 | Message | Rules only, quiet | With the model, quiet (load ≈ 3) | Rules only, 6 busy processes | With the model, 6 busy processes (load ≈ 10) |
 |---|---|---|---|---|
@@ -157,7 +157,10 @@ The ONNX runs were at load ≈ 5. ONNX Runtime keeps its own copy of the weights
 
 **No second model call on the original text** (left open by part 2): it would add one more model call, about 200 ms, on every Arabizi message, for one more held-out name on `dev`.
 
-Open, for the owner, in #72: NFR-6 with the model, and whether NFR-7 counts clean file pages.
+### Decision on NFR-6 and NFR-7 (owner, 2026-11-27)
+
+- **NFR-6 is amended for the model path: ≤ 300 ms at p95 for 300 tokens, on a machine with no other heavy job; ≤ 150 ms without the model, as before.** The shipped torch fp32 path is at 214–245 ms. The other options cost more than they give: ONNX Runtime fp32 is at the old limit only on a quiet machine (146–152 ms), breaks NFR-7 (2.4–2.6 GB), and adds `onnxruntime`, an export step and a derived 1.1 GB file; a smaller encoder reopens this ADR with a new spike, and risks the Darija, Arabizi and Arabic recall the model is here for (held-out PERSON 75% → 4.2%). About 250 ms in front of an LLM call that takes seconds is the price of that recall. Under a heavy CPU job the overhead reaches 770–840 ms; NFR-6 doesn't cover that case, and the README will say so (NFR-11).
+- **NFR-7 counts the memory the OS can't reclaim: the physical footprint on macOS, 0.50–0.51 GB.** NFR-7 is there so Nona runs beside an IDE on a 16 GB laptop. Mapped weights are clean file pages: the kernel drops them under memory pressure and reads them again from disk, so they never push the machine into swap. In RSS, NFR-7 held only for the workload measured (up to 2.07 GB if every weight page is read). RSS is still reported next to the footprint, and the `model` test still checks that peak RSS stays ≤ 1.5 GB on its fixed workload: stricter than NFR-7, it fails if the weights stop being mapped.
 
 ## Consequences
 
