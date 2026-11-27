@@ -89,8 +89,10 @@ def test_in_the_pipeline(recognizer: NerRecognizer) -> None:
     assert conv.texts == ("Rappelle PERSON_1 demain.", "PERSON_1 a confirmé.")
 
 
-# NFR-7: RSS ≤ 1.5 GB with the model loaded. A fresh process, so the peak is the load's and this workload's,
-# not the test session's. Long messages in each script touch more of the embedding table than short ones.
+# NFR-7 counts only memory the OS can't reclaim (ADR-0008). This checks peak RSS ≤ 1.5 GB on a fixed workload,
+# which is stricter and portable: it fails if the weights stop being mapped from their file. A fresh process,
+# so the peak is the load's and this workload's, not the test session's. Long messages in each script touch
+# more of the embedding table than short ones.
 _MEMORY = textwrap.dedent(
     """
     import json, resource, sys, warnings

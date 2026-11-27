@@ -101,8 +101,8 @@ Targets are **hypotheses to measure**, not promises. The README reports actual n
 | NFR-3 | **Privacy** | No telemetry and no outbound network except to the configured upstream. Model weights are downloaded once, explicitly. Trace export (OTLP) happens only if the user configures an endpoint (ADR-0005) |
 | NFR-4 | **Security** | Binds to `127.0.0.1` by default. The upstream API key is passed through and never logged |
 | NFR-5 | **Detection quality** | Recall is prioritized over precision: a leak costs more than over-masking. v0.1 targets on the test split: ≥ 0.98 recall on structured types, ≥ 0.85 on PERSON in mixed-language text |
-| NFR-6 | **Latency** | Added overhead p95 ≤ 150 ms for a 300-token message on an Apple M-series CPU. Time-to-first-token overhead ≤ 50 ms when streaming |
-| NFR-7 | **Footprint** | ≤ 1.5 GB RSS with the NER model loaded (it must run beside an IDE on a 16 GB laptop) |
+| NFR-6 | **Latency** | Added overhead p95 for a 300-token message on an Apple M-series CPU with no other heavy job running: ≤ 150 ms without the NER model, ≤ 300 ms with it (amended in #72: the model alone takes about 200 ms, ADR-0008). Time-to-first-token overhead ≤ 50 ms when streaming |
+| NFR-7 | **Footprint** | ≤ 1.5 GB of memory the OS can't reclaim with the NER model loaded, measured as the physical footprint on macOS (it must run beside an IDE on a 16 GB laptop). Weights mapped from their file are clean file pages, which the OS drops under memory pressure, so they don't count; RSS is reported next to it (amended in #72, ADR-0008) |
 | NFR-8 | **Compatibility** | Python 3.11+, macOS and Linux, Docker image ≤ 1.5 GB (CPU-only torch or ONNX) |
 | NFR-9 | **Reproducibility** | `nona bench` is deterministic: pinned model revisions, fixed seeds, frozen dataset hash |
 | NFR-10 | **Maintainability** | Typed (pyright strict on core), ruff, ≥ 85% line coverage on `core/`, and each recognizer is a self-contained plugin |

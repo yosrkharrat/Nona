@@ -1,6 +1,7 @@
 """NFR-6 and NFR-7 for the NER model (#72 part 3, ADR-0008 conditions 3 and 4). Not product code.
 
-Memory (NFR-7: RSS ≤ 1.5 GB with the model loaded). One process per run, so peaks don't mix:
+Memory (NFR-7: ≤ 1.5 GB the OS can't reclaim with the model loaded, the macOS physical footprint; RSS
+is printed too). One process per run, so peaks don't mix:
 
     uv run --frozen --extra ner python bench/resources.py memory
     uv run --frozen --extra ner python bench/resources.py memory --touch-all   # upper bound, see below
@@ -12,7 +13,7 @@ vocabulary a workload touches. `--touch-all` reads the whole embedding table onc
 that has seen every one of the 250k tokens. The macOS physical footprint (what Activity Monitor shows,
 without clean file pages, which the kernel drops under memory pressure) is printed too. GB are 10^9 bytes.
 
-Latency (NFR-6: added overhead p95 ≤ 150 ms for a 300-token message):
+Latency (NFR-6: added overhead p95 for a 300-token message ≤ 150 ms without the model, ≤ 300 ms with it):
 
     uv run --frozen --extra ner python bench/resources.py latency [--load N] [--runs 50]
 
