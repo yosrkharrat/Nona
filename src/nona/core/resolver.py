@@ -13,17 +13,17 @@ CIN on the same 8 digits). The resolver:
 4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
    the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
 5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
-   A name span that loses to spans it only partly overlaps keeps the words of the text that lie wholly
-   inside it and touch neither those spans nor a propagated name still pending or kept, as pieces that
-   compete like any other span (#89): the model's confident `Zorgati Sami` against the gazetteer's longer
-   `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear. A word is a run of letters, digits, combining
-   marks and what normalizing drops (the tatweel). A word cut by another span, or by the losing span's own
-   edge, stays as before #89 (`و` in `وكريم`, `ـــ` in `عليـــ`): a piece is never glued to a placeholder,
-   which restoring would never write back (#87), and never takes a letter of a propagated name, which keeps
-   its placeholder and type (step 4: `بصفاقس`). A propagated name that loses is cut into pieces like any
-   other span. A piece needs two letters or digits, and goes through the allowlist. A denylist term cut this
-   way masks its pieces too, even over a propagated name (step 4): half of a term the user hid is not left
-   in clear. A span inside another is dropped whole.
+   Then the names that lost a partial overlap fill the gaps (#89): each keeps, as pieces, the words of the
+   text that lie wholly inside it and touch nothing kept, nor a propagated name's piece still pending. The
+   model's confident `Zorgati Sami` against the gazetteer's longer `Sami Mo3ez Sami` would otherwise send
+   `Zorgati` in clear. Pieces never displace a span the first pass kept, so the result only adds pieces to
+   what it was before #89 (a piece of `Pharmacie Ahmed, Sami` can't swallow the person `Ahmed`). Pieces
+   compete among themselves like the spans did, and a piece that loses is cut again. A word is a run of
+   letters, digits, combining marks and what normalizing drops (the tatweel). A word cut by another span,
+   or by the losing span's own edge, stays as before (`و` in `وكريم`, `ـــ` in `عليـــ`): a piece is never
+   glued to a placeholder, which restoring would never write back (#87). A piece needs two letters or
+   digits, and goes through the allowlist. A denylist term's pieces ignore propagated names: its policy
+   wins (step 4). A span inside another is dropped whole.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -219,15 +219,8 @@ def cut_at_placeholders(
     return pieces
 
 
-def resolve(
-    spans: Iterable[Span],
-    original: str,
-    *,
-    min_score: float = 0.5,
-    allowlist: Sequence[str] = (),
-) -> list[Span]:
-    """Non-overlapping spans, sorted by position. `original` is the text the spans index into."""
-    allowed = {_fold(term) for term in allowlist}
+def _candidates(spans: Iterable[Span], original: str, min_score: float, allowed: set[str]) -> list[Span]:
+    """Steps 1 to 4 (module docstring)."""
     spans = list(spans)
     holes = placeholder_holes(original)
     if holes:
@@ -238,33 +231,80 @@ def resolve(
             for piece in (cut_at_placeholders(s, original, holes) if s.type in NAME_TYPES else [s])
         ]
     candidates = [s for s in spans if s.score >= min_score and _fold(s.text_in(original)) not in allowed]
-    # Propagated names still pending or kept: a piece never takes their words (step 5).
-    alive = Counter(s for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES)
-    known = {(s.start, s.end) for s in alive}
+    known = {(s.start, s.end) for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES}
     if known:
         candidates = [
             s for s in candidates if s.detector in (PROPAGATION, DENYLIST) or (s.start, s.end) not in known
         ]
+    return candidates
+
+
+def resolve(
+    spans: Iterable[Span],
+    original: str,
+    *,
+    min_score: float = 0.5,
+    allowlist: Sequence[str] = (),
+    pieces: bool = True,
+) -> list[Span]:
+    """Non-overlapping spans, sorted by position. `original` is the text the spans index into. With
+    `pieces=False`, step 5 keeps only its first pass: `fill_gaps` adds the pieces later (`core/pipeline.py`
+    does, after its look-ahead)."""
+    allowed = {_fold(term) for term in allowlist}
+    candidates = _candidates(spans, original, min_score, allowed)
     kept: list[Span] = []
-    order = itertools.count()  # ties in `_rank` are identical spans: never compare two `Span`s
-    pending = [(_rank(s), next(order), s) for s in candidates]
-    heapq.heapify(pending)
-    while pending:
-        span = heapq.heappop(pending)[2]
-        clash = [k for k in kept if span.overlaps(k)]
-        if not clash:
+    for span in sorted(candidates, key=_rank):
+        if not any(span.overlaps(k) for k in kept):
             kept.append(span)
-            continue
-        if alive[span]:  # a propagated name that lost: it no longer holds its words
-            alive[span] -= 1
-        if span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
-            # A denylist term's policy wins over a propagated name (step 4), so only `clash` cuts it.
-            names = (
-                [] if span.detector == DENYLIST else [n for n, c in alive.items() if c and n.overlaps(span)]
-            )
-            for piece in _outside(span, [*clash, *names], original):
-                if _fold(piece.text_in(original)) not in allowed:
-                    heapq.heappush(pending, (_rank(piece), next(order), piece))
-                    if piece.detector == PROPAGATION:
-                        alive[piece] += 1
+    return _fill(kept, candidates, original, allowed) if pieces else sorted(kept, key=Span.sort_key)
+
+
+def fill_gaps(
+    kept: Sequence[Span],
+    spans: Iterable[Span],
+    original: str,
+    *,
+    min_score: float = 0.5,
+    allowlist: Sequence[str] = (),
+) -> list[Span]:
+    """`kept` (resolved with `pieces=False`) and the pieces of the name spans among `spans` that lost to it
+    (step 5, second pass), sorted by position."""
+    allowed = {_fold(term) for term in allowlist}
+    return _fill(list(kept), _candidates(spans, original, min_score, allowed), original, allowed)
+
+
+def _fill(kept: list[Span], candidates: Sequence[Span], original: str, allowed: set[str]) -> list[Span]:
+    held = set(kept)
+    lost = [
+        c for c in candidates if c.type in NAME_TYPES and c not in held and any(c.overlaps(k) for k in kept)
+    ]
+    if not lost:
+        return sorted(kept, key=Span.sort_key)
+
+    # Step 5, second pass (#89): pieces of the names that lost only fill what nothing kept covers, so every
+    # span the first pass kept stays as it is. Propagated pieces first: no other piece takes their words.
+    order = itertools.count()  # ties in `_rank` are identical spans: never compare two `Span`s
+    pending: list[tuple[tuple[int, int, float, tuple[int, int, str, float, str]], int, Span]] = []
+    alive: Counter[Span] = Counter()  # propagated pieces still pending
+
+    def cut(span: Span) -> None:
+        blockers = [k for k in kept if k.overlaps(span)]
+        if span.detector != DENYLIST:  # a denylist term's policy wins over a propagated name (step 4)
+            blockers += [n for n, c in alive.items() if c and n.overlaps(span)]
+        for piece in _outside(span, blockers, original):
+            if _fold(piece.text_in(original)) not in allowed:
+                heapq.heappush(pending, (_rank(piece), next(order), piece))
+                if piece.detector == PROPAGATION:
+                    alive[piece] += 1
+
+    for span in sorted(lost, key=lambda s: (s.detector != PROPAGATION, _rank(s))):
+        cut(span)
+    while pending:
+        piece = heapq.heappop(pending)[2]
+        if alive[piece]:
+            alive[piece] -= 1
+        if any(piece.overlaps(k) for k in kept):  # another piece took part of it: pieces are shorter
+            cut(piece)
+        else:
+            kept.append(piece)
     return sorted(kept, key=Span.sort_key)

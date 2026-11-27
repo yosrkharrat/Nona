@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
 from nona.core.boundaries import NAME_TYPES
-from nona.core.resolver import denylist_spans, letters, resolve, word_char
+from nona.core.resolver import PRIORITY, denylist_spans, letters, resolve, word_char
 
 P, PH, CIN, IBAN, RIB = (
     EntityType.PERSON,
@@ -131,13 +131,33 @@ def test_propagated_names_that_both_lose_do_not_block_each_other() -> None:
     assert "Zorgati" in [r.text_in(text) for r in resolve(spans, text)]
 
 
-def test_a_denylist_piece_wins_over_a_propagated_name() -> None:
+def test_a_piece_never_displaces_what_the_first_pass_kept() -> None:
+    # The propagated `Zorgati` is kept, as before #89: a longer denylist piece doesn't replace it.
     text = "Zorgati Sami Mo3ez Sami"
     denied = s(0, 12, EntityType.CUSTOM, detector="denylist")
     known = s(0, 7, detector="propagation")
     gazetteer = s(8, 23, score=0.9, detector="gazetteer")
-    result = resolve([denied, known, gazetteer], text)
-    assert result[0] == s(0, 7, EntityType.CUSTOM, detector="denylist")
+    assert resolve([denied, known, gazetteer], text) == [known, gazetteer]
+
+
+def test_an_organization_piece_never_swallows_a_person() -> None:
+    # ORGANIZATION is kept as is: a piece `Pharmacie Ahmed` over the person `Ahmed` sent the name in clear.
+    text = "Pharmacie Ahmed, Sami Ben Ali Trabelsi"
+    org = s(0, 21, EntityType.ORGANIZATION, 0.95, "ner")
+    ahmed = s(10, 15, score=0.9, detector="gazetteer")
+    sami = s(17, len(text), score=0.9, detector="gazetteer")
+    result = resolve([org, ahmed, sami], text)
+    assert ahmed in result
+    assert [r.text_in(text) for r in result] == ["Pharmacie", "Ahmed", "Sami Ben Ali Trabelsi"]
+
+
+def test_a_card_inside_a_person_piece_stays_a_card() -> None:
+    # A PERSON piece over the card would restore it in the reply, where the CARD is redacted for good.
+    text = "Sami 4111111111111111 Mo3ez Sami Ben Ali Trabelsi Zorgati"
+    card = s(5, 21, EntityType.CARD, detector="card")
+    person = s(0, 27, score=0.95, detector="ner")
+    gazetteer = s(22, len(text), score=0.9, detector="gazetteer")
+    assert resolve([card, person, gazetteer], text) == [s(0, 4, score=0.95, detector="ner"), card, gazetteer]
 
 
 def test_a_piece_keeps_the_combining_marks_of_its_words() -> None:
@@ -248,6 +268,26 @@ def test_every_word_of_a_name_candidate_stays_masked(spans: list[Span]) -> None:
         for a, b in words:
             if c.start <= a and b <= c.end and letters(MIXED[a:b]) >= 2:
                 assert any(k.start < b and a < k.end for k in kept), (c, MIXED[a:b], kept)
+
+
+def _greedy(spans: list[Span], text: str) -> list[Span]:
+    """The resolver before #89, on spans without propagated or denylist detectors or typed placeholders."""
+    kept: list[Span] = []
+    for span in sorted(
+        (x for x in spans if x.score >= 0.5),
+        key=lambda x: (-len(x), -PRIORITY[x.type], -x.score, x.sort_key()),
+    ):
+        if not any(span.overlaps(k) for k in kept):
+            kept.append(span)
+    return kept
+
+
+@given(spans_strategy)
+def test_every_span_kept_before_89_is_still_kept(spans: list[Span]) -> None:
+    """#89 only adds pieces in the gaps: nothing kept before is dropped or retyped."""
+    plain = [x for x in spans if x.detector not in ("propagation", "denylist")]
+    result = resolve(plain, MIXED)
+    assert all(k in result for k in _greedy(plain, MIXED)), result
 
 
 @given(spans_strategy)

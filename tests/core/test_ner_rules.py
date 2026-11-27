@@ -453,6 +453,13 @@ def test_a_confident_name_partly_inside_a_longer_gazetteer_name_stays_masked(fir
     assert "Sami" not in out
 
 
+def test_a_losing_organization_never_hides_a_person_it_holds() -> None:
+    """Final review of #91: an ORGANIZATION piece (kept as is) swallowed the person `Ahmed`."""
+    text = "Pharmacie Ahmed, Sami Ben Ali Trabelsi"
+    out = per_message({text: [("Pharmacie Ahmed, Sami", "organization", 0.95)]}).anonymize_messages([text])
+    assert "Ahmed" not in out.texts[0]
+
+
 def test_a_re_masked_word_is_never_joined_into_a_longer_span() -> None:
     """A re-masked word joined to a longer span could partly overlap the gazetteer's name, and the resolver
     keeps only the longer span (`Sami` leaked)."""
