@@ -460,6 +460,21 @@ def test_a_losing_organization_never_hides_a_person_it_holds() -> None:
     assert "Ahmed" not in out.texts[0]
 
 
+@pytest.mark.parametrize("symbol", ["№", "™"])
+def test_a_piece_next_to_a_symbol_that_normalizes_to_letters_restores(symbol: str) -> None:
+    """Final review of #91: `№` is `No` on the normalized view, so a piece glued to it never restored."""
+    text = f"voir {symbol}Kousksou Farfoura Hlaiem Zgolli Bouslimi Ghariani"
+    found = {
+        text: [
+            ("Kousksou Farfoura Hlaiem", "person", 0.95),
+            ("Hlaiem Zgolli Bouslimi Ghariani", "person", 0.95),
+        ]
+    }
+    conv = per_message(found).anonymize_messages([text])
+    assert Nona.restore(conv.texts[0], conv.mapping) == text
+    assert "Hlaiem" not in conv.texts[0]
+
+
 @pytest.mark.parametrize(
     "found",
     [

@@ -21,7 +21,7 @@ P, PH, CIN, IBAN, RIB = (
 )
 TEXT = "x" * 100
 # For the properties: spaces, punctuation, Arabic clitics, a tatweel and a mark, Arabizi, one-letter words.
-MIXED = ("Sami Ben-Ali, وبكريم عليـــ القصُوري m3a Jose\u0301 ف " * 4)[:100]
+MIXED = ("Sami Ben-Ali, وبكريم عليـــ القصُوري m3a Jose\u0301 №Ali ف™ " * 4)[:100]
 
 
 def s(start: int, end: int, etype: EntityType = P, score: float = 1.0, detector: str = "d") -> Span:
@@ -195,6 +195,24 @@ def test_a_piece_never_starts_at_a_combining_mark() -> None:
         "Sami",
         "Ben Ali Mo3ez",
     ]
+
+
+@pytest.mark.parametrize(
+    ("text", "glued"),
+    [
+        ("voir №Kousksou Farfoura Hlaiem Zgolli Bouslimi Ghariani", "№Kousksou"),
+        ("Kousksou Farfoura™ Hlaiem Zgolli Bouslimi Ghariani", "Farfoura™"),
+    ],
+)
+def test_a_word_glued_to_a_symbol_that_normalizes_to_letters_stays_as_before(text: str, glued: str) -> None:
+    # `№` normalizes to `No`: a piece glued to it (`№PERSON_1`) would never be restored.
+    model = s(text.index("Kousksou"), text.index(" Zgolli"), score=0.95, detector="ner")
+    longer = s(text.index("Hlaiem"), len(text), score=0.95, detector="ner")
+    result = resolve([model, longer], text)
+    assert result[-1] == longer
+    for r in result[:-1]:  # pieces: nothing that normalizes to a letter touches them
+        assert r.start == 0 or not word_char(text[r.start - 1]), (r.text_in(text), glued)
+        assert not word_char(text[r.end]), (r.text_in(text), glued)
 
 
 def test_a_piece_on_the_allowlist_stays_in_clear() -> None:

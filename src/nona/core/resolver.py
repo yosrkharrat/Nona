@@ -144,10 +144,18 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
     return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
 
 
+@functools.lru_cache(maxsize=4096)
 def word_char(c: str) -> bool:
     """A character of a word, for the pieces of step 5: a letter or digit, a combining mark (`José` in NFD),
-    or what normalizing drops (`DROPPED`: the tatweel)."""
-    return c.isalnum() or c in DROPPED or unicodedata.category(c).startswith("M")
+    what normalizing drops (`DROPPED`: the tatweel), or a symbol that normalizes to letters (`№` → `No`,
+    `™` → `TM`): restoring checks a multi-word value's edges on the normalized view, where a piece glued to
+    one would touch a letter and never be written back."""
+    return (
+        c.isalnum()
+        or c in DROPPED
+        or unicodedata.category(c).startswith("M")
+        or any(x.isalnum() for x in unicodedata.normalize("NFKC", c))
+    )
 
 
 def letters(text: str) -> int:
