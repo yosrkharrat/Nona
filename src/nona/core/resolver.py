@@ -13,6 +13,10 @@ CIN on the same 8 digits). The resolver:
 4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
    the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
 5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
+   A name span that loses to a span it only partly overlaps keeps its words outside that span, as pieces
+   that compete like any other span (#89): the model's confident `Zorgati Sami` against the gazetteer's
+   longer `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear. A piece needs two letters or digits, so
+   a clitic left in front of a name (`ل`) isn't masked on its own. A span inside another is dropped whole.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -21,6 +25,8 @@ appearance, so any instability would renumber them).
 from __future__ import annotations
 
 import functools
+import heapq
+import itertools
 import re
 from collections.abc import Iterable, Sequence
 
@@ -119,6 +125,24 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
     return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
 
 
+def _outside(span: Span, others: Sequence[Span], original: str) -> list[Span]:
+    """The pieces of `span` outside all of `others`, trimmed to letters and digits, with at least two."""
+    bounds = [span.start]
+    for o in sorted(others, key=lambda o: o.start):
+        bounds += [o.start, o.end]
+    bounds.append(span.end)
+    pieces: list[Span] = []
+    for a, b in zip(bounds[0::2], bounds[1::2], strict=True):
+        a, b = max(a, span.start), min(b, span.end)
+        while a < b and not original[a].isalnum():
+            a += 1
+        while b > a and not original[b - 1].isalnum():
+            b -= 1
+        if sum(c.isalnum() for c in original[a:b]) >= 2:
+            pieces.append(Span(a, b, span.type, span.score, span.detector))
+    return pieces
+
+
 def placeholder_holes(original: str) -> list[tuple[int, int]]:
     """Where the user typed a placeholder in its exact shape (`TYPED_PLACEHOLDER`)."""
     return [m.span() for m in TYPED_PLACEHOLDER.finditer(original)]
@@ -171,7 +195,16 @@ def resolve(
             s for s in candidates if s.detector in (PROPAGATION, DENYLIST) or (s.start, s.end) not in known
         ]
     kept: list[Span] = []
-    for span in sorted(candidates, key=_rank):
-        if not any(span.overlaps(k) for k in kept):
+    order = itertools.count()  # ties in `_rank` are identical spans: never compare two `Span`s
+    pending = [(_rank(s), next(order), s) for s in candidates]
+    heapq.heapify(pending)
+    while pending:
+        span = heapq.heappop(pending)[2]
+        clash = [k for k in kept if span.overlaps(k)]
+        if not clash:
             kept.append(span)
+        elif span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
+            for piece in _outside(span, clash, original):
+                if _fold(piece.text_in(original)) not in allowed:
+                    heapq.heappush(pending, (_rank(piece), next(order), piece))
     return sorted(kept, key=Span.sort_key)

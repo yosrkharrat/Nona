@@ -6,6 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
+from nona.core.boundaries import NAME_TYPES
 from nona.core.resolver import denylist_spans, resolve
 
 P, PH, CIN, IBAN, RIB = (
@@ -41,7 +42,33 @@ def test_non_overlapping_spans_are_all_kept_in_order() -> None:
 
 
 def test_partial_overlap_keeps_the_longer() -> None:
-    assert resolve([s(0, 6), s(4, 12)], TEXT) == [s(4, 12)]
+    assert resolve([s(0, 6, PH), s(4, 12, PH)], TEXT) == [s(4, 12, PH)]
+
+
+def test_a_name_keeps_its_words_outside_a_longer_partial_overlap() -> None:
+    # #89: the gazetteer's longer span won, and the model's confident `Zorgati` was sent in clear.
+    text = "Zorgati Sami Mo3ez Sami"
+    model, gazetteer = s(0, 12, score=0.95, detector="ner"), s(8, 23, score=0.9, detector="gazetteer")
+    result = resolve([model, gazetteer], text)
+    assert [r.text_in(text) for r in result] == ["Zorgati", "Sami Mo3ez Sami"]
+    assert result[0] == s(0, 7, score=0.95, detector="ner")
+
+
+def test_a_name_inside_a_longer_span_is_dropped_whole() -> None:
+    text = "Sami Ben Ali"
+    assert resolve([s(0, 4), s(0, 12, EntityType.LOCATION)], text) == [s(0, 12, EntityType.LOCATION)]
+
+
+def test_a_clitic_left_in_front_of_a_name_is_not_masked_alone() -> None:
+    text = "لسامي الجلاصي"
+    full = s(1, len(text))
+    assert resolve([s(0, 5), full], text) == [full]
+
+
+def test_a_piece_on_the_allowlist_stays_in_clear() -> None:
+    text = "Clinique Sami Mo3ez Sami"
+    gazetteer = s(9, 24)
+    assert resolve([s(0, 13), gazetteer], text, allowlist=["clinique"]) == [gazetteer]
 
 
 def test_low_scores_are_dropped() -> None:
@@ -84,10 +111,34 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
 ) -> None:
     result = resolve(spans, TEXT)
     assert all(not a.overlaps(b) for i, a in enumerate(result) for b in result[i + 1 :])
-    assert all(r in spans for r in result)
+    # Each span kept is a candidate, or a piece of a name candidate it lost a partial overlap with (#89).
+    assert all(
+        r in spans
+        or any(
+            c.type in NAME_TYPES
+            and (c.type, c.score, c.detector) == (r.type, r.score, r.detector)
+            and c.start <= r.start
+            and r.end <= c.end
+            for c in spans
+        )
+        for r in result
+    )
     shuffled = spans[:]
     rng.shuffle(shuffled)
     assert resolve(shuffled, TEXT) == result
+
+
+@given(spans_strategy)
+def test_no_name_candidate_loses_two_characters_in_a_row(spans: list[Span]) -> None:
+    """#89: what a name span loses to a partial overlap is masked as its own pieces, down to one character
+    between two other spans."""
+    covered = {i for r in resolve(spans, TEXT) for i in range(r.start, r.end)}
+    for c in spans:
+        if c.type in NAME_TYPES and c.score >= 0.5:
+            gap = 0
+            for i in range(c.start, c.end):
+                gap = 0 if i in covered else gap + 1
+                assert gap < 2, (c, sorted(covered))
 
 
 def test_a_span_is_cut_at_a_typed_placeholder() -> None:

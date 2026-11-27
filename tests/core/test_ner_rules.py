@@ -443,6 +443,16 @@ def test_only_closed_list_words_of_a_confident_person_are_unmasked(words: list[s
             assert never_name(word) or normalize(word).text in _PARTICLES, (text, word)
 
 
+@pytest.mark.parametrize("first", ["Zorgati", "Clinique"])
+def test_a_confident_name_partly_inside_a_longer_gazetteer_name_stays_masked(first: str) -> None:
+    """#89, found by the property above: the gazetteer's `Sami Mo3ez Sami` is longer than the model's
+    `Zorgati Sami`, and the resolver dropped the model's span whole."""
+    text = f"{first} Sami Mo3ez Sami"
+    out = pipeline({text: ("person", 0.95)}).anonymize_messages([text]).texts[0]
+    assert first not in out
+    assert "Sami" not in out
+
+
 def test_a_re_masked_word_is_never_joined_into_a_longer_span() -> None:
     """A re-masked word joined to a longer span could partly overlap the gazetteer's name, and the resolver
     keeps only the longer span (`Sami` leaked)."""
