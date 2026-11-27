@@ -21,7 +21,7 @@ P, PH, CIN, IBAN, RIB = (
 )
 TEXT = "x" * 100
 # For the properties: spaces, punctuation, Arabic clitics, a tatweel and a mark, Arabizi, one-letter words.
-MIXED = ("Sami Ben-Ali, وبكريم عليـــ القصُوري m3a x3 ف " * 4)[:100]
+MIXED = ("Sami Ben-Ali, وبكريم عليـــ القصُوري m3a Jose\u0301 ف " * 4)[:100]
 
 
 def s(start: int, end: int, etype: EntityType = P, score: float = 1.0, detector: str = "d") -> Span:
@@ -110,6 +110,43 @@ def test_a_piece_never_holds_a_propagated_name_behind_a_clitic() -> None:
     assert resolve([known, model, gazetteer], text) == [known, gazetteer]
 
 
+def test_a_propagated_name_that_loses_keeps_its_words() -> None:
+    # `Zorgati Sami` was masked in an earlier message: it must not block its own `Zorgati`.
+    text = "Zorgati Sami Mo3ez Sami"
+    known, gazetteer = s(0, 12, detector="propagation"), s(8, 23, score=0.9, detector="gazetteer")
+    model = s(0, 12, score=0.95, detector="ner")  # same extent: step 4 drops it
+    assert [r.text_in(text) for r in resolve([known, model, gazetteer], text)] == [
+        "Zorgati",
+        "Sami Mo3ez Sami",
+    ]
+
+
+def test_propagated_names_that_both_lose_do_not_block_each_other() -> None:
+    text = "Sami Ben Ali Zorgati Sami Mo3ez Sami Ben Ali"
+    spans = [
+        s(9, 20, detector="propagation"),  # Ali Zorgati
+        s(13, 25, detector="propagation"),  # Zorgati Sami
+        s(0, 12, score=0.9, detector="gazetteer"),
+        s(21, 44, score=0.9, detector="gazetteer"),
+    ]
+    assert "Zorgati" in [r.text_in(text) for r in resolve(spans, text)]
+
+
+def test_a_denylist_piece_wins_over_a_propagated_name() -> None:
+    text = "Zorgati Sami Mo3ez Sami"
+    denied = s(0, 12, EntityType.CUSTOM, detector="denylist")
+    known = s(0, 7, detector="propagation")
+    gazetteer = s(8, 23, score=0.9, detector="gazetteer")
+    result = resolve([denied, known, gazetteer], text)
+    assert result[0] == s(0, 7, EntityType.CUSTOM, detector="denylist")
+
+
+def test_a_piece_keeps_the_combining_marks_of_its_words() -> None:
+    text = "Jose\u0301 Sami Mo3ez Sami"  # NFD `José`
+    model, gazetteer = s(0, 10, score=0.95, detector="ner"), s(6, 21, score=0.9, detector="gazetteer")
+    assert resolve([model, gazetteer], text)[0].text_in(text) == "Jose\u0301"
+
+
 def test_a_piece_on_the_allowlist_stays_in_clear() -> None:
     text = "Clinique Sami Mo3ez Sami"
     gazetteer = s(9, 24)
@@ -140,11 +177,12 @@ def test_denylist_ignores_empty_terms() -> None:
 
 spans_strategy = st.lists(
     st.builds(
-        lambda a, n, t, sc: s(a, a + n, t, sc),
+        lambda a, n, t, sc, d: s(a, a + n, t, sc, d),
         st.integers(0, 80),
         st.integers(1, 15),
         st.sampled_from(list(EntityType)),
         st.floats(0.0, 1.0),
+        st.sampled_from(["d", "e", "propagation", "denylist"]),  # step 4 and step 5 treat the last two apart
     ),
     max_size=25,
 )
@@ -182,7 +220,7 @@ def test_every_word_of_a_name_candidate_stays_masked(spans: list[Span]) -> None:
         if c.type not in NAME_TYPES or c.score < 0.5:
             continue
         # Words as the resolver reads them, clipped to the candidate (a random span may cut one).
-        for m in re.finditer(f"[\\w{''.join(DROPPED)}]+", MIXED[: c.end]):
+        for m in re.finditer(f"[\\w\u0300-\u036f{''.join(DROPPED)}]+", MIXED[: c.end]):
             a, b = max(m.start(), c.start), m.end()
             if a >= b or sum(ch.isalnum() and ch not in DROPPED for ch in MIXED[a:b]) < 2:
                 continue

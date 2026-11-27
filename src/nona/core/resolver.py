@@ -16,12 +16,14 @@ CIN on the same 8 digits). The resolver:
    A name span that loses to spans it only partly overlaps keeps its **whole words** that touch none of them
    and no propagated name, as pieces that compete like any other span (#89): the model's confident
    `Zorgati Sami` against the gazetteer's longer `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear.
-   A word is a run of letters, digits and what normalizing drops (tatweel, Arabic marks). A word the
-   winner cuts stays as the winner leaves it, as before #89 (`و` in `وكريم`, `ـــ` in `عليـــ`): a piece
-   is never glued to a placeholder, which restoring would never write back (#87), and never holds a
-   propagated name, which keeps its placeholder and type (step 4: `بصفاقس`). A piece needs two letters or
-   digits, and goes through the allowlist. A denylist term cut this way masks its pieces too: half of a
-   term the user hid is not left in clear. A span inside another is dropped whole.
+   A word is a run of letters, digits, combining marks and what normalizing drops (the tatweel). A word
+   the winner cuts stays as the winner leaves it, as before #89 (`و` in `وكريم`, `ـــ` in `عليـــ`): a
+   piece is never glued to a placeholder, which restoring would never write back (#87). A piece never takes
+   two letters of a propagated name that is still pending or kept, which keeps its placeholder and type
+   (step 4: `بصفاقس`); a propagated name that loses is cut into pieces like any other. A piece needs two
+   letters or digits, and goes through the allowlist. A denylist term cut this way masks its pieces too,
+   even over a propagated name (step 4): half of a term the user hid is not left in clear. A span inside
+   another is dropped whole.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -33,6 +35,8 @@ import functools
 import heapq
 import itertools
 import re
+import unicodedata
+from collections import Counter
 from collections.abc import Iterable, Sequence
 
 from nona.core.boundaries import (
@@ -138,13 +142,19 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
 
 
 def _letter(c: str) -> bool:
-    """A character of a word: a letter or digit, or what normalizing drops (`DROPPED`)."""
-    return c.isalnum() or c in DROPPED
+    """A character of a word: a letter or digit, a combining mark (`José` in NFD), or what normalizing drops
+    (`DROPPED`: the tatweel)."""
+    return c.isalnum() or c in DROPPED or unicodedata.category(c).startswith("M")
 
 
-def _outside(span: Span, blockers: Sequence[Span], original: str) -> list[Span]:
-    """The pieces of `span` (module docstring, step 5): runs of its whole words that overlap none of
-    `blockers`, with two letters or digits at least. Never `span` itself, as one of `blockers` overlaps it."""
+def _letters(text: str) -> int:
+    return sum(c.isalnum() and c not in DROPPED for c in text)
+
+
+def _outside(span: Span, clash: Sequence[Span], names: Sequence[Span], original: str) -> list[Span]:
+    """The pieces of `span` (module docstring, step 5): runs of its whole words that overlap none of `clash`
+    and share no two letters with one of `names`, with two letters or digits at least. Never `span` itself,
+    as one of `clash` overlaps it."""
     words: list[tuple[int, int]] = []
     i = span.start
     while i < span.end:
@@ -158,7 +168,9 @@ def _outside(span: Span, blockers: Sequence[Span], original: str) -> list[Span]:
             i += 1
 
     def free(a: int, b: int) -> bool:
-        return not any(o.start < b and a < o.end for o in blockers)
+        return not any(o.start < b and a < o.end for o in clash) and not any(
+            _letters(original[max(a, n.start) : min(b, n.end)]) >= 2 for n in names
+        )
 
     runs: list[list[tuple[int, int]]] = []
     previous_free = False
@@ -174,7 +186,7 @@ def _outside(span: Span, blockers: Sequence[Span], original: str) -> list[Span]:
     pieces: list[Span] = []
     for run in runs:
         a, b = run[0][0], run[-1][1]
-        if sum(c.isalnum() and c not in DROPPED for c in original[a:b]) >= 2:
+        if _letters(original[a:b]) >= 2:
             pieces.append(Span(a, b, span.type, span.score, span.detector))
     return pieces
 
@@ -225,8 +237,9 @@ def resolve(
             for piece in (cut_at_placeholders(s, original, holes) if s.type in NAME_TYPES else [s])
         ]
     candidates = [s for s in spans if s.score >= min_score and _fold(s.text_in(original)) not in allowed]
-    propagated = [s for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES]
-    known = {(s.start, s.end) for s in propagated}
+    # Propagated names still pending or kept: a piece never takes their words (step 5).
+    alive = Counter(s for s in candidates if s.detector == PROPAGATION and s.type in NAME_TYPES)
+    known = {(s.start, s.end) for s in alive}
     if known:
         candidates = [
             s for s in candidates if s.detector in (PROPAGATION, DENYLIST) or (s.start, s.end) not in known
@@ -240,8 +253,15 @@ def resolve(
         clash = [k for k in kept if span.overlaps(k)]
         if not clash:
             kept.append(span)
-        elif span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
-            for piece in _outside(span, [*clash, *propagated], original):
+            continue
+        if alive[span]:  # a propagated name that lost: it no longer holds its words
+            alive[span] -= 1
+        if span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
+            # A denylist term's policy wins over a propagated name (step 4), so only `clash` cuts it.
+            names = [] if span.detector == DENYLIST else list(+alive)
+            for piece in _outside(span, clash, names, original):
                 if _fold(piece.text_in(original)) not in allowed:
                     heapq.heappush(pending, (_rank(piece), next(order), piece))
+                    if piece.detector == PROPAGATION:
+                        alive[piece] += 1
     return sorted(kept, key=Span.sort_key)
