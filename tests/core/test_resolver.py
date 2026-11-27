@@ -9,8 +9,7 @@ from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
 from nona.core.boundaries import NAME_TYPES
-from nona.core.normalize import DROPPED
-from nona.core.resolver import denylist_spans, resolve
+from nona.core.resolver import denylist_spans, letters, resolve, word_char
 
 P, PH, CIN, IBAN, RIB = (
     EntityType.PERSON,
@@ -147,6 +146,32 @@ def test_a_piece_keeps_the_combining_marks_of_its_words() -> None:
     assert resolve([model, gazetteer], text)[0].text_in(text) == "Jose\u0301"
 
 
+@pytest.mark.parametrize("cut", ["بس", "ب"])
+def test_a_word_cut_at_the_losing_span_edge_stays_as_before(cut: str) -> None:
+    # The model's span ends inside `بسامي`: the piece must neither take a letter of the propagated `سامي`
+    # (LOCATION_1 lost, `امي` in clear) nor be glued to it (`PERSON_2LOCATION_1`).
+    text = "Ali Mo3ez Sami Ben Zorgati بسامي"
+    known = s(text.index("سامي"), len(text), EntityType.LOCATION, detector="propagation")
+    gazetteer = s(0, 18, score=0.9, detector="gazetteer")
+    start = text.index("Ben Zorgati")
+    model = s(start, text.index("ب") + len(cut), score=0.95, detector="ner")
+    result = resolve([known, gazetteer, model], text)
+    assert [r.text_in(text) for r in result] == ["Ali Mo3ez Sami Ben", "Zorgati", "سامي"]
+    assert result[2] == known
+
+
+def test_a_piece_never_starts_at_a_combining_mark() -> None:
+    text = "Jose\u0301 Sami Ben Ali Mo3ez"
+    known = s(0, 4, detector="propagation")
+    model = s(4, 14, score=0.95, detector="ner")  # starts at the accent of `José`
+    gazetteer = s(11, 24, score=0.9, detector="gazetteer")
+    assert [r.text_in(text) for r in resolve([known, model, gazetteer], text)] == [
+        "Jose",
+        "Sami",
+        "Ben Ali Mo3ez",
+    ]
+
+
 def test_a_piece_on_the_allowlist_stays_in_clear() -> None:
     text = "Clinique Sami Mo3ez Sami"
     gazetteer = s(9, 24)
@@ -214,17 +239,26 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
 @given(spans_strategy)
 def test_every_word_of_a_name_candidate_stays_masked(spans: list[Span]) -> None:
     """#89: a name span that loses a partial overlap keeps its untouched words as pieces, so every word of
-    it with two letters or digits overlaps a span kept (a word the winner cuts overlaps the winner)."""
+    the text wholly inside it, with two letters or digits, overlaps a span kept."""
     kept = resolve(spans, MIXED)
+    words = [m.span() for m in re.finditer("[^\x00]+", "".join(c if word_char(c) else "\x00" for c in MIXED))]
     for c in spans:
         if c.type not in NAME_TYPES or c.score < 0.5:
             continue
-        # Words as the resolver reads them, clipped to the candidate (a random span may cut one).
-        for m in re.finditer(f"[\\w\u0300-\u036f{''.join(DROPPED)}]+", MIXED[: c.end]):
-            a, b = max(m.start(), c.start), m.end()
-            if a >= b or sum(ch.isalnum() and ch not in DROPPED for ch in MIXED[a:b]) < 2:
-                continue
-            assert any(k.start < b and a < k.end for k in kept), (c, MIXED[a:b], kept)
+        for a, b in words:
+            if c.start <= a and b <= c.end and letters(MIXED[a:b]) >= 2:
+                assert any(k.start < b and a < k.end for k in kept), (c, MIXED[a:b], kept)
+
+
+@given(spans_strategy)
+def test_a_piece_is_never_glued_to_a_span_kept(spans: list[Span]) -> None:
+    """A piece starts and ends at the edges of words of the text, so nothing kept touches it with no
+    separator in between (`PERSON_1PERSON_2` would never be restored, #87)."""
+    kept = resolve(spans, MIXED)
+    for r in kept:
+        if r not in spans:  # a piece
+            assert r.start == 0 or not word_char(MIXED[r.start - 1]), (r, kept)
+            assert r.end == len(MIXED) or not word_char(MIXED[r.end]), (r, kept)
 
 
 def test_a_span_is_cut_at_a_typed_placeholder() -> None:

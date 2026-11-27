@@ -13,17 +13,17 @@ CIN on the same 8 digits). The resolver:
 4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
    the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
 5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
-   A name span that loses to spans it only partly overlaps keeps its **whole words** that touch none of them
-   and no propagated name, as pieces that compete like any other span (#89): the model's confident
-   `Zorgati Sami` against the gazetteer's longer `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear.
-   A word is a run of letters, digits, combining marks and what normalizing drops (the tatweel). A word
-   the winner cuts stays as the winner leaves it, as before #89 (`و` in `وكريم`, `ـــ` in `عليـــ`): a
-   piece is never glued to a placeholder, which restoring would never write back (#87). A piece never takes
-   two letters of a propagated name that is still pending or kept, which keeps its placeholder and type
-   (step 4: `بصفاقس`); a propagated name that loses is cut into pieces like any other. A piece needs two
-   letters or digits, and goes through the allowlist. A denylist term cut this way masks its pieces too,
-   even over a propagated name (step 4): half of a term the user hid is not left in clear. A span inside
-   another is dropped whole.
+   A name span that loses to spans it only partly overlaps keeps the words of the text that lie wholly
+   inside it and touch neither those spans nor a propagated name still pending or kept, as pieces that
+   compete like any other span (#89): the model's confident `Zorgati Sami` against the gazetteer's longer
+   `Sami Mo3ez Sami` would otherwise send `Zorgati` in clear. A word is a run of letters, digits, combining
+   marks and what normalizing drops (the tatweel). A word cut by another span, or by the losing span's own
+   edge, stays as before #89 (`و` in `وكريم`, `ـــ` in `عليـــ`): a piece is never glued to a placeholder,
+   which restoring would never write back (#87), and never takes a letter of a propagated name, which keeps
+   its placeholder and type (step 4: `بصفاقس`). A propagated name that loses is cut into pieces like any
+   other span. A piece needs two letters or digits, and goes through the allowlist. A denylist term cut this
+   way masks its pieces too, even over a propagated name (step 4): half of a term the user hid is not left
+   in clear. A span inside another is dropped whole.
 
 The result never depends on the order recognizers ran in (ADR-0002: placeholders are numbered by first
 appearance, so any instability would renumber them).
@@ -141,41 +141,43 @@ def _rank(span: Span) -> tuple[int, int, float, tuple[int, int, str, float, str]
     return (-len(span), -PRIORITY[span.type], -span.score, span.sort_key())
 
 
-def _letter(c: str) -> bool:
-    """A character of a word: a letter or digit, a combining mark (`José` in NFD), or what normalizing drops
-    (`DROPPED`: the tatweel)."""
+def word_char(c: str) -> bool:
+    """A character of a word, for the pieces of step 5: a letter or digit, a combining mark (`José` in NFD),
+    or what normalizing drops (`DROPPED`: the tatweel)."""
     return c.isalnum() or c in DROPPED or unicodedata.category(c).startswith("M")
 
 
-def _letters(text: str) -> int:
+def letters(text: str) -> int:
+    """How many letters and digits `text` holds, not counting what normalizing drops."""
     return sum(c.isalnum() and c not in DROPPED for c in text)
 
 
-def _outside(span: Span, clash: Sequence[Span], names: Sequence[Span], original: str) -> list[Span]:
-    """The pieces of `span` (module docstring, step 5): runs of its whole words that overlap none of `clash`
-    and share no two letters with one of `names`, with two letters or digits at least. Never `span` itself,
-    as one of `clash` overlaps it."""
-    words: list[tuple[int, int]] = []
+def _outside(span: Span, blockers: Sequence[Span], original: str) -> list[Span]:
+    """The pieces of `span` (module docstring, step 5): runs of the text's words that lie wholly inside
+    `span` and overlap none of `blockers`, with two letters or digits at least. Never `span` itself, as one
+    of `blockers` overlaps it."""
     i = span.start
+    while i > 0 and word_char(original[i - 1]):  # the word `span` starts in, if it starts inside one
+        i -= 1
+    words: list[tuple[int, int]] = []
     while i < span.end:
-        if _letter(original[i]):
-            j = i
-            while j < span.end and _letter(original[j]):
-                j += 1
-            words.append((i, j))
-            i = j
-        else:
+        if not word_char(original[i]):
             i += 1
+            continue
+        j = i
+        while j < len(original) and word_char(original[j]):
+            j += 1
+        if letters(original[i:j]):
+            words.append((i, j))
+        i = j
 
     def free(a: int, b: int) -> bool:
-        return not any(o.start < b and a < o.end for o in clash) and not any(
-            _letters(original[max(a, n.start) : min(b, n.end)]) >= 2 for n in names
-        )
+        return not any(o.start < b and a < o.end for o in blockers)
 
     runs: list[list[tuple[int, int]]] = []
     previous_free = False
     for a, b in words:
-        if not free(a, b):
+        if a < span.start or b > span.end or not free(a, b):  # cut at the span's edge, or taken
             previous_free = False
             continue
         if previous_free and free(runs[-1][-1][1], a):
@@ -183,12 +185,11 @@ def _outside(span: Span, clash: Sequence[Span], names: Sequence[Span], original:
         else:
             runs.append([(a, b)])
         previous_free = True
-    pieces: list[Span] = []
-    for run in runs:
-        a, b = run[0][0], run[-1][1]
-        if _letters(original[a:b]) >= 2:
-            pieces.append(Span(a, b, span.type, span.score, span.detector))
-    return pieces
+    return [
+        Span(run[0][0], run[-1][1], span.type, span.score, span.detector)
+        for run in runs
+        if letters(original[run[0][0] : run[-1][1]]) >= 2
+    ]
 
 
 def placeholder_holes(original: str) -> list[tuple[int, int]]:
@@ -258,8 +259,10 @@ def resolve(
             alive[span] -= 1
         if span.type in NAME_TYPES:  # pieces are shorter than the span: the loop ends
             # A denylist term's policy wins over a propagated name (step 4), so only `clash` cuts it.
-            names = [] if span.detector == DENYLIST else list(+alive)
-            for piece in _outside(span, clash, names, original):
+            names = (
+                [] if span.detector == DENYLIST else [n for n, c in alive.items() if c and n.overlaps(span)]
+            )
+            for piece in _outside(span, [*clash, *names], original):
                 if _fold(piece.text_in(original)) not in allowed:
                     heapq.heappush(pending, (_rank(piece), next(order), piece))
                     if piece.detector == PROPAGATION:
