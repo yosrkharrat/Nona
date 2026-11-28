@@ -97,8 +97,8 @@ def test_bench_reports_a_missing_split(tmp_path: Path, capsys: pytest.CaptureFix
 def test_bench_refuses_the_frozen_split_without_published(
     split: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#75: `test` is never used for tuning, so a run on it has to say it is the published one. Recognized
-    by its bytes, however the path is written."""
+    """#75: `test` is never used for tuning, so a run on it has to say it is the published one, however the
+    path is written."""
     with pytest.raises(SystemExit) as exit_info:
         main(["bench", "--split", split, "--data", str(ROOT / "bench" / "data"), "--out", str(tmp_path)])
     assert exit_info.value.code == 2
@@ -115,8 +115,10 @@ def test_the_committed_test_split_is_the_frozen_one() -> None:
 def frozen_mini(data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The `mini` fixture stands for the frozen split, so the flag is tested without scoring the real one."""
     digest = hashlib.sha256((data_dir / "mini.jsonl").read_bytes()).hexdigest()
-    (tmp_path / "frozen.sha256").write_text(f"{digest}  mini.jsonl\n", encoding="utf-8")
-    monkeypatch.setattr("nona.cli.FROZEN_HASH", tmp_path / "frozen.sha256")
+    elsewhere = tmp_path / "elsewhere"  # not beside it: recognized by its bytes, as a copy would be
+    elsewhere.mkdir()
+    (elsewhere / "test.sha256").write_text(f"{digest}  bench/data/test.jsonl\n", encoding="utf-8")
+    monkeypatch.setattr("nona.cli.FROZEN_HASH", elsewhere / "test.sha256")
     return data_dir
 
 
@@ -139,12 +141,22 @@ def test_the_file_a_hash_beside_it_names_is_frozen_whatever_its_bytes(tmp_path: 
     assert not is_frozen(tmp_path / "test.jsonl")
     (tmp_path / "test.sha256").write_text(f"{'0' * 64}  bench/data/test.jsonl\n", encoding="utf-8")
     assert is_frozen(tmp_path / "test.jsonl")
-    assert is_frozen(tmp_path / "TEST.jsonl")  # as `--split TEST` reads it on a case-insensitive disk
+    (tmp_path / "test.sha256").write_text(f"{'A' * 64} *test.jsonl\n", encoding="utf-8")  # binary mode
+    assert is_frozen(tmp_path / "test.jsonl")
+    link = tmp_path / "link"
+    link.mkdir()
+    (link / "t.jsonl").symlink_to(tmp_path / "test.jsonl")
+    assert is_frozen(link / "t.jsonl")
     shutil.copy(FIXTURE, tmp_path / "other.jsonl")
     assert not is_frozen(tmp_path / "other.jsonl")
 
 
-def test_bench_reports_an_unreadable_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("hash_file", [True, False], ids=["checkout", "no-hash-file"])
+def test_bench_reports_an_unreadable_dataset(
+    hash_file: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not hash_file:  # as in an install from a wheel: the dataset is first read by the run itself
+        monkeypatch.setattr("nona.cli.FROZEN_HASH", tmp_path / "missing.sha256")
     dataset = tmp_path / "x.jsonl"
     shutil.copy(FIXTURE, dataset)
     dataset.chmod(0)
@@ -152,13 +164,13 @@ def test_bench_reports_an_unreadable_dataset(tmp_path: Path, capsys: pytest.Capt
         if os.access(dataset, os.R_OK):
             pytest.skip("running as root: every file is readable")
         assert main(["bench", "--split", "x", "--data", str(tmp_path)]) == 1
-        assert "can't read" in capsys.readouterr().err
+        assert "Permission denied" in capsys.readouterr().err
     finally:
         dataset.chmod(0o644)
 
 
 def test_another_test_file_is_not_frozen(tmp_path: Path) -> None:
-    """Only the committed bytes are frozen: a `test.jsonl` of one's own runs without the flag."""
+    """A `test.jsonl` of one's own, with no hash file beside it, runs without the flag."""
     shutil.copy(FIXTURE, tmp_path / "test.jsonl")
     out = tmp_path / "results"
     assert main(["bench", "--split", "test", "--data", str(tmp_path), "--out", str(out)]) == 0

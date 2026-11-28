@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shlex
 import sys
 from collections.abc import Sequence
@@ -23,21 +24,26 @@ FROZEN_HASH = Path(__file__).resolve().parents[2] / "bench" / "data" / f"{FROZEN
 
 
 def _hash_file(path: Path) -> tuple[str, str] | None:
-    """(digest, file name) from a `shasum -a 256` line, or `None` if there's no readable one."""
+    """(digest, file name) from a `shasum -a 256` line, text or binary mode (`*name`), or `None` if there's
+    no readable one."""
     try:
-        digest, _, name = path.read_text(encoding="utf-8").strip().partition("  ")
+        fields = path.read_text(encoding="utf-8").split(maxsplit=1)
     except (OSError, UnicodeDecodeError):
         return None
-    return (digest, Path(name).name) if digest else None
+    if len(fields) != 2 or not re.fullmatch(r"[0-9a-fA-F]{64}", fields[0]):
+        return None
+    return fields[0].lower(), Path(fields[1].strip().removeprefix("*")).name
 
 
 def is_frozen(dataset: Path) -> bool:
     """`dataset` is the frozen split: the file a `test.sha256` beside it names, whatever its bytes (edited
-    before the hash is, or `--split ./test`, `--split Test` on a case-insensitive disk, any install), or a
-    copy elsewhere with the committed bytes (`FROZEN_HASH`, in a checkout). Another folder's own
-    `test.jsonl` is not frozen. Raises `OSError` if `dataset` can't be read."""
-    beside = _hash_file(dataset.parent / FROZEN_HASH.name)
-    if beside is not None and beside[1].casefold() == dataset.name.casefold():
+    before the hash is, or `--split ./test`, `--split Test` on a case-insensitive disk, any install, through
+    a symlink), or a copy elsewhere with the committed bytes (`FROZEN_HASH`, in a checkout). So a folder of
+    one's own with a `test.sha256` naming its `test.jsonl` counts as frozen too; without one, it doesn't.
+    Raises `OSError` if `dataset` can't be read."""
+    real = dataset.resolve()
+    beside = _hash_file(real.parent / FROZEN_HASH.name)
+    if beside is not None and beside[1].casefold() == real.name.casefold():
         return True
     digests = {h[0] for h in (beside, _hash_file(FROZEN_HASH)) if h is not None}
     return bool(digests) and hashlib.sha256(dataset.read_bytes()).hexdigest() in digests
@@ -134,7 +140,7 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     for i, name in enumerate(names):
         try:
             result = run(SYSTEMS[name](), args.split, dataset)
-        except (DatasetError, ModelError) as exc:
+        except (DatasetError, ModelError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if i:
