@@ -56,6 +56,7 @@ from nona.core.recognizers.ner import NER, place_or_org
 from nona.core.resolver import (
     cut_at_placeholders,
     denylist_spans,
+    fill_gaps,
     known_spans,
     placeholder_holes,
     resolve,
@@ -193,7 +194,7 @@ class Nona:
             for s in recognized
             if self._policies.get(s.type) is not Policy.KEEP or not any(s.overlaps(p) for p in propagated)
         )
-        spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+        spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist, pieces=False)
         words, span_seeds = self._look_ahead_words(text, spans, recognized, seeds or {})
         # It fills gaps only, never retyping a detection, except a span kept as is (an ORGANIZATION): that
         # one gives way, so `… de la Clinique Ahmed Ben Salem` doesn't send a name found in this message.
@@ -204,12 +205,21 @@ class Nona:
             if not any(c.overlaps(s) for s in spans if s not in keep)
         ]
         if not extra:
-            return spans, span_seeds
+            return self._fill_gaps(spans, candidates, text), span_seeds
         hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
         kept = [s for s in spans if s not in hiding]
-        final = resolve([*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist)
+        final = resolve(
+            [*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist, pieces=False
+        )
         kept_spans = set(final)
-        return final, {s: t for s, t in span_seeds.items() if s in kept_spans}
+        seeds_kept = {s: t for s, t in span_seeds.items() if s in kept_spans}
+        return self._fill_gaps(final, [*candidates, *extra], text), seeds_kept
+
+    def _fill_gaps(self, spans: list[Span], candidates: Sequence[Span], text: str) -> list[Span]:
+        """The pieces of the names that lost a partial overlap, in what nothing covers once the look-ahead
+        has run (`core/resolver.py`, step 5, #89): they never change a span kept, nor what the look-ahead
+        finds. A piece carries no seeds, so it never spreads."""
+        return fill_gaps(spans, candidates, text, min_score=self._min_score, allowlist=self._allowlist)
 
     @staticmethod
     def _look_ahead_words(

@@ -30,7 +30,7 @@ from nona.core.boundaries import (
     placeholder_regex,
     strict_at,
 )
-from nona.core.linking import LITERAL_DETECTOR, LinkedEntity, Linker
+from nona.core.linking import LITERAL_DETECTOR, PIECE_DETECTOR, LinkedEntity, Linker
 from nona.core.normalize import NormalizedDoc, normalize
 from nona.core.types import Entity, EntityType, Span
 
@@ -187,7 +187,7 @@ class Pseudonymizer:
         text = "".join(parts)
         redacted = tuple(s for s in kept if s not in entities)
         for span in redacted:
-            if span.detector != LITERAL_DETECTOR:
+            if span.detector not in (LITERAL_DETECTOR, PIECE_DETECTOR):  # neither propagates
                 self._redacted[(span.type, span.text_in(original))] = None
         self._messages.append(_Message(original, text, tuple(entities.items()), redacted))
         return text

@@ -43,6 +43,12 @@ was never trusted on its own (`Bonne` in `Sami Bonne`, a weak detection) can't s
 **Literal placeholders.** When the user writes `PHONE_1` after `PHONE_1` was issued, the number can't be
 renumbered, so the literal text becomes an entity of its own (spans from `LITERAL_DETECTOR`): it goes upstream
 as a fresh placeholder and is restored to exactly what the user wrote. Such entities are never propagated.
+
+**Pieces.** What a name span leaves uncovered after losing a partial overlap (`core/resolver.py`, step 5,
+#89; spans from `PIECE_DETECTOR`) is masked where it is and restored there, but each piece is an entity of its
+own that links to nothing, never propagates and owns no email: a piece holds whatever words the span lost
+(`de` from `de Sami`, `Menzah` from a place the model took for a person), so it must not shape the
+conversation's entities.
 """
 
 from __future__ import annotations
@@ -62,6 +68,7 @@ from nona.core.normalize import normalize
 from nona.core.types import EntityType, Span
 
 LITERAL_DETECTOR = "literal-placeholder"  # a placeholder the user wrote, colliding with an issued one
+PIECE_DETECTOR = "piece"  # what a name span leaves uncovered after losing a partial overlap (see **Pieces**)
 
 # Values compared on letters and digits only, so formatting doesn't split one number into two entities.
 COMPACT_TYPES = frozenset(
@@ -88,6 +95,7 @@ class LinkedEntity:
     ambiguous: bool = False
     surfaces: list[str] = field(default_factory=list[str])
     seeds: frozenset[str] = frozenset()  # PERSON tokens look-ahead may spread (see **Seeds** above)
+    piece: bool = False  # see **Pieces** above
 
     @property
     def placeholder(self) -> str:
@@ -107,7 +115,9 @@ class LinkedEntity:
     def propagates(self) -> bool:
         """Whether forward propagation searches for this entity's forms. Not for literals, and not for a
         PERSON known only by an honorific: a later `Mme` is as likely someone else."""
-        return not self.literal and not (self.type is EntityType.PERSON and not self.tokens)
+        return (
+            not self.literal and not self.piece and not (self.type is EntityType.PERSON and not self.tokens)
+        )
 
     def add_surface(self, surface: str) -> None:
         if surface not in self.surfaces:
@@ -161,14 +171,17 @@ class Linker:
         tokens = {
             i: canonical_tokens(surfaces[i])
             for i, s in enumerate(spans)
-            if s.type is EntityType.PERSON and s.detector != LITERAL_DETECTOR
+            if s.type is EntityType.PERSON and s.detector not in (LITERAL_DETECTOR, PIECE_DETECTOR)
         }
         person_order = sorted(tokens, key=lambda i: (-len(tokens[i]), spans[i].start))
         contested = self._contested({t for t in tokens.values() if t})
         other = [i for i in range(len(spans)) if i not in tokens]
         for i in [*person_order, *other]:
             span = spans[i]
-            if span.detector == LITERAL_DETECTOR:
+            if span.detector == PIECE_DETECTOR:  # its own entity, found by nothing later
+                entity = LinkedEntity(0, span.type, piece=True)
+                fresh.append(entity)
+            elif span.detector == LITERAL_DETECTOR:
                 entity = self._link_value(span.type, "\0" + surfaces[i], fresh)
             elif span.type is EntityType.PERSON and tokens[i]:
                 entity = self._link_person(tokens[i], fresh, contested)

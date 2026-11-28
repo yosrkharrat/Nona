@@ -443,6 +443,70 @@ def test_only_closed_list_words_of_a_confident_person_are_unmasked(words: list[s
             assert never_name(word) or normalize(word).text in _PARTICLES, (text, word)
 
 
+@pytest.mark.parametrize("first", ["Zorgati", "Clinique"])
+def test_a_confident_name_partly_inside_a_longer_gazetteer_name_stays_masked(first: str) -> None:
+    """#89, found by the property above: the gazetteer's `Sami Mo3ez Sami` is longer than the model's
+    `Zorgati Sami`, and the resolver dropped the model's span whole."""
+    text = f"{first} Sami Mo3ez Sami"
+    out = pipeline({text: ("person", 0.95)}).anonymize_messages([text]).texts[0]
+    assert first not in out
+    assert "Sami" not in out
+
+
+def test_a_losing_organization_never_hides_a_person_it_holds() -> None:
+    """Final review of #91: an ORGANIZATION piece (kept as is) swallowed the person `Ahmed`."""
+    text = "Pharmacie Ahmed, Sami Ben Ali Trabelsi"
+    out = per_message({text: [("Pharmacie Ahmed, Sami", "organization", 0.95)]}).anonymize_messages([text])
+    assert "Ahmed" not in out.texts[0]
+
+
+@pytest.mark.parametrize("symbol", ["№", "™"])
+def test_a_piece_next_to_a_symbol_that_normalizes_to_letters_restores(symbol: str) -> None:
+    """Final review of #91: `№` is `No` on the normalized view, so a piece glued to it never restored."""
+    text = f"voir {symbol}Kousksou Farfoura Hlaiem Zgolli Bouslimi Ghariani"
+    found = {
+        text: [
+            ("Kousksou Farfoura Hlaiem", "person", 0.95),
+            ("Hlaiem Zgolli Bouslimi Ghariani", "person", 0.95),
+        ]
+    }
+    conv = per_message(found).anonymize_messages([text])
+    assert Nona.restore(conv.texts[0], conv.mapping) == text
+    assert "Hlaiem" not in conv.texts[0]
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        # A piece of a particle (`de`) spread to every later `de` and linked into `Ines de Montfort`.
+        {
+            "Ines de Montfort": [("Ines de Montfort", "person", 0.95)],
+            "merci de Sami Ben Ali Trabelsi": [("de Sami", "person", 0.9)],
+            "merci de rien": [],
+        },
+        # A piece kept the full name's entity: once `Zorgati Sami` was written, `Sami` came back twice.
+        {
+            "Zorgati Sami Mo3ez Sami": [("Zorgati Sami", "person", 0.95)],
+            "Zorgati Sami est venu": [("Zorgati Sami", "person", 0.95)],
+        },
+        # A place typed PERSON from `Sami` left a PERSON piece `Menzah`, which retyped the next LOCATION.
+        {
+            "Menzah Sami Ben Ali Trabelsi": [("Menzah Sami", "location", 0.9)],
+            "Je vis au Menzah": [("Menzah", "location", 0.9)],
+        },
+    ],
+)
+def test_a_piece_never_shapes_the_conversation(found: dict[str, list[tuple[str, str, float]]]) -> None:
+    """Final review of #91: a piece is masked where it is, and is no entity later messages link to."""
+    messages = list(found)
+    conv = per_message(found).anonymize_messages(messages)
+    assert [Nona.restore(text, conv.mapping) for text in conv.texts] == messages
+    if "Je vis au Menzah" in found:
+        assert conv.texts[1] == "Je vis au LOCATION_1"
+    if "merci de rien" in found:
+        assert conv.texts[2] == "merci de rien"
+
+
 def test_a_re_masked_word_is_never_joined_into_a_longer_span() -> None:
     """A re-masked word joined to a longer span could partly overlap the gazetteer's name, and the resolver
     keeps only the longer span (`Sami` leaked)."""

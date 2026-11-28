@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import random
+import re
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from nona.core import EntityType, Span, normalize
-from nona.core.resolver import denylist_spans, resolve
+from nona.core.boundaries import NAME_TYPES
+from nona.core.linking import PIECE_DETECTOR
+from nona.core.resolver import PRIORITY, denylist_spans, letters, resolve, word_char
 
 P, PH, CIN, IBAN, RIB = (
     EntityType.PERSON,
@@ -16,6 +20,8 @@ P, PH, CIN, IBAN, RIB = (
     EntityType.RIB,
 )
 TEXT = "x" * 100
+# For the properties: spaces, punctuation, Arabic clitics, a tatweel and a mark, Arabizi, one-letter words.
+MIXED = ("Sami Ben-Ali, وبكريم عليـــ القصُوري m3a Jose\u0301 №Ali ف™ " * 4)[:100]
 
 
 def s(start: int, end: int, etype: EntityType = P, score: float = 1.0, detector: str = "d") -> Span:
@@ -41,7 +47,178 @@ def test_non_overlapping_spans_are_all_kept_in_order() -> None:
 
 
 def test_partial_overlap_keeps_the_longer() -> None:
-    assert resolve([s(0, 6), s(4, 12)], TEXT) == [s(4, 12)]
+    assert resolve([s(0, 6, PH), s(4, 12, PH)], TEXT) == [s(4, 12, PH)]
+
+
+def test_a_name_keeps_its_words_outside_a_longer_partial_overlap() -> None:
+    # #89: the gazetteer's longer span won, and the model's confident `Zorgati` was sent in clear.
+    text = "Zorgati Sami Mo3ez Sami"
+    model, gazetteer = s(0, 12, score=0.95, detector="ner"), s(8, 23, score=0.9, detector="gazetteer")
+    result = resolve([model, gazetteer], text)
+    assert [r.text_in(text) for r in result] == ["Zorgati", "Sami Mo3ez Sami"]
+    assert result[0] == s(0, 7, score=0.95, detector=PIECE_DETECTOR)
+
+
+def test_a_name_inside_a_longer_span_is_dropped_whole() -> None:
+    text = "Sami Ben Ali"
+    assert resolve([s(0, 4), s(0, 12, EntityType.LOCATION)], text) == [s(0, 12, EntityType.LOCATION)]
+
+
+def test_a_clitic_left_in_front_of_a_name_is_not_masked_alone() -> None:
+    text = "لسامي الجلاصي"
+    full = s(1, len(text))
+    assert resolve([s(0, 5), full], text) == [full]
+
+
+@pytest.mark.parametrize("text", ["علي وكريم بن صالح", "وبكريم بن صالح"])
+def test_proclitics_glued_to_the_winning_name_stay_out_of_the_piece(text: str) -> None:
+    # A piece glued to a placeholder (`PERSON_2PERSON_1`) would never be restored (#87).
+    name = s(text.index("كريم"), len(text), detector="propagation")
+    loser = s(0, text.index(" بن"), score=0.9, detector="ner")
+    result = resolve([loser, name], text)
+    assert [r.text_in(text) for r in result] == [*(["علي"] if text.startswith("علي") else []), "كريم بن صالح"]
+
+
+def test_a_piece_with_the_extent_of_a_propagated_name_gives_way() -> None:
+    # `Sfax` was LOCATION_1: a PERSON piece of the model's `Sfax Sami` must not retype it (step 4).
+    text = "Sfax Sami Ben Ali"
+    known = s(0, 4, EntityType.LOCATION, detector="propagation")
+    model, gazetteer = s(0, 9, score=0.95, detector="ner"), s(5, 17, score=0.9, detector="gazetteer")
+    assert resolve([known, model, gazetteer], text) == [known, gazetteer]
+
+
+@pytest.mark.parametrize(
+    ("text", "winner", "loser"),
+    [
+        ("سامي بن عليـــ قالي", "سامي بن علي", "بن عليـــ"),  # a tatweel left after the name
+        ("Abdelkarim Trabelsi", "karim Trabelsi", "Abdelkarim"),  # a word glued to the name
+    ],
+)
+def test_a_word_the_winner_cuts_stays_as_the_winner_leaves_it(text: str, winner: str, loser: str) -> None:
+    # A piece glued to the placeholder (`PERSON_1PERSON_2`) would never be restored (#87).
+    w = s(text.index(winner), text.index(winner) + len(winner), detector="propagation")
+    lo = s(text.index(loser), text.index(loser) + len(loser), score=0.9, detector="ner")
+    assert resolve([w, lo], text) == [w]
+
+
+def test_a_piece_never_holds_a_propagated_name_behind_a_clitic() -> None:
+    # `صفاقس` was LOCATION_1: the model's PERSON `بصفاقس سامي` must not make it a person (step 4).
+    text = "بصفاقس سامي بن علي الطرابلسي"
+    known = s(1, 6, EntityType.LOCATION, detector="propagation")
+    model = s(0, 11, score=0.95, detector="ner")
+    gazetteer = s(7, len(text), score=0.9, detector="gazetteer")
+    assert resolve([known, model, gazetteer], text) == [known, gazetteer]
+
+
+def test_a_propagated_name_that_loses_keeps_its_words() -> None:
+    # `Zorgati Sami` was masked in an earlier message: it must not block its own `Zorgati`.
+    text = "Zorgati Sami Mo3ez Sami"
+    known, gazetteer = s(0, 12, detector="propagation"), s(8, 23, score=0.9, detector="gazetteer")
+    model = s(0, 12, score=0.95, detector="ner")  # same extent: step 4 drops it
+    assert [r.text_in(text) for r in resolve([known, model, gazetteer], text)] == [
+        "Zorgati",
+        "Sami Mo3ez Sami",
+    ]
+
+
+def test_propagated_names_that_both_lose_do_not_block_each_other() -> None:
+    text = "Sami Ben Ali Zorgati Sami Mo3ez Sami Ben Ali"
+    spans = [
+        s(9, 20, detector="propagation"),  # Ali Zorgati
+        s(13, 25, detector="propagation"),  # Zorgati Sami
+        s(0, 12, score=0.9, detector="gazetteer"),
+        s(21, 44, score=0.9, detector="gazetteer"),
+    ]
+    assert "Zorgati" in [r.text_in(text) for r in resolve(spans, text)]
+
+
+def test_a_piece_never_displaces_what_the_first_pass_kept() -> None:
+    # The propagated `Zorgati` is kept, as before #89: a longer denylist piece doesn't replace it.
+    text = "Zorgati Sami Mo3ez Sami"
+    denied = s(0, 12, EntityType.CUSTOM, detector="denylist")
+    known = s(0, 7, detector="propagation")
+    gazetteer = s(8, 23, score=0.9, detector="gazetteer")
+    assert resolve([denied, known, gazetteer], text) == [known, gazetteer]
+
+
+def test_an_organization_piece_never_swallows_a_person() -> None:
+    # ORGANIZATION is kept as is: a piece `Pharmacie Ahmed` over the person `Ahmed` sent the name in clear.
+    text = "Pharmacie Ahmed, Sami Ben Ali Trabelsi"
+    org = s(0, 21, EntityType.ORGANIZATION, 0.95, "ner")
+    ahmed = s(10, 15, score=0.9, detector="gazetteer")
+    sami = s(17, len(text), score=0.9, detector="gazetteer")
+    result = resolve([org, ahmed, sami], text)
+    assert ahmed in result
+    assert [r.text_in(text) for r in result] == ["Pharmacie", "Ahmed", "Sami Ben Ali Trabelsi"]
+
+
+def test_a_card_inside_a_person_piece_stays_a_card() -> None:
+    # A PERSON piece over the card would restore it in the reply, where the CARD is redacted for good.
+    text = "Sami 4111111111111111 Mo3ez Sami Ben Ali Trabelsi Zorgati"
+    card = s(5, 21, EntityType.CARD, detector="card")
+    person = s(0, 27, score=0.95, detector="ner")
+    gazetteer = s(22, len(text), score=0.9, detector="gazetteer")
+    assert resolve([card, person, gazetteer], text) == [
+        s(0, 4, score=0.95, detector=PIECE_DETECTOR),
+        card,
+        gazetteer,
+    ]
+
+
+def test_a_piece_keeps_the_combining_marks_of_its_words() -> None:
+    text = "Jose\u0301 Sami Mo3ez Sami"  # NFD `José`
+    model, gazetteer = s(0, 10, score=0.95, detector="ner"), s(6, 21, score=0.9, detector="gazetteer")
+    assert resolve([model, gazetteer], text)[0].text_in(text) == "Jose\u0301"
+
+
+@pytest.mark.parametrize("cut", ["بس", "ب"])
+def test_a_word_cut_at_the_losing_span_edge_stays_as_before(cut: str) -> None:
+    # The model's span ends inside `بسامي`: the piece must neither take a letter of the propagated `سامي`
+    # (LOCATION_1 lost, `امي` in clear) nor be glued to it (`PERSON_2LOCATION_1`).
+    text = "Ali Mo3ez Sami Ben Zorgati بسامي"
+    known = s(text.index("سامي"), len(text), EntityType.LOCATION, detector="propagation")
+    gazetteer = s(0, 18, score=0.9, detector="gazetteer")
+    start = text.index("Ben Zorgati")
+    model = s(start, text.index("ب") + len(cut), score=0.95, detector="ner")
+    result = resolve([known, gazetteer, model], text)
+    assert [r.text_in(text) for r in result] == ["Ali Mo3ez Sami Ben", "Zorgati", "سامي"]
+    assert result[2] == known
+
+
+def test_a_piece_never_starts_at_a_combining_mark() -> None:
+    text = "Jose\u0301 Sami Ben Ali Mo3ez"
+    known = s(0, 4, detector="propagation")
+    model = s(4, 14, score=0.95, detector="ner")  # starts at the accent of `José`
+    gazetteer = s(11, 24, score=0.9, detector="gazetteer")
+    assert [r.text_in(text) for r in resolve([known, model, gazetteer], text)] == [
+        "Jose",
+        "Sami",
+        "Ben Ali Mo3ez",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "glued"),
+    [
+        ("voir №Kousksou Farfoura Hlaiem Zgolli Bouslimi Ghariani", "№Kousksou"),
+        ("Kousksou Farfoura™ Hlaiem Zgolli Bouslimi Ghariani", "Farfoura™"),
+    ],
+)
+def test_a_word_glued_to_a_symbol_that_normalizes_to_letters_stays_as_before(text: str, glued: str) -> None:
+    # `№` normalizes to `No`: a piece glued to it (`№PERSON_1`) would never be restored.
+    model = s(text.index("Kousksou"), text.index(" Zgolli"), score=0.95, detector="ner")
+    longer = s(text.index("Hlaiem"), len(text), score=0.95, detector="ner")
+    result = resolve([model, longer], text)
+    assert result[-1] == longer
+    for r in result[:-1]:  # pieces: nothing that normalizes to a letter touches them
+        assert r.start == 0 or not word_char(text[r.start - 1]), (r.text_in(text), glued)
+        assert not word_char(text[r.end]), (r.text_in(text), glued)
+
+
+def test_a_piece_on_the_allowlist_stays_in_clear() -> None:
+    text = "Clinique Sami Mo3ez Sami"
+    gazetteer = s(9, 24)
+    assert resolve([s(0, 13), gazetteer], text, allowlist=["clinique"]) == [gazetteer]
 
 
 def test_low_scores_are_dropped() -> None:
@@ -68,11 +245,12 @@ def test_denylist_ignores_empty_terms() -> None:
 
 spans_strategy = st.lists(
     st.builds(
-        lambda a, n, t, sc: s(a, a + n, t, sc),
+        lambda a, n, t, sc, d: s(a, a + n, t, sc, d),
         st.integers(0, 80),
         st.integers(1, 15),
         st.sampled_from(list(EntityType)),
         st.floats(0.0, 1.0),
+        st.sampled_from(["d", "e", "propagation", "denylist"]),  # step 4 and step 5 treat the last two apart
     ),
     max_size=25,
 )
@@ -82,12 +260,68 @@ spans_strategy = st.lists(
 def test_result_is_non_overlapping_and_independent_of_input_order(
     spans: list[Span], rng: random.Random
 ) -> None:
-    result = resolve(spans, TEXT)
+    result = resolve(spans, MIXED)
     assert all(not a.overlaps(b) for i, a in enumerate(result) for b in result[i + 1 :])
-    assert all(r in spans for r in result)
+    # Each span kept is a candidate, or a piece of a name candidate it lost a partial overlap with (#89).
+    assert all(
+        r in spans
+        or any(
+            c.type in NAME_TYPES
+            and (c.type, c.score, PIECE_DETECTOR) == (r.type, r.score, r.detector)
+            and c.start <= r.start
+            and r.end <= c.end
+            for c in spans
+        )
+        for r in result
+    )
     shuffled = spans[:]
     rng.shuffle(shuffled)
-    assert resolve(shuffled, TEXT) == result
+    assert resolve(shuffled, MIXED) == result
+
+
+@given(spans_strategy)
+def test_every_word_of_a_name_candidate_stays_masked(spans: list[Span]) -> None:
+    """#89: a name span that loses a partial overlap keeps its untouched words as pieces, so every word of
+    the text wholly inside it, with two letters or digits, overlaps a span kept."""
+    kept = resolve(spans, MIXED)
+    words = [m.span() for m in re.finditer("[^\x00]+", "".join(c if word_char(c) else "\x00" for c in MIXED))]
+    for c in spans:
+        if c.type not in NAME_TYPES or c.score < 0.5:
+            continue
+        for a, b in words:
+            if c.start <= a and b <= c.end and letters(MIXED[a:b]) >= 2:
+                assert any(k.start < b and a < k.end for k in kept), (c, MIXED[a:b], kept)
+
+
+def _greedy(spans: list[Span], text: str) -> list[Span]:
+    """The resolver before #89, on spans without propagated or denylist detectors or typed placeholders."""
+    kept: list[Span] = []
+    for span in sorted(
+        (x for x in spans if x.score >= 0.5),
+        key=lambda x: (-len(x), -PRIORITY[x.type], -x.score, x.sort_key()),
+    ):
+        if not any(span.overlaps(k) for k in kept):
+            kept.append(span)
+    return kept
+
+
+@given(spans_strategy)
+def test_every_span_kept_before_89_is_still_kept(spans: list[Span]) -> None:
+    """#89 only adds pieces in the gaps: nothing kept before is dropped or retyped."""
+    plain = [x for x in spans if x.detector not in ("propagation", "denylist")]
+    result = resolve(plain, MIXED)
+    assert all(k in result for k in _greedy(plain, MIXED)), result
+
+
+@given(spans_strategy)
+def test_a_piece_is_never_glued_to_a_span_kept(spans: list[Span]) -> None:
+    """A piece starts and ends at the edges of words of the text, so nothing kept touches it with no
+    separator in between (`PERSON_1PERSON_2` would never be restored, #87)."""
+    kept = resolve(spans, MIXED)
+    for r in kept:
+        if r not in spans:  # a piece
+            assert r.start == 0 or not word_char(MIXED[r.start - 1]), (r, kept)
+            assert r.end == len(MIXED) or not word_char(MIXED[r.end]), (r, kept)
 
 
 def test_a_span_is_cut_at_a_typed_placeholder() -> None:

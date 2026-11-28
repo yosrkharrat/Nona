@@ -355,7 +355,7 @@ def _arabizi_cut(word: str) -> bool:
 
 def arabizi_cuts(text: str, start: int, end: int) -> list[tuple[int, int]]:
     """The `_arabizi_cut` words of a span, one by one. A run of them as one span could partly overlap another
-    recognizer's name, and the resolver keeps only the longer: one word is inside another span or apart."""
+    recognizer's name and lose to it, cut to pieces (#89): one word is inside another span or apart."""
     return [
         m.span()
         for m in _SPAN_WORD.finditer(text, start, end)
