@@ -58,9 +58,6 @@ from nona.core.types import EntityType, Span
 # Higher wins when two spans have the same length. Explicit and checksum-validated types first, then
 # context-gated ones, then the rest. A CIN beats a phone on the same 8 digits because its context word
 # says what it is.
-# The types `DEFAULT_POLICIES` redacts (`core/pseudonymize.py`); `Nona` passes its own policies.
-REDACTED_BY_DEFAULT: frozenset[EntityType] = frozenset({EntityType.CARD})
-
 PRIORITY: dict[EntityType, int] = {
     EntityType.CUSTOM: 100,
     EntityType.IBAN: 90,
@@ -74,6 +71,9 @@ PRIORITY: dict[EntityType, int] = {
     EntityType.ORGANIZATION: 30,
     EntityType.LOCATION: 20,
 }
+
+# The types `DEFAULT_POLICIES` redacts (`core/pseudonymize.py`); `Nona` passes its own policies.
+REDACTED_BY_DEFAULT: frozenset[EntityType] = frozenset({EntityType.CARD})
 
 
 PROPAGATION = "propagation"

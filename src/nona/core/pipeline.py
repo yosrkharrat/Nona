@@ -120,7 +120,7 @@ def _blank(mask: bytearray, doc: NormalizedDoc, start: int, end: int) -> bool:
 
 
 def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc, bytearray] | None:
-    """`doc` with what may hide a value turned into spaces, and the blanked original characters; `None` when
+    """`doc` with what may hide a value turned into `BLANK`, and the blanked original characters; `None` when
     nothing does, so most messages cost no second pass. Same length and origins, so spans found in it map
     back to the original text. Linear in the text's length. Two things are blanked:
     - a typed placeholder (`GLUED_PLACEHOLDER`) and the `_`, `-`, `.` and `/` glued to either side, when a

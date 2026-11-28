@@ -464,6 +464,7 @@ def test_arabic_look_ahead_spreads_listed_names_only() -> None:
         ("cin 12345678_", "cin NATIONAL_ID_1_"),
         ("ip fe80::1_x", "ip IP_ADDRESS_1_x"),
         ("ip x_10.0.0.1", "ip x_IP_ADDRESS_1"),
+        ("email_10.0.0.1", "email_IP_ADDRESS_1"),  # a word, not a placeholder
         ("PERSON_10.0.0.1", "PERSON_10.0.0.1"),  # `PERSON_1` and `0.0.0.1`, or `PERSON_10`: left alone
         # what was blanked keeps two numbers apart
         ("22 123 456abc 22 123 457", "PHONE_1abc PHONE_2"),
