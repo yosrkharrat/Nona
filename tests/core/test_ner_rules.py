@@ -376,9 +376,8 @@ def test_a_confident_word_with_digits_is_never_unmasked(text: str, predicted: st
 
 def test_a_digit_name_is_masked_through_the_pipeline() -> None:
     nona = pipeline({"Na3ima Ka3bi": ("person", 0.95)})
-    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == (
-        "Rdv m3a PERSON_1 PERSON_2 ghodwa",
-    )
+    # One span since #50 lists `Naima`: the gazetteer takes `Na3ima Ka3bi` as one name after `m3a`
+    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == ("Rdv m3a PERSON_1 ghodwa",)
 
 
 def test_a_known_name_written_later_with_a_digit_is_not_sent_in_clear() -> None:
@@ -530,3 +529,26 @@ def test_a_speech_verb_with_digits_is_cut_and_not_masked_again(verb: str) -> Non
 @pytest.mark.parametrize(("text", "view"), [("3ers m3a Sami", "aers maa Sami"), ("5er", "ker")])
 def test_the_view_de_arabizes_darija_words(text: str, view: str) -> None:
     assert model_view(text) == view
+
+
+@pytest.mark.parametrize("text", ["خالد وصل", "كريم وصل", "نبيل هنا"])
+def test_a_model_span_on_an_arabic_common_word_name_is_still_retyped(text: str) -> None:
+    """Review of #97: the #50 rule (a bare `كريم` needs a cue) is for finding a word without a model. A span
+    the model flagged is still retyped to PERSON when it is a listed first name in Arabic script."""
+    word = text.split()[0]
+    assert detect({word: ("location", 0.6)}, text) == [(word, EntityType.PERSON, 0.6)]
+
+
+@pytest.mark.parametrize(
+    ("text", "place"),
+    [
+        ("b3atht l Canada", "Canada"),
+        ("chouft Montreal lbare7", "Montreal"),
+        ("kallamt Tunisie Telecom", "Tunisie Telecom"),
+        ("weld Bab Jdid", "Bab Jdid"),
+        ("jari Menzah", "Menzah"),
+    ],
+)
+def test_a_place_after_a_speech_verb_or_kinship_word_stays_a_place(text: str, place: str) -> None:
+    """Reviews of #97: the #50 cues aren't person cues for the model; a place often follows them."""
+    assert all(t is not EntityType.PERSON for _, t, _ in detect({place: ("location", 0.9)}, text))

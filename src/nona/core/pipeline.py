@@ -63,7 +63,7 @@ from nona.core.pseudonymize import (
     restore,
 )
 from nona.core.recognizers import Recognizer, default_recognizers
-from nona.core.recognizers.gazetteer import NAMES, common
+from nona.core.recognizers.gazetteer import NAMES, common_as_written
 from nona.core.recognizers.ner import NER, place_or_org
 from nona.core.resolver import (
     cut_at_placeholders,
@@ -284,7 +284,8 @@ class Nona:
         def spreadable(word: str) -> bool:
             tokens = canonical_tokens(word)
             cased = _cased(word)
-            return not any(common(t, cased) for t in tokens) and (cased or tokens <= NAMES)
+            # as written: an Arabic name found in this message spreads to its bare mentions, as before #50
+            return not any(common_as_written(t, cased) for t in tokens) and (cased or tokens <= NAMES)
 
         # The resolver may keep a propagated form over the recognizer span at the same place: the recognizer
         # still vouches for it. Recognizer spans are cut at typed placeholders as the resolver cuts them.

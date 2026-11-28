@@ -63,12 +63,12 @@ from nona.core.recognizers import gazetteer_data
 from nona.core.recognizers.gazetteer import (
     ARABIC_STOP,
     FIRST,
+    NAME_PHRASE,
     NAMES,
     STOPWORDS,
-    STRONG_PHRASE,
     WEAK_PHRASE,
     cities,
-    common,
+    common_as_written,
     strip_clitics,
     unaccent,
 )
@@ -468,7 +468,7 @@ def _listed_first_name(surface: str) -> bool:
     return any(
         (tokens := canonical_tokens(m.group()))
         and tokens <= FIRST
-        and not any(common(t, _cased(m.group())) for t in tokens)
+        and not any(common_as_written(t, _cased(m.group())) for t in tokens)
         for m in _SPAN_WORD.finditer(surface)
     )
 
@@ -494,9 +494,11 @@ def _cased(word: str) -> bool:
 
 
 def _person_cue(text: str, start: int) -> bool:
-    """A person cue right before `start`, on the same line: an honorific, or a gazetteer cue phrase."""
+    """A person cue right before `start`, on the same line: an honorific, or a gazetteer name phrase. Not the
+    kinship words or speech verbs of #50: a place follows them as often (`b3atht l Canada`, `weld Bab Jdid`,
+    `jari Menzah`, reviews of #97)."""
     before = normalize(text[max(0, start - 30) : start]).text
     words = before.split()
     if words and _honorific(words[-1]) and before[-1:] in (" ", "\t"):
         return True
-    return bool(STRONG_PHRASE.search(before) or WEAK_PHRASE.search(before) or _WITH.search(before))
+    return bool(NAME_PHRASE.search(before) or WEAK_PHRASE.search(before) or _WITH.search(before))

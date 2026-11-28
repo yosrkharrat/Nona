@@ -592,11 +592,20 @@ def test_round_trip_with_the_default_recognizers(msgs: list[str]) -> None:
         assert n.restore(result.text, conv.mapping) == "".join([*expected, original[pos:]])
 
 
-@pytest.mark.parametrize("text", ["كريم وصل", "خالد وصل", "شفت ريم اليوم"])
-def test_an_arabic_name_keeps_its_own_common_word_status(text: str) -> None:
-    # `كريم` now links to `Karim`, which is on the common-word list for its Darija meaning in Latin letters.
-    # That must not change how the Arabic word is detected: the list decides for Arabic forms separately.
-    assert Nona().anonymize(text).text.startswith(("PERSON_1", "شفت PERSON_1"))
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        ("كريم وصل", "كريم وصل"),  # bare: an ordinary word too (generous), like a lowercase `karim`
+        ("خالد وصل", "خالد وصل"),
+        ("خويا كريم وصل", "خويا PERSON_1 وصل"),  # with a cue, a name
+        ("كريم الطرابلسي وصل", "PERSON_1 وصل"),  # a full name
+        ("شفت ريم اليوم", "شفت PERSON_1 اليوم"),  # `ريم` isn't on the common-word list
+    ],
+)
+def test_an_arabic_common_word_name_follows_the_arabizi_rule(text: str, masked: str) -> None:
+    """#50, owner's decision: Arabic script follows the Arabizi rule. A bare common-word name needs a cue;
+    the accepted cost is that a bare one with nothing around it leaks."""
+    assert Nona().anonymize(text).text == masked
 
 
 def test_an_arabic_name_links_to_its_latin_form() -> None:

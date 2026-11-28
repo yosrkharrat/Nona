@@ -242,6 +242,236 @@ def test_more_blessings_and_amounts(text: str) -> None:
     assert kept(text) == []
 
 
+# --------------------------------------------------------------------------- #50: Darija context
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("khouya ghassen ja lyoum", "ghassen"),
+        ("okhti amal mridha", "amal"),  # a lowercase common-word name after a kinship word
+        ("o5ti Rahma", "Rahma"),
+        ("sa7bi karim 3andou karhba", "karim"),
+        ("sa7bti Ghofrane", "Ghofrane"),  # strong: an unlisted capitalized name too
+        ("jari Hassen", "Hassen"),
+        ("mart Sami tji ghodwa", "Sami"),
+        ("rajel nour", "nour"),
+        ("خويا كريم", "كريم"),  # Arabic forms lift listed names (see the review cases of #97)
+        ("صاحبتي نور", "نور"),
+        ("جاري سليم", "سليم"),
+    ],
+)
+def test_kinship_words_are_strong_cues(text: str, name: str) -> None:
+    assert kept(text) == [(name, P)]
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("kallamt amal lyoum", "amal"),
+        ("9olt l karim yji", "karim"),
+        ("b3atht l sana el mail", "sana"),
+        ("sa2alt aziz 3al contrat", "aziz"),
+        ("7kit m3a habib", "habib"),
+        ("telfent l Nour", "Nour"),
+        ("3ayatt l sami", "sami"),
+        ("stannit Salah barcha", "Salah"),
+        ("قلت لكريم", "كريم"),  # the preposition glued to the name, stripped as a clitic
+        ("قلت ل نور", "نور"),
+        ("كلمت سليم", "سليم"),
+        ("سألت أمين", "أمين"),
+    ],
+)
+def test_speech_verbs_lift_listed_names(text: str, name: str) -> None:
+    assert kept(text) == [(name, P)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "kallamt Ooredoo",  # listed names only (owner's choice): no unlisted word after a speech verb
+        "b3atht l Poste",
+        "kallamt Ghofrane",  # an unlisted name is left to the NER model
+        "sa2alt el banka",
+        "9olt l rabbi ysahel",
+        "kallamt\namal",  # no cue across a line break
+        "chouft el film",
+        "قلت ليه",
+        "كلمت البنك",
+        "7kit m3a Tunisie Telecom",
+    ],
+)
+def test_speech_verbs_lift_nothing_else(text: str) -> None:
+    assert kept(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("amal 9alli tji", "amal"),
+        ("karim ja lyoum", "karim"),
+        ("nour 9alet la", "nour"),
+        ("sana kallamni", "sana"),
+        ("aziz 3ayetli", "aziz"),
+        ("habib b3athli el mail", "habib"),
+        ("rahma mchet", "rahma"),
+        ("Kmar 9alet", "Kmar"),  # a common word added in #50, capitalized at the start of a sentence
+        ("نور قالت", "نور"),
+        ("كريم جا", "كريم"),
+        ("سليم كلمني", "سليم"),
+    ],
+)
+def test_a_verb_after_a_listed_name_lifts_it(text: str, name: str) -> None:
+    assert kept(text) == [(name, P)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "el nour ja",  # an article: the light came
+        "l'amal ja",
+        "النور جا",
+        "el 3id ja",
+        "ghodwa ja",  # not a listed name
+        "ena ja",
+        "el karhba mchet",
+        "chkoun 9alli",
+        "amal\n9alli",  # not across a line break
+        "nour, ba3d ja",  # not the same clause
+    ],
+)
+def test_a_verb_after_needs_a_bare_listed_name(text: str) -> None:
+    assert kept(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Mabrouk 3lik",
+        "alf mabrouk",
+        "Alf Mabrouk",
+        "mabrouk el bac",
+        "3id mabrouk",
+        "3idek mabrouk",
+        "Ramdhan Karim",
+        "rabbi karim",
+        "Allah Karim",
+        "sana sa3ida",
+        "kol sana w enti tayba",
+        "3andi amal kbir",
+        "fama amal",
+        "nour 3iniya",
+        "رمضان كريم",
+        "ربي كريم",
+        "الله كريم",
+        "ألف مبروك",
+        "عيد مبروك",
+        "سنة سعيدة",
+        "عندي أمل",
+        "رحمة الله عليه",
+        "نور عينيا",
+        "ya 7abibi",
+        "ya rabbi",
+        "rabbi ysahel",
+        "inchallah",
+        "el 7amdoullah",
+        "bismillah",
+        "wa9t essala",
+        "salat el jom3a",
+        "Merci Mabrouk 3lik",  # a weak cue doesn't override a fixed expression
+    ],
+)
+def test_fixed_expressions_are_never_names(text: str) -> None:
+    assert kept(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("Mme Mabrouk !", "Mabrouk"),  # a strong cue overrides the expression
+        ("khouya karim 9alli", "karim"),
+        ("Sana Ben Salah sa3ida", "Sana Ben Salah"),  # a full name is never the ordinary word
+        ("Karim, Ramdhan Karim", "Karim"),  # the first one is a vocative at the start
+    ],
+)
+def test_fixed_expressions_give_way_to_names(text: str, name: str) -> None:
+    assert [t for t, _ in kept(text)][:1] == [name]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Sa7bi karim 3andou karhba", [("karim", P)]),  # a phone capitalizes the first word
+        ("SA7BI karim", [("karim", P)]),
+        ("Sahbi Ben Salah a appelé", [("Sahbi Ben Salah", P)]),  # the name Sahbi, not the cue
+        ("3idek mabrouk Sami", [("Sami", P)]),  # the blessing stays out of the name after it
+        ("chouft pierre", []),  # in lowercase, a French name after a speech verb is an ordinary word
+        ("kallamt grace", []),
+        ("kallamt Pierre", [("Pierre", P)]),
+        ("rdv m3a bechir", []),  # owner's common-word list: a lowercase common name needs a strong cue
+        ("khouya bechir", [("bechir", P)]),
+        # re-review of #97
+        ("جاري التحميل", []),  # Arabic kinship words lift listed names only: `جاري` is also "in progress"
+        ("حساب جاري رقم 12", []),
+        ("ولد اليوم", []),
+        ("راجل طيب", []),
+        ("جاري سليم", [("سليم", P)]),
+        ("خويا رمضان كريم", []),  # a greeting after a kinship word
+        # the greeting stays; `Sa7bi,` alone may be Sahbi addressed, masked at 0.5 as on main
+        ("Sa7bi, Ramdhan Karim", [("Sa7bi", P)]),
+        ("Khouya, Ramdhan Karim", []),
+        ("Nour Amal kbir", [("Nour", P)]),  # the run stops before the expression's word
+        ("Sa7bi, karim 3andou karhba", [("karim", P)]),  # the cue with a comma
+        ("شفت كريم اليوم", [("كريم", P)]),  # `chouft` in Arabic script
+        # third review of #97
+        ("fama Amal Trabelsi?", [("Amal Trabelsi", P)]),  # a full name, not `fama amal`
+        ("3andi Amal Ben Salah fil classe", [("Amal Ben Salah", P)]),
+        ("Ramdhan Karim Ben Salah", [("Karim Ben Salah", P)]),
+        ("Le dossier de Sa7bi Trabelsi est prêt", [("Sa7bi Trabelsi", P)]),
+        ("Rdv m3a Sa7bi Karim ghodwa", [("Sa7bi Karim", P)]),  # mid-sentence: a full name
+        ("sa7bi trabelsi ja", [("sa7bi trabelsi", P)]),  # before a surname: the name Sahbi
+        ("kallamt sa7bi ben salah", [("sa7bi ben salah", P)]),
+        ("m3a sa7bi karim", [("karim", P)]),  # lowercase before a first name: the cue
+        ("chouft el nour lbare7", []),  # an article: I saw the light
+        ("kallamt el amal", []),
+        ("rajel Tounsi", []),  # `rajel` lifts listed names only
+        ("rajel karim", [("karim", P)]),
+        # differential fuzz against main
+        ("alf sa7bi الله", []),  # a Latin kinship word starts no unlisted Arabic word
+        ("sa7bi سامي", [("سامي", P)]),
+        ("kol bechir ben salah kbir", [("bechir ben salah", P)]),  # `salah` after `ben` is a surname
+        ("fama Aziz ben salah sa3ida", [("Aziz ben salah", P)]),
+    ],
+)
+def test_review_cases_of_97(text: str, expected: list[tuple[str, EntityType]]) -> None:
+    assert kept(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("rajel karim", "karim"),  # a generous man
+        ("weld 3aziz", "3aziz"),  # a dear boy
+        ("chouft amal", "amal"),  # I saw hope
+        ("sana jet", "sana"),  # the year came
+    ],
+)
+def test_ambiguous_cues_kept_by_the_owner_mask_the_word(text: str, name: str) -> None:
+    """#50: the owner kept these cues knowing they also read as ordinary words: a leak costs more."""
+    assert kept(text) == [(name, P)]
+
+
+@pytest.mark.parametrize("text", ["كريم", "قال علي", "أمين المال", "خالد", "هدى", "نبيل"])
+def test_a_bare_arabic_common_word_name_needs_a_cue(text: str) -> None:
+    """#50, owner's decision: Arabic script follows the Arabizi rule, like a lowercase `karim`."""
+    assert kept(text) == []
+
+
+@pytest.mark.parametrize(("text", "name"), [("مرحبا كريم", "كريم"), ("السيد خالد", "خالد"), ("محمد", "محمد")])
+def test_arabic_names_with_a_cue_or_not_common_are_found(text: str, name: str) -> None:
+    assert kept(text) == [(name, P)]
+
+
 def test_city_matching_is_linear() -> None:
     """Each city match was compared with every earlier one (#57): 100k characters of cities took 7 s."""
     small = normalize("Tunis Sfax Sousse Gabès Paris et Nabeul, " * 200)
