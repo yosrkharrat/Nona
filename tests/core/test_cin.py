@@ -40,7 +40,7 @@ def found(text: str) -> list[str]:
         ("رقم بطاقة التعريف 07311842 برقم الطلب 52930417", ["07311842"]),
         ("رقم بطاقة التعريف 07311842 وفاتورة 52930417", ["07311842"]),
         ("CIN 07311842, numéro de  suivi 52930417", ["07311842"]),  # two spaces
-        ("رقم بطاقة التعريف 07311842، رقم\nالطلب 52930417", ["07311842"]),  # noqa: RUF001
+        ("رقم بطاقة التعريف 07311842، رقم\tالطلب 52930417", ["07311842"]),  # noqa: RUF001
         ("CIN 07311842, numéro de suivi 52930417", ["07311842"]),
         ("CIN 07311842, facture 52930417", ["07311842"]),
         ("CIN 07311842 puis la facture 52930417", ["07311842"]),
@@ -65,6 +65,7 @@ def found(text: str) -> list[str]:
         ("رقم بطاقة التعريف 08123456، في الطلب القديم 01234567", ["08123456", "01234567"]),  # "the request"
         ("CIN 08123456, suivi 01234567", ["08123456", "01234567"]),
         ("بطاقة 08123456 رقم اطلب 01234567", ["08123456", "01234567"]),  # "number, ask for"
+        ("بطاقة التعريف 08123456 وعدد\n\nطلب 01234567", ["08123456", "01234567"]),
     ],
 )
 def test_cin_found(text: str, expected: list[str]) -> None:
@@ -109,6 +110,7 @@ def test_long_input_stays_fast() -> None:
     assert "07311842" in found(line * 10)
     small, large = best_of_3(1000), best_of_3(10000)
     assert large < 40 * small  # linear is 10x; quadratic would be 100x
+    assert large < 10.0  # a generous ceiling (about 0.1 s locally) for a slowdown that is linear
 
 
 @settings(max_examples=30, deadline=None)
