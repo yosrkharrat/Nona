@@ -96,6 +96,8 @@ select = [
 "tests/**" = ["S101"]  # assert is the point of a test
 # Arabic letters that look like Latin ones (alef, heh) are intended in this name table.
 "src/nona/core/canonical.py" = ["RUF001"]
+# Benchmark templates mix Arabic and Latin script on purpose (`الـRIB`, code-switched turns).
+"src/nona/bench/generate.py" = ["RUF001"]
 
 [tool.pyright]
 include = ["src", "tests"]
