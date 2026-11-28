@@ -69,7 +69,7 @@ from nona.core.recognizers.gazetteer import (
     STRONG_PHRASE,
     WEAK_PHRASE,
     cities,
-    common,
+    common_as_written,
     strip_clitics,
     unaccent,
 )
@@ -469,7 +469,7 @@ def _listed_first_name(surface: str) -> bool:
     return any(
         (tokens := canonical_tokens(m.group()))
         and tokens <= FIRST
-        and not any(common(t, _cased(m.group())) for t in tokens)
+        and not any(common_as_written(t, _cased(m.group())) for t in tokens)
         for m in _SPAN_WORD.finditer(surface)
     )
 

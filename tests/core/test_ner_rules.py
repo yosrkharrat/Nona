@@ -529,3 +529,11 @@ def test_a_speech_verb_with_digits_is_cut_and_not_masked_again(verb: str) -> Non
 @pytest.mark.parametrize(("text", "view"), [("3ers m3a Sami", "aers maa Sami"), ("5er", "ker")])
 def test_the_view_de_arabizes_darija_words(text: str, view: str) -> None:
     assert model_view(text) == view
+
+
+@pytest.mark.parametrize("text", ["خالد وصل", "كريم وصل", "نبيل هنا"])
+def test_a_model_span_on_an_arabic_common_word_name_is_still_retyped(text: str) -> None:
+    """Review of #97: the #50 rule (a bare `كريم` needs a cue) is for finding a word without a model. A span
+    the model flagged is still retyped to PERSON when it is a listed first name in Arabic script."""
+    word = text.split()[0]
+    assert detect({word: ("location", 0.6)}, text) == [(word, EntityType.PERSON, 0.6)]

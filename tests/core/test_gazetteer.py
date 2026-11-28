@@ -399,6 +399,24 @@ def test_fixed_expressions_give_way_to_names(text: str, name: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Sa7bi karim 3andou karhba", [("karim", P)]),  # a phone capitalizes the first word
+        ("SA7BI karim", [("karim", P)]),
+        ("Sahbi Ben Salah a appelé", [("Sahbi Ben Salah", P)]),  # the name Sahbi, not the cue
+        ("3idek mabrouk Sami", [("Sami", P)]),  # the blessing stays out of the name after it
+        ("chouft pierre", []),  # in lowercase, a French name after a speech verb is an ordinary word
+        ("kallamt grace", []),
+        ("kallamt Pierre", [("Pierre", P)]),
+        ("rdv m3a bechir", []),  # owner's common-word list: a lowercase common name needs a strong cue
+        ("khouya bechir", [("bechir", P)]),
+    ],
+)
+def test_review_cases_of_97(text: str, expected: list[tuple[str, EntityType]]) -> None:
+    assert kept(text) == expected
+
+
+@pytest.mark.parametrize(
     ("text", "name"),
     [
         ("rajel karim", "karim"),  # a generous man

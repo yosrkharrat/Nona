@@ -96,13 +96,23 @@ LAST = _keys(data.SURNAMES_TN) | _keys(tuple(n for n in data.NAMES_AR if " " in 
 # decided Arabic script follows the Arabizi rule (#50): a bare `كريم`, like a lowercase `karim`, is masked
 # only with a cue. Accepted cost: a bare Arabic common-word name with nothing around it leaks.
 COMMON = _keys(data.COMMON_WORDS)
+# The Arabic forms the list names itself (`نور`, `أمال`): only these count as ordinary words when a model
+# already flagged the span (`ner.py` retypes a listed first name to PERSON). The rule above is about finding
+# a bare word without a model.
+COMMON_AR = _keys(tuple(w for w in data.COMMON_WORDS if any("\u0600" <= c <= "\u06ff" for c in w)))
 
 
 def common(key: str | None, cased: bool) -> bool:
-    """Whether a listed name is also an ordinary word. The same in every script since #50; `cased` stays for
-    the callers that ask per script."""
+    """Whether a listed name is also an ordinary word, for detection without a model: the same in every
+    script since #50. `cased` stays for the callers that ask per script."""
     del cased
     return key in COMMON
+
+
+def common_as_written(key: str | None, cased: bool) -> bool:
+    """Whether a listed name is an ordinary word in the script it is written in (`Karim` is, `كريم` isn't):
+    for a span a model already flagged."""
+    return key in (COMMON if cased else COMMON_AR)
 
 
 NAMES = FIRST | LAST
@@ -314,6 +324,12 @@ class GazetteerRecognizer:
                 i += 1
                 continue
             run = words[i:end]
+            if cue != "strong" and run[0].start + run[0].clitic in never and len(run) > 1:
+                i += 1  # `3idek mabrouk Sami`: the blessing stays out, the name after it is tried on its own
+                continue
+            if _cue_word(doc, run):
+                i += 1  # `Sa7bi karim` at the start of a message: the cue, then the name
+                continue
             if cue != "strong" and (
                 (len(run) == 1 and run[0].start + run[0].clitic in never)
                 or (run[0].key == "mabrouk" and _BLESSING_AFTER.match(doc.text, run[0].end))
@@ -424,7 +440,9 @@ def _score(run: list[_Word], cue: str) -> float:
     if not listed:
         return 0.3  # an unlisted word after a weak cue, or a particle alone
     if cue == "speech":
-        return 0.9
+        lowercase = all(w.cap is False for w in run)
+        # in lowercase, only a Tunisian name: `chouft pierre`, `kallamt grace` are ordinary words
+        return 0.3 if lowercase and not any(w.key in TUNISIAN for w in listed) else 0.9
     caps = [w.cap for w in run]
     if None in caps:  # Arabic script
         return 0.3 if common_only and len(run) == 1 and not cue else 0.8
@@ -448,6 +466,18 @@ def _score(run: list[_Word], cue: str) -> float:
     if len(run) > 1:
         return 0.7
     return 0.6 if any(w.key in FIRST_TN for w in tunisian) else 0.3
+
+
+def _cue_word(doc: NormalizedDoc, run: list[_Word]) -> bool:
+    """A capitalized one-word cue that folds to a listed name, right before a listed name: `Sa7bi karim`,
+    `SA7BI karim` (a phone capitalizes the first word). `Sahbi Ben Salah` stays a name: `Ben` isn't listed."""
+    return (
+        len(run) > 1
+        and run[0].cap is True
+        and _fold_ar(run[0].text) in _CONTEXT_WORDS
+        and run[1].name
+        and _GAP.fullmatch(doc.text[run[0].end : run[1].start]) is not None
+    )
 
 
 def _verb_after(doc: NormalizedDoc, run: list[_Word]) -> bool:
