@@ -118,7 +118,7 @@ Read the numbers with these in mind:
   another speaker could find some phrasings unnatural.
 - **Built by the system's authors.** The same people and assistant who wrote Nona wrote the templates and hard cases. Held-out
   name pools and a separate `test` template set limit that bias but don't remove it.
-- **Small counts for some types.** IP_ADDRESS (6 / 10 mentions), CARD (10 / 16) and CIN (11 / 24) give rates
+- **Small counts for some types.** IP_ADDRESS (6 / 10 mentions), CARD (10 / 16) and CIN (13 / 24) give rates
   with wide uncertainty. Per-language cells in the report can rest on a handful of mentions.
 - **Pessimistic leak check.** A gold name found at word boundaries counts as leaked even when the payload
   holds the same word as a word (05 §6, *Known limits*). Homoglyph spellings aren't covered.

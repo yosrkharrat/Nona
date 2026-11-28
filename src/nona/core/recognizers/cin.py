@@ -33,11 +33,15 @@ CONTEXT = re.compile(
     r")(?!\w)"
 )
 
-# Labels of other 8-digit numbers (order, invoice, parcel, reference); Arabic takes a و/ف, ب/ل or لل prefix.
+# Labels of other 8-digit numbers: order, invoice, parcel, tracking, receipt, reference. Only nouns that
+# can't be read another way, since a label that drops a real CIN leaks it: `de suivi`, not `suivi`;
+# `الوصل` (receipt), not `وصل` (also "arrived"); `رقم الطلب`, not `الطلب` (also "the request").
+# Arabic labels take a و/ف, ب/ل or لل prefix.
+_AR = r"[وف]?(?:[بل]?ال|لل)"
 OTHER_LABEL = re.compile(
     r"(?<!\w)(?:"
-    r"commande|facture|colis|référence|reference|réf|ref|ticket|order|invoice|tracking"
-    r"|[وف]?(?:[بل]?ال|لل)?(?:طلبية|فاتورة|طرد|مرجع)|[وف]?(?:[بل]?ال|لل)طلب"  # bare طلب is also "request"
+    r"commande|facture|colis|de suivi|référence|reference|réf|ref|ticket|order|invoice|tracking"
+    rf"|{_AR}?(?:طلبية|فاتورة|طرد|مرجع)|{_AR}وصل|[وف]?(?:رقم|عدد) ال?طلب"
     r")(?!\w)"
 )
 LABEL_GAP = 2  # a label at most this many words before a number is its own

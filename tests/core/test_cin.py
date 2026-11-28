@@ -35,6 +35,8 @@ def found(text: str) -> list[str]:
         ("رقم بطاقة التعريف 07311842 والفاتورة 52930417", ["07311842"]),
         ("رقم بطاقة التعريف 07311842 للفاتورة 52930417", ["07311842"]),
         ("رقم بطاقة التعريف 07311842 ورقم الطلب 52930417", ["07311842"]),
+        ("رقم بطاقة التعريف 07311842، رقم الوصل 52930417", ["07311842"]),
+        ("CIN 07311842, numéro de suivi 52930417", ["07311842"]),
         ("CIN 07311842, facture 52930417", ["07311842"]),
         ("CIN 07311842 puis la facture 52930417", ["07311842"]),
         ("CIN 07311842, commande n° 52930417", ["07311842"]),
@@ -55,6 +57,8 @@ def found(text: str) -> list[str]:
         ("بطاقة ٠٨١٢٣٤٥٦ و ٠٨١٢٣٤٥٧", ["٠٨١٢٣٤٥٦", "٠٨١٢٣٤٥٧"]),
         ("رقم بطاقة التعريف ٠٨١٢٣٤٥٦ وصل ٠١٢٣٤٥٦٧", ["٠٨١٢٣٤٥٦", "٠١٢٣٤٥٦٧"]),  # وصل: also "arrived"
         ("بطاقة 08123456 طلب 01234567", ["08123456", "01234567"]),  # bare طلب: also "request"
+        ("رقم بطاقة التعريف 08123456، في الطلب القديم 01234567", ["08123456", "01234567"]),  # "the request"
+        ("CIN 08123456, suivi 01234567", ["08123456", "01234567"]),
     ],
 )
 def test_cin_found(text: str, expected: list[str]) -> None:
@@ -96,7 +100,10 @@ def test_long_input_stays_fast() -> None:
             times.append(time.perf_counter() - started)
         return min(times)
 
-    assert best_of_3(3000) < 40 * best_of_3(300)
+    assert "07311842" in found(line * 10)
+    small, large = best_of_3(1000), best_of_3(10000)
+    assert large < 40 * small  # linear is 10x; quadratic would be 100x
+    assert large < 5.0
 
 
 @settings(max_examples=30, deadline=None)
