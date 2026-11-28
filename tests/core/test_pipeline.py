@@ -456,6 +456,15 @@ def test_arabic_look_ahead_spreads_listed_names_only() -> None:
         # the number of a placeholder doesn't start a spaced card
         ("PERSON_2 4139 4411 7715 1620", "PERSON_2 [CARD]"),
         ("x_2 4139 4411 7715 1620", "x_2 [CARD]"),
+        ("card_4242 4242 4242 4242", "card_[CARD]"),
+        # review round 3: a placeholder's digit doesn't hide the letters glued to a value
+        ("PERSON_1abc22123456", "PERSON_1abcPHONE_1"),
+        ("PERSON_1tel22123456", "PERSON_1telPHONE_1"),
+        # `_` hides nothing after a CIN or an IPv6, nor before an IPv4 that no placeholder holds
+        ("cin 12345678_", "cin NATIONAL_ID_1_"),
+        ("ip fe80::1_x", "ip IP_ADDRESS_1_x"),
+        ("ip x_10.0.0.1", "ip x_IP_ADDRESS_1"),
+        ("PERSON_10.0.0.1", "PERSON_10.0.0.1"),  # `PERSON_1` and `0.0.0.1`, or `PERSON_10`: left alone
         # what was blanked keeps two numbers apart
         ("22 123 456abc 22 123 457", "PHONE_1abc PHONE_2"),
         # `_` and a lone `.` don't hide a value
@@ -471,7 +480,8 @@ def test_arabic_look_ahead_spreads_listed_names_only() -> None:
         ("cin PERSON_1/12345678", "cin PERSON_1/NATIONAL_ID_1"),
         # left as they were: letters and digits mixed, an order reference, a short number
         ("sha 3f2a91827364e5", "sha 3f2a91827364e5"),
-        ("ref AB22123456", "ref AB22123456"),
+        # a cue doesn't reach past blanked letters: `AB22123456` after `ref` is masked, a phone being likelier
+        ("ref AB22123456", "ref ABPHONE_1"),
         ("commande22123456", "commande22123456"),  # an order cue glued: an order number, as after a space
         ("ref22123456abc", "ref22123456abc"),
         ("iPhone15 pro", "iPhone15 pro"),
@@ -535,3 +545,19 @@ def test_no_second_pass_when_nothing_is_blanked(text: str) -> None:
 
 def test_the_resolver_redacts_by_default_what_the_policies_redact() -> None:
     assert {t for t, p in DEFAULT_POLICIES.items() if p is Policy.REDACT} == REDACTED_BY_DEFAULT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "| Ref | 22123456 |",
+        "| Commande | 22123456 |",
+        "facture|22123456",
+        "cmd|n°|22123456",
+        "pour la commande tel22123456",
+    ],
+)
+def test_a_pipe_or_blanked_letters_never_carry_an_order_cue(text: str) -> None:
+    """Security review of #106: the order cue read past `|`, the second pass's blank, so a phone after
+    `| Ref |` in a markdown table went upstream; and past a blanked `tel` after `commande`."""
+    assert "22123456" not in Nona().anonymize(text).text

@@ -149,7 +149,9 @@ def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc,
             or (m.start() > 0 and text[m.start() - 1] in "_-")
             or (m.end() < len(text) and text[m.end()] in "_-")
         )
-    for m in _GLUED_DIGITS.finditer(doc.text) if digits else ():
+    # Scanned once placeholders are blanked: the `1` of `PERSON_1abc22123456` isn't part of the value's word.
+    stage = _apply(doc, mask) if glued else doc.text
+    for m in _GLUED_DIGITS.finditer(stage) if digits else ():
         if (m["left"] or m["right"]) and sum(c.isdigit() for c in m["digits"]) >= _GLUED_DIGITS_MIN:
             left_end = m.end("left")
             if (
@@ -163,8 +165,12 @@ def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc,
             glued = _blank(mask, doc, m.end("digits"), m.end("digits") + len(m["right"])) or glued
     if not glued:
         return None
-    chars = [BLANK if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
-    return NormalizedDoc(text, "".join(chars), doc.origin), mask
+    return NormalizedDoc(text, _apply(doc, mask), doc.origin), mask
+
+
+def _apply(doc: NormalizedDoc, mask: bytearray) -> str:
+    """`doc.text` with every character whose original is marked in `mask` turned into `BLANK`."""
+    return "".join(BLANK if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True))
 
 
 def _cased(word: str) -> bool:
@@ -272,9 +278,7 @@ class Nona:
             redacted=frozenset(t for t, p in self._policies.items() if p is Policy.REDACT),
             kept_as_is=frozenset(t for t, p in self._policies.items() if p is Policy.KEEP),
         )
-        self._allowlist = tuple(allowlist)
         self._denylist = tuple(denylist)
-        self._min_score = min_score
         self._cache = DetectionCache() if cache is None else cache
         self._fingerprint = fingerprint(self._recognizers)
 
@@ -339,7 +343,10 @@ class Nona:
         """The pieces of the names that lost a partial overlap, in what nothing covers once the look-ahead
         has run (`core/resolver.py`, step 5, #89): they never change a span kept, nor what the look-ahead
         finds. A piece carries no seeds, so it never spreads."""
-        return fill_gaps(spans, candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+        options = self._resolving
+        return fill_gaps(
+            spans, candidates, text, min_score=options["min_score"], allowlist=options["allowlist"]
+        )
 
     @staticmethod
     def _look_ahead_words(

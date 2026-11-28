@@ -27,8 +27,8 @@ _MAX_RUN = 42  # longest IBAN (34) with a separator every 4 characters
 
 def _token_starts(text: str, token: re.Pattern[str]) -> Iterator[int]:
     """Start of every token that isn't glued to a preceding letter or digit. `_` separates words, as in
-    `core/boundaries.py`: `card_4242…` and `4242…_` are numbers (#93), though after `x_` a number is one
-    token (`_scan`)."""
+    `core/boundaries.py`: `card_4242…` and `4242…_` are numbers (#93), though after `x_` a short token
+    stands alone (`_scan`)."""
     for m in token.finditer(text):
         if m.start() == 0 or not text[m.start() - 1].isalnum():
             yield m.start()
@@ -64,8 +64,15 @@ def _scan(
         if start < covered:
             continue
         ends = _run_ends(text, start, token)
-        if start >= 2 and text[start - 1] == "_" and text[start - 2].isalnum():
-            # One token only after `x_`: in `PERSON_2 4139 4411 7715 1620` the `2` is the placeholder's.
+        if (
+            start >= 2
+            and text[start - 1] == "_"
+            and text[start - 2].isalnum()
+            and ends
+            and ends[0] - start < 4
+        ):
+            # A short first token after `x_` stands alone: in `PERSON_2 4139 4411 7715 1620` the `2` is the
+            # placeholder's. A full group starts a run (`card_4242 4242 4242 4242`).
             ends = ends[:1]
         for end in reversed(ends):
             if accept(text[start:end]):

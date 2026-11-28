@@ -49,8 +49,8 @@ LOOSE_LEFT = r"(?<![A-Za-z0-9])"
 LOOSE_RIGHT = r"(?!\d)"
 
 # What the structured recognizers' second pass turns hidden characters into (`core/pipeline.py`, #93): not a
-# space, so two numbers it separates stay apart, and no recognizer reads it as part of a value. A context
-# cue reads past it as past a space (`ref AB22123456`, `recognizers/phone.py`).
+# space, so two numbers it separates stay apart, and no recognizer reads it as part of a value. No context cue
+# reads past it either: in `commande tel22123456` the blanked `tel` keeps `commande` from lowering the phone.
 BLANK = "|"
 
 _STRICT_END = re.compile(RIGHT)
