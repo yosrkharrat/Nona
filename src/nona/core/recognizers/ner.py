@@ -64,6 +64,7 @@ from nona.core.recognizers.gazetteer import (
     ARABIC_STOP,
     FIRST,
     NAMES,
+    SPEECH_PHRASE,
     STOPWORDS,
     STRONG_PHRASE,
     WEAK_PHRASE,
@@ -494,9 +495,15 @@ def _cased(word: str) -> bool:
 
 
 def _person_cue(text: str, start: int) -> bool:
-    """A person cue right before `start`, on the same line: an honorific, or a gazetteer cue phrase."""
+    """A person cue right before `start`, on the same line: an honorific, or a gazetteer cue phrase (speech
+    verbs included, #50)."""
     before = normalize(text[max(0, start - 30) : start]).text
     words = before.split()
     if words and _honorific(words[-1]) and before[-1:] in (" ", "\t"):
         return True
-    return bool(STRONG_PHRASE.search(before) or WEAK_PHRASE.search(before) or _WITH.search(before))
+    return bool(
+        STRONG_PHRASE.search(before)
+        or SPEECH_PHRASE.search(before)
+        or WEAK_PHRASE.search(before)
+        or _WITH.search(before)
+    )

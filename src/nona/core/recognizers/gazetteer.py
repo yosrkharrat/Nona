@@ -14,21 +14,36 @@ unlisted word must look like a family name: the article, then a word ending in �
   name phrases (`je m'appelle`, `my name is`, `esmou`). A strong cue starts a run on a capitalized word, or on
   any word in Arabic script, even one that isn't in the lists; such a run may hold two unlisted words
   (`je m'appelle Kenza Haddad`). `M.` between a number and a unit is not a cue (`2 M. Dinars`, million).
+  Darija kinship and relation words are strong too (`khouya`, `okhti`, `sa7bi`, `jari`, `mart`, `weld`,
+  `خويا`, `صاحبي`, #50).
+- *speech*: Darija speech and contact verbs (`9olt l`, `kallamt`, `b3atht l`, `sa2alt`, `7kit m3a`, `chouft`,
+  `قلت ل`, `كلمت`, #50). They lift a listed name, even lowercase or a common word (`kallamt amal`, 0.9), but
+  never start a run on an unlisted word: `kallamt Ooredoo` stays unmasked, and an unlisted name is left to
+  the NER model. A verb agreeing with a person right after a listed name does the same (`amal 9alli`,
+  `karim ja`, `نور قالت`), unless the word carries an article (`el nour ja`, `النور جا`).
 - *weak*: words that are honorifics in one language and ordinary words in another (`si` is "if" in French,
   `me` in English, `3am` "year" in Darija), Darija function words (`m3a` "with", `ena` "I": `m3a Ooredoo`,
   `Ena Tounsi`), and greetings (`Bonjour`, `Merci`, `Hi`, `3aslema`). A weak cue only lifts a listed name:
   `Merci Beaucoup` and `Hello World` stay unmasked.
-The cue itself is never part of the span, and a cue doesn't reach across a line break.
+The cue itself is never part of the span, and a cue doesn't reach across a line break. Some cues also read as
+ordinary words, and the owner kept them knowing it (#50): `rajel karim` (a generous man), `weld 3aziz`,
+`chouft amal` (I saw hope), `sana jet` (the year came) are masked.
+
+**Never a name** (#50): fixed expressions in which a common-word name is the ordinary word: `mabrouk 3lik`,
+`alf mabrouk`, `3id mabrouk`, `ramdhan karim`, `rabbi karim`, `sana sa3ida`, `kol sana`, `3andi amal`,
+`amal kbir`, `nour 3iniya`, `رحمة الله`, and their Arabic forms. Only a strong cue overrides them
+(`Mme Mabrouk !`).
 
 **Scores** (the resolver keeps spans at 0.5 and above by default):
 
 | Run | Score |
 |---|---|
 | after a strong cue | 0.95 |
+| a listed name after a speech verb, or before a verb agreeing with a person (any case) | 0.9 |
 | capitalized, two words or more, with a listed name | 0.9 |
 | capitalized single listed name | 0.85 |
 | after a weak cue, capitalized, with a listed name | 0.8 |
-| Arabic script, listed name (a common-word one only after a weak cue: `مرحبا نور`) | 0.8 |
+| Arabic script, listed name (a common-word one only after a cue: `مرحبا نور`) | 0.8 |
 | lowercase or partly capitalized, 2+ words, a listed name that isn't a common word (see below) | 0.7 |
 | lowercase Tunisian first name (Arabizi writes names lowercase: `sami`, `mo7amed`) | 0.6 |
 | common-word name (`Amal`, `Nour`), capitalized mid-sentence | 0.6 |
@@ -37,9 +52,6 @@ The cue itself is never part of the span, and a cue doesn't reach across a line 
 
 In lowercase, French and English first names are ordinary words (`claire`, `pierre`, and `marié`, which folds
 to `marie`). A run that is partly capitalized (`Nicolas ben Salem`) is scored on all its listed names.
-
-`Mabrouk` right before `!` or `3lik`/`3likom` ("congratulations to you") is not a name; #50 adds the full
-context rules.
 
 **Arabic.** Prepositions such as `على` ("on", which folds to the same letters as `علي`, Ali) are never names.
 A word that misses the lists is tried again without up to two leading clitics `و ف ب ل ك` (`لسامي`, `ولسامي`;
@@ -80,16 +92,17 @@ FIRST = _keys(data.FIRST_NAMES_TN + data.FIRST_NAMES_FR_EN) | _keys(
 )
 FIRST_TN = _keys(data.FIRST_NAMES_TN)
 LAST = _keys(data.SURNAMES_TN) | _keys(tuple(n for n in data.NAMES_AR if " " in n or n.startswith("ال")))
+# An Arabic name shares its Latin form's key (`كريم` → `karim`), so one list covers both scripts. The owner
+# decided Arabic script follows the Arabizi rule (#50): a bare `كريم`, like a lowercase `karim`, is masked
+# only with a cue. Accepted cost: a bare Arabic common-word name with nothing around it leaks.
 COMMON = _keys(data.COMMON_WORDS)
-# An Arabic name shares its Latin form's key (`كريم` → `karim`, to link across scripts), but whether it is an
-# ordinary word depends on the script: `Karim` is "generous" in Darija written in Latin letters, yet the list
-# only says so for the Arabic forms it names. Arabic-script words use this set.
-COMMON_AR = _keys(tuple(w for w in data.COMMON_WORDS if any("\u0600" <= c <= "\u06ff" for c in w)))
 
 
 def common(key: str | None, cased: bool) -> bool:
-    """Whether a listed name is also an ordinary word, in a script with capitals (`cased`) or without."""
-    return key in (COMMON if cased else COMMON_AR)
+    """Whether a listed name is also an ordinary word. The same in every script since #50; `cased` stays for
+    the callers that ask per script."""
+    del cased
+    return key in COMMON
 
 
 NAMES = FIRST | LAST
@@ -103,10 +116,37 @@ WEAK_HONORIFICS = frozenset({"si", "me", "m", "pr", "sir", "miss", "3am"})  # `3
 STRONG_HONORIFICS = HONORIFICS - WEAK_HONORIFICS
 # Matched on the normalized text that ends where the run starts. `[ \t]`, not `\s`, and `\Z`, not `$` (which
 # matches before a final newline): no cue across lines.
-STRONG_PHRASE = re.compile(
+_NAME_PHRASE = re.compile(
     r"(?<!\w)(?:je m['\u2019]appelle|m['\u2019]appelle|my name is|name is"
     r"|esmou|ismou|ism-ou|esmi|ismi|esm|اسمي|اسمه)[ \t]*[:,]?[ \t]*\Z"
 )
+# Arabic letters people spell either way: the normalized view keeps them, only canonical keys fold them.
+# Alef with or without hamza or madda, ta marbuta or heh, alef maqsura or yeh.
+_ALEFS = "\u0627\u0623\u0625\u0622"
+_TA_HEH = "\u0629\u0647"
+_YEHS = "\u0649\u064a"
+_AR_VARIANTS = {c: f"[{group}]" for group in (_ALEFS, _TA_HEH, _YEHS) for c in group}
+
+
+def _alternation(words: tuple[str, ...]) -> str:
+    """Cue words or phrases as one regex alternation on the normalized view, longest first: spaces match runs
+    of spaces or tabs (never a line break), Arabic letters their spelling variants."""
+
+    def one(word: str) -> str:
+        return "".join(
+            r"[ \t]+" if c == " " else _AR_VARIANTS.get(c, re.escape(c)) for c in normalize(word).text
+        )
+
+    return "|".join(one(w) for w in sorted(set(words), key=len, reverse=True))
+
+
+STRONG_PHRASE = re.compile(
+    rf"(?<![^\W_])(?:{_alternation(data.KIN_CUES)})[ \t]*[:,]?[ \t]*\Z|" + _NAME_PHRASE.pattern
+)
+SPEECH_PHRASE = re.compile(rf"(?<![^\W_])(?:{_alternation(data.SPEECH_CUES)})[ \t]*[:,]?[ \t]*\Z")
+# A verb agreeing with a person right after the name, in the same clause, and the article that rules it out.
+_VERB_AFTER = re.compile(rf"[ \t]+(?:{_alternation(data.VERBS_AFTER_NAME)})(?![^\W_])")
+_ARTICLE_BEFORE = re.compile(r"(?<![^\W_])(?:el|al|l)[ \t'\u2019]*\Z")
 WEAK_PHRASE = re.compile(
     r"(?<!\w)(?:bonjour|bonsoir|salut|merci|cher|chère|hi|hello|dear|thanks|thank you|3aslema|aslema|ahla"
     r"|ya|m3a|ena|مرحبا|شكرا)[ \t]*[:,!]?[ \t]*\Z"
@@ -174,8 +214,26 @@ class _Word:
     @property
     def stop(self) -> bool:
         return (
-            self.honorific or (self.text in STOPWORDS and self.key not in NAMES) or self.text in ARABIC_STOP
+            self.honorific
+            or (self.text in STOPWORDS and self.key not in NAMES)
+            or self.text in ARABIC_STOP
+            or (self.cap is not True and _fold_ar(self.text) in _CONTEXT_WORDS)
         )
+
+
+def _fold_ar(text: str) -> str:
+    """The Arabic spelling variants `_AR_VARIANTS` accepts, folded to one form."""
+    return text.translate(_AR_FOLD)
+
+
+_AR_FOLD = str.maketrans({c: group[0] for group in (_ALEFS, _TA_HEH, _YEHS) for c in group})
+# The one-word cues and verbs of #50 never join a name run unless capitalized: `sa7bi` (my friend) folds to
+# the name Sahbi, but in `sa7bi karim` it is the cue. `Sahbi Ben Salah` stays a name.
+_CONTEXT_WORDS = frozenset(
+    _fold_ar(normalize(w).text)
+    for w in data.KIN_CUES + data.SPEECH_CUES + data.VERBS_AFTER_NAME
+    if " " not in w
+)
 
 
 # Arabic prepositions and pronouns, compared before folding: `على` ("on") would fold to `علي`, Ali.
@@ -247,6 +305,7 @@ class GazetteerRecognizer:
         for s, e, _ in places:
             taken[s:e] = b"\x01" * (e - s)
         words = [w for w in _words(doc) if not any(taken[w.start : w.end])]
+        never = _never_names(doc.text)
         spans = [to_span(doc, s, e, EntityType.LOCATION, score, self.name) for s, e, score in places]
         i = 0
         while i < len(words):
@@ -255,9 +314,15 @@ class GazetteerRecognizer:
                 i += 1
                 continue
             run = words[i:end]
-            if not cue and run[0].key == "mabrouk" and _BLESSING_AFTER.match(doc.text, run[0].end):
-                i = end  # `Mabrouk !`, `Mabrouk 3lik`: congratulations. After a cue (`Mme Mabrouk !`), a name
+            if cue != "strong" and (
+                (len(run) == 1 and run[0].start + run[0].clitic in never)
+                or (run[0].key == "mabrouk" and _BLESSING_AFTER.match(doc.text, run[0].end))
+            ):
+                # `Mabrouk !`, `ramdhan karim`: the ordinary word; a name after a strong cue (`Mme Mabrouk`)
+                i = end
                 continue
+            if cue in ("", "weak") and _verb_after(doc, run):
+                cue = "speech"
             start = run[0].start + run[0].clitic
             spans.append(to_span(doc, start, run[-1].end, EntityType.PERSON, _score(run, cue), self.name))
             i = end
@@ -344,6 +409,8 @@ def _cue(doc: NormalizedDoc, words: list[_Word], i: int) -> str:
     before = doc.text[max(0, words[i].start - 30) : words[i].start]
     if STRONG_PHRASE.search(before):
         return "strong"
+    if SPEECH_PHRASE.search(before):
+        return "speech"
     if WEAK_PHRASE.search(before):
         return "weak"
     return ""
@@ -356,9 +423,11 @@ def _score(run: list[_Word], cue: str) -> float:
         return 0.95
     if not listed:
         return 0.3  # an unlisted word after a weak cue, or a particle alone
+    if cue == "speech":
+        return 0.9
     caps = [w.cap for w in run]
     if None in caps:  # Arabic script
-        return 0.3 if common_only and len(run) == 1 and cue != "weak" else 0.8
+        return 0.3 if common_only and len(run) == 1 and not cue else 0.8
     if all(caps):
         if cue == "weak":
             return 0.8
@@ -379,6 +448,36 @@ def _score(run: list[_Word], cue: str) -> float:
     if len(run) > 1:
         return 0.7
     return 0.6 if any(w.key in FIRST_TN for w in tunisian) else 0.3
+
+
+def _verb_after(doc: NormalizedDoc, run: list[_Word]) -> bool:
+    """A verb agreeing with a person right after the run (`amal 9alli`), and no article on its first word
+    (`el nour ja`, `النور جا`: the light came)."""
+    first = run[0]
+    if (
+        first.text in ("el", "al")
+        or first.text.startswith("ال")
+        or _ARTICLE_BEFORE.search(doc.text, max(0, first.start - 6), first.start)
+    ):
+        return False
+    return _VERB_AFTER.match(doc.text, run[-1].end) is not None
+
+
+def _never_pattern(before: str, name: str, after: str) -> re.Pattern[str]:
+    left = rf"(?<![^\W_])(?:{_alternation((before,))})[ \t]+" if before else r"(?<![^\W_])"
+    right = rf"(?=[ \t]+(?:{_alternation((after,))})(?![^\W_]))" if after else r"(?![^\W_])"
+    return re.compile(left + "(?P<n>" + _alternation((name,)) + ")" + right)
+
+
+@functools.cache
+def _never_patterns() -> tuple[re.Pattern[str], ...]:
+    return tuple(_never_pattern(b, n, a) for b, n, a in data.NEVER_NAME_EXPRESSIONS)
+
+
+def _never_names(text: str) -> set[int]:
+    """Where a common-word name is the ordinary word of a fixed expression (normalized offsets): `ramdhan
+    karim`, `3andi amal`. One linear pass per expression."""
+    return {m.start("n") for p in _never_patterns() for m in p.finditer(text)}
 
 
 # Latin letters and their accented forms: `Gabès`, `Gabes` and `GABES` are one city.

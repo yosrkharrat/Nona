@@ -376,9 +376,8 @@ def test_a_confident_word_with_digits_is_never_unmasked(text: str, predicted: st
 
 def test_a_digit_name_is_masked_through_the_pipeline() -> None:
     nona = pipeline({"Na3ima Ka3bi": ("person", 0.95)})
-    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == (
-        "Rdv m3a PERSON_1 PERSON_2 ghodwa",
-    )
+    # One span since #50 lists `Naima`: the gazetteer takes `Na3ima Ka3bi` as one name after `m3a`
+    assert nona.anonymize_messages(["Rdv m3a Na3ima Ka3bi ghodwa"]).texts == ("Rdv m3a PERSON_1 ghodwa",)
 
 
 def test_a_known_name_written_later_with_a_digit_is_not_sent_in_clear() -> None:

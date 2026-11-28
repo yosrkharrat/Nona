@@ -36,6 +36,9 @@ FIRST_NAMES_TN: tuple[str, ...] = (
     "Meriem", "Mouna", "Monia", "Nadia", "Najet", "Nawel", "Nesrine", "Nour", "Nourhene", "Olfa", "Ons",
     "Rahma", "Rania", "Rim", "Rihab", "Rym", "Sabrine", "Safa", "Salma", "Samia", "Sana", "Sarra", "Siwar",
     "Sonia", "Souad", "Syrine", "Takwa", "Wafa", "Wiem", "Yosra", "Zeineb", "Zohra",
+    # added with #50's common-word list
+    # (Yasmine is on the owner's list too, but it is a held-out bench name, `tn2`: it stays unlisted)
+    "Hayet", "Farah", "Jamila", "Naima", "Kmar", "Chams", "Warda", "Nessma", "Aziza", "Habiba",
 )  # fmt: skip
 
 FIRST_NAMES_FR_EN: tuple[str, ...] = (
@@ -84,6 +87,55 @@ COMMON_WORDS: tuple[str, ...] = (
     "Sabrine", "Mounir", "Monia", "Hanen", "Latifa", "Jalel",
     # `sahbi` (my friend), `saber` (patient), `seif` (summer, sword), `anouar` (lights)
     "Sahbi", "Saber", "Seif", "Anouar",
+    # #50, validated by the owner: `hayet` (life), `farah` (joy), `jamila` (beautiful), `naima` (bliss),
+    # `kmar` (moon), `chams` (sun), `warda` (rose), `nessma` (breeze), `dorra` (pearl), `amira` (princess),
+    # `bechir` (bearer of good news), `aziza` (dear), `habiba` (beloved). `yasmine` (jasmine) is a held-out
+    # bench name, so it isn't listed at all.
+    "Hayet", "Farah", "Jamila", "Naima", "Kmar", "Chams", "Warda", "Nessma", "Dorra", "Amira", "Bechir",
+    "Aziza", "Habiba",
+)  # fmt: skip
+
+# Context lists of #50, validated by the owner (a native Darija speaker) on 2026-11-22. Arabizi digits:
+# 3 = ع, 7 = ح, 9 = ق, 5 = خ. Matched on the normalized view; Arabic spelling variants (hamza on alef, ta
+# marbuta or heh, alef maqsura or yeh) are handled by the recognizer.
+
+# Kinship and relations: a person comes next. Strong cues. `rajel` and `weld` are kept knowing that
+# `rajel karim` (a generous man) and `weld 3aziz` (a dear boy) get masked.
+KIN_CUES: tuple[str, ...] = (
+    "khouya", "khou", "okhti", "o5ti", "ou5ti", "5ti", "sa7bi", "sa7bti", "s7abi", "jari", "jarti", "mart",
+    "rajel", "weld",
+    "خويا", "أختي", "ختي", "صاحبي", "صاحبتي", "جاري", "جارتي", "مرت", "راجل", "ولد",
+)  # fmt: skip
+
+# Speech and contact verbs, with their preposition: they lift a listed name only (owner's choice, 2026-11-28),
+# so `kallamt Ooredoo` stays unmasked. `chouft` is kept knowing `chouft amal` (I saw hope) gets masked. In
+# Arabic the `ل` may be glued to the name (`قلت لكريم`): the recognizer strips it as a clitic.
+SPEECH_CUES: tuple[str, ...] = (
+    "9olt l", "9otlou", "9al l", "kallamt", "kallemt", "kalamt", "3ayatt l", "3ayyatt l", "telfent l",
+    "b3atht l", "ba3tht l", "sa2alt", "sa2elt", "7kit m3a", "stannit", "chouft",
+    "قلت ل", "قلت", "كلمت", "عيطت ل", "عيطت", "تلفنت ل", "تلفنت", "بعثت ل", "بعثت", "سألت", "حكيت مع",
+)  # fmt: skip
+
+# Verbs agreeing with a person, right after the name. `ja`/`jet`/`mcha`/`mchet` are kept knowing `sana jet`
+# (the year came) gets masked.
+VERBS_AFTER_NAME: tuple[str, ...] = (
+    "9alli", "9al", "9alet", "kallamni", "3ayetli", "b3athli", "ja", "jet", "mcha", "mchet",
+    "قالي", "قال", "قالت", "كلمني", "عيطلي", "بعثلي", "جا", "جات", "مشى", "مشات",
+)  # fmt: skip
+
+# Fixed expressions in which a common-word name is the ordinary word: (word before, the name, word after).
+# Never a name unless a strong cue comes right before (`Mme Mabrouk !`). `Mabrouk` before `!` or `3lik` is
+# handled with its spelling variants in the recognizer. Expressions with no listed name in them (`ya 7abibi`,
+# `rabbi ysahel`, `inchallah`, `wa9t essala`) need no entry: their words aren't names.
+NEVER_NAME_EXPRESSIONS: tuple[tuple[str, str, str], ...] = (
+    ("alf", "mabrouk", ""), ("", "mabrouk", "el bac"), ("3id", "mabrouk", ""), ("3idek", "mabrouk", ""),
+    ("ألف", "مبروك", ""), ("", "مبروك", "عليك"), ("عيد", "مبروك", ""),
+    ("ramdhan", "karim", ""), ("romdhan", "karim", ""), ("ramadan", "karim", ""), ("rabbi", "karim", ""),
+    ("allah", "karim", ""), ("رمضان", "كريم", ""), ("ربي", "كريم", ""), ("الله", "كريم", ""),
+    ("", "sana", "sa3ida"), ("kol", "sana", ""), ("", "سنة", "سعيدة"), ("كل", "سنة", ""),
+    ("3andi", "amal", ""), ("fama", "amal", ""), ("", "amal", "kbir"), ("عندي", "أمل", ""),
+    ("عندي", "أمال", ""), ("", "رحمة", "الله"), ("", "رحمه", "الله"),
+    ("", "nour", "3iniya"), ("", "نور", "عينيا"),
 )  # fmt: skip
 
 CITIES: tuple[str, ...] = (
