@@ -49,6 +49,7 @@ jobs:
   model:
     name: Model tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # a stalled Hub download must not hold the check for GitHub's 6 hours
     env:
       NONA_MODELS_DIR: ${{ github.workspace }}/.models
       NONA_MODEL_TESTS: required  # fail instead of skipping when the model is missing (tests/model)
@@ -59,19 +60,27 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
+          cache-suffix: ner  # its own uv cache, with torch; the other jobs install without the extra
       - run: uv sync --locked --extra ner
       # Keyed on every pinned repo, revision and file hash: a new pin downloads once, then hits the cache.
       - id: pins
         run: |
           key=$(uv run python -c "import hashlib; from nona.models import PINNED as P; print('-'.join(r.folder for r in P.repos) + '-' + hashlib.sha256(repr(P).encode()).hexdigest()[:16])")
           echo "key=nona-models-$key" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: models
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .models
           key: ${{ steps.pins.outputs.key }}
       # On a cache hit this downloads nothing, but still checks every file against its pinned SHA-256:
       # a cache entry that doesn't match is replaced, never loaded.
       - run: uv run nona models pull
+      # Saved once verified, before the tests: a failing test doesn't make the next run download 1.2 GB again.
+      - if: steps.models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .models
+          key: ${{ steps.pins.outputs.key }}
       - run: uv run pytest -m model
 
   audit:
