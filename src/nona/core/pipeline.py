@@ -26,13 +26,14 @@ message-local rules are in `core/recognizers/ner.py`):
 - the resolver keeps a propagated form over a recognizer span with the same extent and another type
   (`core/resolver.py`), so a name keeps the placeholder it was given.
 
-A value glued to a placeholder the user typed (`22 123 456PERSON_1`, `a@x.comPERSON_1`) is found too, #85. The
-structured recognizers end a value where a word ends, so the glued placeholder hid it. They run a second time
-on the normalized view with every placeholder in its issued shape blanked out, even glued on its left
-(`GLUED_PLACEHOLDER`), same length, and what that pass finds clear of the placeholders is added to the first
-pass. Adding only, never replacing: `PERSON_1@example.com` is still the e-mail the first pass found. Name
-recognizers aren't run again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict boundaries
-decide (`core/boundaries.py`, #87).
+A value glued to a placeholder the user typed (`22 123 456PERSON_1`, `a@x.com_PERSON_1`) is found too, #85.
+The structured recognizers end a value where a word ends, so the glued placeholder hid it. When a placeholder
+in its issued shape (`GLUED_PLACEHOLDER`) touches something other than a space, they run a second time on
+the normalized view with every such placeholder blanked out, same length, along with a `_` or `-` glued
+right before it. What that pass finds clear of the blanked characters is added to the first pass. Adding
+only, never replacing: `PERSON_1@example.com` is still the e-mail the first pass found. People, places and
+organizations aren't searched again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict
+boundaries decide (`core/boundaries.py`, #87).
 
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
@@ -44,7 +45,7 @@ import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
-from nona.core.boundaries import GLUED_PLACEHOLDER, NAME_TYPES, PROCLITICS
+from nona.core.boundaries import GLUED_PLACEHOLDER, PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
 from nona.core.normalize import DROPPED, NormalizedDoc, normalize
@@ -79,16 +80,29 @@ STRONG_CUE_SCORE = 0.95  # what the gazetteer gives a run after a strong cue (`M
 # Between two names of one list of people: `Sami w Ahmed`, `Sami et Ahmed`, `سامي و أحمد`.
 _AND = re.compile(r"[ \t]+(?:w|wa|et|and|و)[ \t]+")
 _RETYPED = frozenset({EntityType.LOCATION, EntityType.ORGANIZATION})
+# Read in context, never searched again on the blanked view (#85, #87). CUSTOM is: an ID regex is structured.
+_PROSE = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION})
 
 
-def _blank(doc: NormalizedDoc, holes: Sequence[tuple[int, int]]) -> NormalizedDoc:
-    """`doc` with every normalized character that comes from a typed placeholder turned into a space: same
-    length and origins, so spans found in it map back to the original text unchanged (#85)."""
-    chars = list(doc.text)
-    for i, (start, end) in enumerate(doc.origin):
-        if any(start < b and a < end for a, b in holes):
-            chars[i] = " "
-    return NormalizedDoc(doc.original, "".join(chars), doc.origin)
+def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
+    """`doc` with every typed placeholder, and a `_` or `-` glued right before it, turned into spaces, and
+    the blanked original characters; `None` when no placeholder touches anything but spaces, as then none
+    can hide a value. Same length and origins, so spans found in it map back to the original text (#85).
+    Linear in the text's length, however many placeholders it holds."""
+    text = doc.original
+    mask = bytearray(len(text))
+    glued = False
+    for m in GLUED_PLACEHOLDER.finditer(text):
+        start, end = m.span()
+        if start and text[start - 1] in "_-":
+            start -= 1
+        mask[start:end] = b"\x01" * (end - start)
+        glued = glued or (m.start() > 0 and not text[m.start() - 1].isspace())
+        glued = glued or (end < len(text) and not text[end].isspace())
+    if not glued:
+        return None
+    chars = [" " if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
+    return NormalizedDoc(text, "".join(chars), doc.origin), mask
 
 
 def _cased(word: str) -> bool:
@@ -302,18 +316,18 @@ class Nona:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        holes = [m.span() for m in GLUED_PLACEHOLDER.finditer(text)]
-        blanked = _blank(doc, holes) if holes else None
+        blanked = _blanked(doc)
         found: list[Span] = []
         for recognizer in self._recognizers:
             try:
-                spans = recognizer.detect(doc)
-                if blanked is not None and not recognizer.supported_types & NAME_TYPES:
+                spans = list(recognizer.detect(doc))
+                if blanked is not None and recognizer.supported_types - _PROSE:
                     seen = set(spans)
+                    view, mask = blanked
                     spans.extend(
                         s
-                        for s in recognizer.detect(blanked)
-                        if s not in seen and not any(s.start < b and a < s.end for a, b in holes)
+                        for s in recognizer.detect(view)
+                        if s.type not in _PROSE and s not in seen and not any(mask[s.start : s.end])
                     )
                 found.extend(spans)
             except Exception as exc:

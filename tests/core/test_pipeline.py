@@ -179,16 +179,22 @@ _TYPED = ["PERSON_1", "PHONE_1", "EMAIL_2", "LOCATION_12"]
 
 @settings(max_examples=60, deadline=None)
 @given(
-    st.sampled_from(_GLUED_VALUES), st.sampled_from(_TYPED), st.sampled_from(["tel ", "mail: ", "", "x\n"])
+    st.sampled_from(_GLUED_VALUES),
+    st.sampled_from(["", "_", "-"]),
+    st.sampled_from(_TYPED),
+    st.sampled_from(["tel ", "mail: ", "", "x\n"]),
 )
-@example("22 123 456", "PERSON_1", "tel ")  # the issue's examples
-@example("a@x.com", "PERSON_1", "mail ")
-def test_a_value_glued_before_a_typed_placeholder_is_masked(value: str, typed: str, prefix: str) -> None:
+@example("22 123 456", "", "PERSON_1", "tel ")  # the issue's examples
+@example("a@x.com", "", "PERSON_1", "mail ")
+@example("a@x.com", "_", "PERSON_1", "mail ")  # the e-mail's own guard refuses `_` and `-` after it
+def test_a_value_glued_before_a_typed_placeholder_is_masked(
+    value: str, sep: str, typed: str, prefix: str
+) -> None:
     """#85: a typed placeholder glued after a structured value hid it from its recognizer, so the value went
     upstream in clear on first mention. The typed placeholder stays, its number is never issued, and the
     answer restores to the text exactly."""
     n = Nona()
-    text = f"{prefix}{value}{typed} merci"
+    text = f"{prefix}{value}{sep}{typed} merci"
     result = n.anonymize(text)
     assert value not in result.text
     assert typed in result.text
@@ -214,6 +220,38 @@ def test_a_value_glued_before_a_typed_placeholder_is_masked_when_re_sent() -> No
 )
 def test_the_second_pass_only_adds(text: str, masked: str) -> None:
     assert Nona().anonymize(text).text == masked
+
+
+class Counting:
+    """A custom structured recognizer that counts its passes."""
+
+    name = "counting"
+    supported_types = frozenset({EntityType.CUSTOM})
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def detect(self, doc: NormalizedDoc) -> list[Span]:
+        self.calls += 1
+        return [
+            Span(m.start(), m.end(), EntityType.CUSTOM, 1.0, self.name)
+            for m in re.finditer(r"(?<![a-z0-9])emp-\d{5}(?![a-z0-9])", doc.text)
+        ]
+
+
+@pytest.mark.parametrize(
+    ("text", "calls", "masked"),
+    [
+        ("id EMP-12345PERSON_1", 2, "id CUSTOM_1PERSON_1"),  # a custom ID is searched again
+        ("PERSON_1 EMP-12345 PERSON_1", 1, "PERSON_1 CUSTOM_1 PERSON_1"),  # nothing glued, one pass
+        ("pas de placeholder", 1, "pas de placeholder"),
+    ],
+)
+def test_the_second_pass_runs_only_when_a_placeholder_is_glued(text: str, calls: int, masked: str) -> None:
+    recognizer = Counting()
+    n = Nona([*Nona()._recognizers, recognizer], policies=ALL_REVERSIBLE)
+    assert n.anonymize(text).text == masked
+    assert recognizer.calls == calls
 
 
 @pytest.mark.parametrize(
@@ -313,6 +351,7 @@ def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> Non
         "a::-@example.com",
         "٢+2522 123 456",  # glued to `2` on the normalized view
         "aـ+2522 123 456",  # glued to `a` past a tatweel
+        "PERSON_1\u0662\u0662\u0661\u0662\u0663\u0664\u0665\u0666",  # Arabic-Indic phone after one, #85
     ],
 )
 def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
