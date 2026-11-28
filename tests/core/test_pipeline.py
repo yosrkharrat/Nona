@@ -180,7 +180,7 @@ _TYPED = ["PERSON_1", "PHONE_1", "EMAIL_2", "LOCATION_12"]
 @settings(max_examples=60, deadline=None)
 @given(
     st.sampled_from(_GLUED_VALUES),
-    st.sampled_from(["", "_", "-"]),
+    st.sampled_from(["", "_", "-", "__", "-_"]),
     st.sampled_from(_TYPED),
     st.sampled_from(["tel ", "mail: ", "", "x\n"]),
 )
@@ -220,6 +220,36 @@ def test_a_value_glued_before_a_typed_placeholder_is_masked_when_re_sent() -> No
 )
 def test_the_second_pass_only_adds(text: str, masked: str) -> None:
     assert Nona().anonymize(text).text == masked
+
+
+_AR_PHONE = "\u0662\u0662\u0661\u0662\u0663\u0664\u0665\u0666"  # 22123456 in Arabic-Indic digits
+
+
+@pytest.mark.parametrize(
+    ("messages", "masked", "restored"),
+    [
+        # masking the card puts `]` before the typed PERSON_1: restore would write Sami there
+        (
+            ["Sami est la", "carte 4242424242424242PERSON_1 merci"],
+            "carte [CARD]PERSON_2 merci",
+            "carte [CARD]PERSON_1 merci",
+        ),
+        (["mail b@y.com", f"EMAIL_1{_AR_PHONE} merci"], "EMAIL_2PHONE_1 merci", "EMAIL_1PHONE_1 merci"),
+        # glued to a digit once masked, as on main: restore doesn't touch it
+        (["tel 22123456", "x 22123457PHONE_1"], "x PHONE_2PHONE_1", None),
+        (["ip 10.9.9.9", "ip PERSON_1_10.1.2.3 ok"], "ip PERSON_1_IP_ADDRESS_2 ok", None),
+    ],
+)
+def test_a_typed_placeholder_next_to_a_masked_value_never_restores_to_another_value(
+    messages: list[str], masked: str, restored: str | None
+) -> None:
+    """Re-review of #92: once the glued value is masked, restore may find the typed placeholder. If its
+    number was issued earlier, it gets a fresh one and comes back as typed."""
+    n = Nona()
+    conv = n.anonymize_messages(messages)
+    assert conv.messages[-1].text == masked
+    expected = messages[-1] if restored is None else restored
+    assert n.restore(masked, conv.mapping) == expected
 
 
 class Counting:

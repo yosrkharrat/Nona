@@ -28,12 +28,12 @@ message-local rules are in `core/recognizers/ner.py`):
 
 A value glued to a placeholder the user typed (`22 123 456PERSON_1`, `a@x.com_PERSON_1`) is found too, #85.
 The structured recognizers end a value where a word ends, so the glued placeholder hid it. When a placeholder
-in its issued shape (`GLUED_PLACEHOLDER`) touches something other than a space, they run a second time on
-the normalized view with every such placeholder blanked out, same length, along with a `_` or `-` glued
-right before it. What that pass finds clear of the blanked characters is added to the first pass. Adding
-only, never replacing: `PERSON_1@example.com` is still the e-mail the first pass found. People, places and
-organizations aren't searched again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict
-boundaries decide (`core/boundaries.py`, #87).
+in its issued shape (`GLUED_PLACEHOLDER`) touches something other than a space, they run a second time on the
+normalized view with every such placeholder blanked out, same length, along with the `_` and `-` glued to it.
+What that pass finds clear of the blanked characters is added to the first pass. Adding only, never replacing:
+`PERSON_1@example.com` is still the e-mail the first pass found. People, places and organizations aren't
+searched again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict boundaries decide
+(`core/boundaries.py`, #87).
 
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
@@ -80,12 +80,13 @@ STRONG_CUE_SCORE = 0.95  # what the gazetteer gives a run after a strong cue (`M
 # Between two names of one list of people: `Sami w Ahmed`, `Sami et Ahmed`, `سامي و أحمد`.
 _AND = re.compile(r"[ \t]+(?:w|wa|et|and|و)[ \t]+")
 _RETYPED = frozenset({EntityType.LOCATION, EntityType.ORGANIZATION})
-# Read in context, never searched again on the blanked view (#85, #87). CUSTOM is: an ID regex is structured.
+# Read in context, never searched again on the blanked view (#85, #87). A CUSTOM recognizer is: an ID regex
+# is structured.
 _PROSE = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION})
 
 
 def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
-    """`doc` with every typed placeholder, and a `_` or `-` glued right before it, turned into spaces, and
+    """`doc` with every typed placeholder, and the `_` and `-` glued to either side, turned into spaces, and
     the blanked original characters; `None` when no placeholder touches anything but spaces, as then none
     can hide a value. Same length and origins, so spans found in it map back to the original text (#85).
     Linear in the text's length, however many placeholders it holds."""
@@ -94,11 +95,13 @@ def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
     glued = False
     for m in GLUED_PLACEHOLDER.finditer(text):
         start, end = m.span()
-        if start and text[start - 1] in "_-":
+        while start and text[start - 1] in "_-" and not mask[start - 1]:
             start -= 1
+        while end < len(text) and text[end] in "_-":
+            end += 1
         mask[start:end] = b"\x01" * (end - start)
         glued = glued or (m.start() > 0 and not text[m.start() - 1].isspace())
-        glued = glued or (end < len(text) and not text[end].isspace())
+        glued = glued or (m.end() < len(text) and not text[m.end()].isspace())
     if not glued:
         return None
     chars = [" " if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
