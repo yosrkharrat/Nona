@@ -24,6 +24,7 @@ from enum import StrEnum
 
 from nona.core.boundaries import (
     ANY_PLACEHOLDER,
+    GLUED_PLACEHOLDER,
     NAME_TYPES,
     composes_after,
     loose_at,
@@ -112,8 +113,11 @@ def fold_surface(surface: str) -> str:
 
 
 def reserved_numbers(text: str) -> list[tuple[EntityType, int]]:
-    """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued."""
-    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in ANY_PLACEHOLDER.finditer(text)]
+    """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued. Also
+    one glued on its left in its issued shape: `a@x.comEMAIL_1` must not go upstream as `EMAIL_1EMAIL_1`
+    once the address is found (#85)."""
+    found = itertools.chain(ANY_PLACEHOLDER.finditer(text), GLUED_PLACEHOLDER.finditer(text))
+    return list(dict.fromkeys((_canonical_type(m.group(1)), int(m.group(2))) for m in found))
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,10 +197,32 @@ class Pseudonymizer:
         return text
 
     def _colliding_literals(self, original: str, kept: list[Span]) -> list[Span]:
-        """Placeholders the user wrote whose number was already issued (see `core/linking.py`)."""
+        """Placeholders the user wrote whose number was already issued (see `core/linking.py`).
+
+        Also one glued to a value masked in this message, which restore will find once the value is masked:
+        `4242424242424242PERSON_1` goes upstream as `[CARD]PERSON_1`, and `EMAIL_1٢٢…` (a phone in
+        Arabic-Indic digits) as `EMAIL_1PHONE_1`, #85. Left as is, restore would write the earlier
+        `PERSON_1` or `EMAIL_1` there. Judged on the text as it goes upstream, with the boundaries restore
+        holds that type to: strict for names, so `PERSON_1PHONE_1` keeps the number the user typed.
+        """
+        found = {m.span(): m for m in ANY_PLACEHOLDER.finditer(original)}
+        ends = {k.end: k for k in kept}
+        starts = {k.start for k in kept}
+        for m in GLUED_PLACEHOLDER.finditer(original):
+            before = ends.get(m.start())
+            if m.span() in found or (before is None and m.end() not in starts):
+                continue  # not next to a value masked here: restore sees it as on main
+            if before is None:
+                left = original[m.start() - 1 : m.start()]
+            else:  # `[CARD]` ends with `]`, `PHONE_1` with a digit
+                left = "]" if self.policy(before.type) is Policy.REDACT else "0"
+            right = "P" if m.end() in starts else original[m.end() : m.end() + 1]
+            seen_by_restore = strict_at if _canonical_type(m.group(1)) in NAME_TYPES else loose_at
+            if seen_by_restore(f"{left}P{right}", len(left), len(left) + 1):
+                found[m.span()] = m
         out: list[Span] = []
-        for m in ANY_PLACEHOLDER.finditer(original):
-            span = Span(m.start(), m.end(), _canonical_type(m.group(1)), 1.0, LITERAL_DETECTOR)
+        for (start, end), m in sorted(found.items()):
+            span = Span(start, end, _canonical_type(m.group(1)), 1.0, LITERAL_DETECTOR)
             if self._linker.issued(span.type, int(m.group(2))) and not any(span.overlaps(k) for k in kept):
                 out.append(span)
         return out

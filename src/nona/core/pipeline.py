@@ -26,6 +26,18 @@ message-local rules are in `core/recognizers/ner.py`):
 - the resolver keeps a propagated form over a recognizer span with the same extent and another type
   (`core/resolver.py`), so a name keeps the placeholder it was given.
 
+A value glued to a placeholder the user typed (`22 123 456PERSON_1`, `a@x.com_PERSON_1`) is found too, #85.
+The structured recognizers end a value where a word ends, so the glued placeholder hid it. When a placeholder
+in its issued shape (`GLUED_PLACEHOLDER`) touches something other than a space, they run a second time on the
+normalized view with every such placeholder blanked out, same length, along with the `_` and `-` glued to it.
+What that pass finds clear of the blanked characters is added to the first pass. Adding only, never replacing:
+`PERSON_1@example.com` is still the e-mail the first pass found. People, places and organizations aren't
+searched again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict boundaries decide
+(`core/boundaries.py`, #87). A value found this way is often glued to a placeholder once masked
+(`PHONE_1PERSON_1`, `PERSON_1PHONE_1`, `CUSTOM_1PERSON_1`): restore doesn't write those back, so the reply
+keeps the placeholder, but no value went upstream (#87). The second pass only searches what no first-pass span
+covers, so it never takes the resolver's pick away from a value found before.
+
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
 """
@@ -36,7 +48,7 @@ import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
 
-from nona.core.boundaries import PROCLITICS
+from nona.core.boundaries import GLUED_PLACEHOLDER, PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
 from nona.core.normalize import DROPPED, NormalizedDoc, normalize
@@ -71,6 +83,37 @@ STRONG_CUE_SCORE = 0.95  # what the gazetteer gives a run after a strong cue (`M
 # Between two names of one list of people: `Sami w Ahmed`, `Sami et Ahmed`, `سامي و أحمد`.
 _AND = re.compile(r"[ \t]+(?:w|wa|et|and|و)[ \t]+")
 _RETYPED = frozenset({EntityType.LOCATION, EntityType.ORGANIZATION})
+# Read in context, never searched again on the blanked view (#85, #87). A CUSTOM recognizer is: an ID regex
+# is structured.
+_PROSE = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION})
+
+
+def _gluing(c: str, *, right: bool = False) -> bool:
+    return c.isalnum() or c in "_-" or c in DROPPED or (right and c == "+")
+
+
+def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
+    """`doc` with every typed placeholder, and the `_` and `-` glued to either side, turned into spaces, and
+    the blanked original characters; `None` when no placeholder touches a character a value can end or
+    start with (a letter or a digit, `_`, `-`, `+` on the right, what normalization drops), as then none can
+    hide a value: `Merci PERSON_1.` costs no second pass. Same length and origins, so spans found in it map
+    back to the original text (#85). Linear in the text's length, however many placeholders it holds."""
+    text = doc.original
+    mask = bytearray(len(text))
+    glued = False
+    for m in GLUED_PLACEHOLDER.finditer(text):
+        start, end = m.span()
+        while start and text[start - 1] in "_-" and not mask[start - 1]:
+            start -= 1
+        while end < len(text) and text[end] in "_-":
+            end += 1
+        mask[start:end] = b"\x01" * (end - start)
+        glued = glued or (m.start() > 0 and _gluing(text[m.start() - 1]))
+        glued = glued or (m.end() < len(text) and _gluing(text[m.end()], right=True))
+    if not glued:
+        return None
+    chars = [" " if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
+    return NormalizedDoc(text, "".join(chars), doc.origin), mask
 
 
 def _cased(word: str) -> bool:
@@ -290,6 +333,21 @@ class Nona:
                 found.extend(recognizer.detect(doc))
             except Exception as exc:
                 raise DetectorError(recognizer.name) from exc
+        blanked = _blanked(doc)
+        if blanked is not None:
+            # Only where no first-pass span lies: a longer span cutting into one (an e-mail into a phone)
+            # would win the resolver and leave the rest of it in clear.
+            view, mask = blanked
+            for start, end in [(s.start, s.end) for s in found]:
+                mask[start:end] = b"\x01" * (end - start)
+            for recognizer in self._recognizers:
+                if not recognizer.supported_types - _PROSE:
+                    continue
+                try:
+                    more = recognizer.detect(view)
+                except Exception as exc:
+                    raise DetectorError(recognizer.name) from exc
+                found.extend(s for s in more if s.type not in _PROSE and not any(mask[s.start : s.end]))
         self._cache.put(key, found)
         return tuple(found)
 

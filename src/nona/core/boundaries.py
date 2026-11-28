@@ -78,6 +78,14 @@ TYPED_PLACEHOLDER = re.compile(
     + "|".join(sorted((t.value for t in EntityType), key=len, reverse=True))
     + r")_\d{1,6}(?!\d)"
 )
+# The same, glued to whatever is on its left (`22 123 456PERSON_1`, `a@x.comEMAIL_1`), and ended by an
+# ASCII digit only, as issued: `PERSON_1` stops before a phone written in Arabic-Indic digits. Group 1
+# is the type, group 2 the number. To blank placeholders out before the structured recognizers' second pass
+# (`core/pipeline.py`, #85), which only adds, and to reserve their numbers (`reserved_numbers`). With no left
+# boundary it also matches inside upper-case words (`IPHONE_12` reserves PHONE 12): a number skipped, no leak.
+GLUED_PLACEHOLDER = re.compile(
+    "(" + "|".join(sorted((t.value for t in EntityType), key=len, reverse=True)) + r")_([0-9]{1,6})(?![0-9])"
+)
 
 
 def strict_at(text: str, start: int, end: int) -> bool:

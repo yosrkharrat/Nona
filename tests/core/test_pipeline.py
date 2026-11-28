@@ -173,6 +173,140 @@ def test_a_structured_value_glued_to_a_letter_round_trips() -> None:
         assert n.restore(result.text, result.mapping) == text
 
 
+_GLUED_VALUES = ["22 123 456", "+216 22 123 456", "a@x.com", "sami.ksouri@example.tn", "10.1.2.3"]
+_TYPED = ["PERSON_1", "PHONE_1", "EMAIL_2", "LOCATION_12"]
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    st.sampled_from(_GLUED_VALUES),
+    st.sampled_from(["", "_", "-", "__", "-_"]),
+    st.sampled_from(_TYPED),
+    st.sampled_from(["tel ", "mail: ", "", "x\n"]),
+)
+@example("22 123 456", "", "PERSON_1", "tel ")  # the issue's examples
+@example("a@x.com", "", "PERSON_1", "mail ")
+@example("a@x.com", "_", "PERSON_1", "mail ")  # the e-mail's own guard refuses `_` and `-` after it
+def test_a_value_glued_before_a_typed_placeholder_is_masked(
+    value: str, sep: str, typed: str, prefix: str
+) -> None:
+    """#85: a typed placeholder glued after a structured value hid it from its recognizer, so the value went
+    upstream in clear on first mention. The typed placeholder stays, its number is never issued, and the
+    answer restores to the text exactly."""
+    n = Nona()
+    text = f"{prefix}{value}{sep}{typed} merci"
+    result = n.anonymize(text)
+    assert value not in result.text
+    assert typed in result.text
+    assert all(e.placeholder != typed for e in result.entities)
+    assert n.restore(result.text, result.mapping) == text
+
+
+def test_a_value_glued_before_a_typed_placeholder_is_masked_when_re_sent() -> None:
+    """The restored text goes upstream masked again in the next message."""
+    n = Nona()
+    first = "mail a@x.comEMAIL_1 et tel 22123456PHONE_1"
+    conv = n.anonymize_messages([first, first])
+    assert [m.text for m in conv.messages] == ["mail EMAIL_2EMAIL_1 et tel PHONE_2PHONE_1"] * 2
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        ("PERSON_1@example.com", "EMAIL_1"),  # the first pass's e-mail is kept, not cut at the placeholder
+        ("PERSON_1a@x.com", "EMAIL_1"),
+        ("SamiPERSON_1", "SamiPERSON_1"),  # names aren't searched again: strict boundaries, #87
+    ],
+)
+def test_the_second_pass_only_adds(text: str, masked: str) -> None:
+    assert Nona().anonymize(text).text == masked
+
+
+_AR_PHONE = "\u0662\u0662\u0661\u0662\u0663\u0664\u0665\u0666"  # 22123456 in Arabic-Indic digits
+
+
+@pytest.mark.parametrize(
+    ("messages", "masked", "restored"),
+    [
+        # masking the card puts `]` before the typed PERSON_1: restore would write Sami there
+        (
+            ["Sami est la", "carte 4242424242424242PERSON_1 merci"],
+            "carte [CARD]PERSON_2 merci",
+            "carte [CARD]PERSON_1 merci",
+        ),
+        (["mail b@y.com", f"EMAIL_1{_AR_PHONE} merci"], "EMAIL_2PHONE_1 merci", "EMAIL_1PHONE_1 merci"),
+        # restore holds names to strict boundaries: it never reads PERSON_1 here, so it keeps its number
+        (["Sami est la", f"ok PERSON_1{_AR_PHONE}"], "ok PERSON_1PHONE_1", "ok PERSON_1PHONE_1"),
+        # glued to a digit once masked, as on main: restore doesn't touch it
+        (["tel 22123456", "x 22123457PHONE_1"], "x PHONE_2PHONE_1", None),
+        (["ip 10.9.9.9", "ip PERSON_1_10.1.2.3 ok"], "ip PERSON_1_IP_ADDRESS_2 ok", None),
+    ],
+)
+def test_a_typed_placeholder_next_to_a_masked_value_never_restores_to_another_value(
+    messages: list[str], masked: str, restored: str | None
+) -> None:
+    """Re-review of #92: once the glued value is masked, restore may find the typed placeholder. If its
+    number was issued earlier, it gets a fresh one and comes back as typed."""
+    n = Nona()
+    conv = n.anonymize_messages(messages)
+    assert conv.messages[-1].text == masked
+    expected = messages[-1] if restored is None else restored
+    assert n.restore(masked, conv.mapping) == expected
+
+
+class Counting:
+    """A custom structured recognizer that counts its passes."""
+
+    name = "counting"
+    supported_types = frozenset({EntityType.CUSTOM})
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def detect(self, doc: NormalizedDoc) -> list[Span]:
+        self.calls += 1
+        return [
+            Span(m.start(), m.end(), EntityType.CUSTOM, 1.0, self.name)
+            for m in re.finditer(r"(?<![a-z0-9])emp-\d{5}(?![a-z0-9])", doc.text)
+        ]
+
+
+@pytest.mark.parametrize(
+    ("text", "calls", "masked"),
+    [
+        ("id EMP-12345PERSON_1", 2, "id CUSTOM_1PERSON_1"),  # a custom ID is searched again
+        ("PERSON_1 EMP-12345 PERSON_1", 1, "PERSON_1 CUSTOM_1 PERSON_1"),  # nothing glued, one pass
+        ("Merci PERSON_1. (PERSON_1), EMP-12345", 1, "Merci PERSON_1. (PERSON_1), CUSTOM_1"),
+        ("pas de placeholder", 1, "pas de placeholder"),
+    ],
+)
+def test_the_second_pass_runs_only_when_a_placeholder_is_glued(text: str, calls: int, masked: str) -> None:
+    recognizer = Counting()
+    n = Nona([*Nona()._recognizers, recognizer], policies=ALL_REVERSIBLE)
+    result = n.anonymize(text)
+    assert result.text == masked
+    assert recognizer.calls == calls
+    # `CUSTOM_1PERSON_1`: a masked value glued to a placeholder stays masked in the reply (#87)
+    expected = text if calls == 1 else masked
+    assert n.restore(result.text, result.mapping) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        (
+            "tel +216 22 123 456-sami.ksouri@example.tn-PERSON_1 ok",
+            "tel PHONE_1-PERSON_2.ksouri@example.tn-PERSON_1 ok",
+        ),
+        ("x+216 22 123 456_12345678b.c@y.tnPERSON_1", "xPHONE_1_12345678b.c@y.tnPERSON_1"),
+    ],
+)
+def test_the_second_pass_never_cuts_into_a_first_pass_span(text: str, masked: str) -> None:
+    """Re-review of #92: the e-mail found once the placeholder is blanked overlapped the phone, won the
+    resolver and left `+216 22 123` in clear. Output as on main."""
+    assert Nona().anonymize(text).text == masked
+
+
 @pytest.mark.parametrize(
     "text",
     ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb", "M.Saaـ", " .ـلSami", "قول ـلسامي"],
@@ -270,6 +404,7 @@ def test_a_type_word_before_a_long_digit_run_is_no_placeholder(text: str) -> Non
         "a::-@example.com",
         "٢+2522 123 456",  # glued to `2` on the normalized view
         "aـ+2522 123 456",  # glued to `a` past a tatweel
+        "PERSON_1\u0662\u0662\u0661\u0662\u0663\u0664\u0665\u0666",  # Arabic-Indic phone after one, #85
     ],
 )
 def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
