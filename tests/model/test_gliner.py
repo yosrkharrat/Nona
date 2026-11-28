@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -21,15 +22,22 @@ from nona.models import GLINER, ModelError, check
 pytestmark = pytest.mark.model
 
 
-def _pulled() -> bool:
+def _missing() -> str | None:
+    """Why the model can't run here, or `None`."""
+    if importlib.util.find_spec("gliner") is None:
+        return "the `ner` extra isn't installed"
     try:
         check()
-    except ModelError:
-        return False
-    return True
+    except ModelError as exc:
+        return str(exc)
+    return None
 
 
-if importlib.util.find_spec("gliner") is None or not _pulled():
+# CI's model job sets NONA_MODEL_TESTS=required with `-m model`, so a missing model fails the job instead of
+# skipping every test (#73). Only with `-m model`: it fails at import, before other runs deselect these.
+if (why := _missing()) is not None:
+    if os.environ.get("NONA_MODEL_TESTS") == "required":
+        pytest.fail(f"NONA_MODEL_TESTS=required, but {why}", pytrace=False)
     pytest.skip("needs the `ner` extra and `nona models pull`", allow_module_level=True)
 
 from nona.models import load_ner_model  # noqa: E402
