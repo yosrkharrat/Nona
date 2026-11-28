@@ -4,7 +4,7 @@ Answers to the questions of *Datasheets for Datasets* (Gebru et al.) for `bench/
 follows are in [05-dataset.md](../../docs/design/05-dataset.md); this file says what was actually built,
 and what it can't tell you.
 
-**In one paragraph.** 628 synthetic chat conversations (1,223 turns) in French, English, Modern Standard
+**In one paragraph.** 630 synthetic chat conversations (1,225 turns) in French, English, Modern Standard
 Arabic and Tunisian Darija (in Arabic script and in Latin script, "Arabizi"), often mixed in one message,
 with every piece of personal data labelled by hand or by construction. It measures how much personal data a
 pseudonymizing proxy lets through to an LLM. Nothing in it comes from a real conversation or a real person.
@@ -26,28 +26,28 @@ The `test` split is frozen: its hash is committed, and it is run once, for the p
 
 | | `dev` | `test` |
 |---|---|---|
-| Conversations | 275 | 353 |
-| Turns (user / assistant) | 609 (420 / 189) | 614 (447 / 167) |
+| Conversations | 277 | 353 |
+| Turns (user / assistant) | 611 (422 / 189) | 614 (447 / 167) |
 | Conversations of 4+ turns | 88 | 78 |
-| Gold entities | 448 | 488 |
-| Gold mentions | 761 | 748 |
-| Distractors (look like PII, are not) | 153 | 182 |
-| `no-pii` controls | 60 (21.8%) | 86 (24.4%) |
-| Hand-written / LLM-drafted / templated | 21 / 12 / 242 | 30 / 18 / 305 |
+| Gold entities | 450 | 488 |
+| Gold mentions | 763 | 748 |
+| Distractors (look like PII, are not) | 155 | 182 |
+| `no-pii` controls | 60 (21.7%) | 86 (24.4%) |
+| Hand-written / LLM-drafted / templated | 23 / 12 / 242 | 30 / 18 / 305 |
 
 - **One instance** is a conversation: a list of turns (`user` or `assistant`; the schema also allows
   `system` and `tool`, which this release doesn't use), the entities it contains, and each mention's offsets.
   The schema is in [05 §3](../../docs/design/05-dataset.md#3-schema).
 - **Entity types and mentions** (`dev` / `test`): PERSON 449 / 407, PHONE 156 / 146, EMAIL 60 / 48,
-  LOCATION 30 / 55, IBAN 19 / 26, RIB 20 / 16, NATIONAL_ID (Tunisian CIN) 11 / 24, CARD 10 / 16,
+  LOCATION 30 / 55, IBAN 19 / 26, RIB 20 / 16, NATIONAL_ID (Tunisian CIN) 13 / 24, CARD 10 / 16,
   IP_ADDRESS 6 / 10. There is no ORGANIZATION entity in this release.
 - **Languages.** `fr`, `en`, `ar` (MSA), `aeb-Arab` (Darija in Arabic script), `aeb-Latn` (Arabizi). Each
   is in at least 15% of each split's conversations, and 30% of each are code-switched; the exact shares are in
   [05 §7](../../docs/design/05-dataset.md#current-splits-s4-74), and `tests/bench/test_splits.py` checks
   the targets.
-- **Difficulty tags** (`dev` / `test`): `multi-turn` 101 / 89, `code-switching` 83 / 106, `arabizi` 82 / 113,
-  `common-word-name` 47 / 93, `honorific` 32 / 26, `clitic` 23 / 24, `eastern-digits` 14 / 25,
-  `ambiguous-reference` 9 / 10, `spelling-variant` 4 / 5. Results can be broken down by them.
+- **Difficulty tags** (`dev` / `test`): `multi-turn` 101 / 89, `code-switching` 84 / 106, `arabizi` 83 / 113,
+  `common-word-name` 47 / 93, `honorific` 32 / 26, `clitic` 23 / 24, `eastern-digits` 15 / 25,
+  `ambiguous-reference` 9 / 10, `spelling-variant` 4 / 5, `context-cue` 2 / 0. Results can be broken down by them.
 - **Public figures.** One entity in `test` is marked `public: true` (a public figure named next to a private
   person); it is labelled but left out of the headline. `dev` has none.
 - **Splits.** `dev` is for tuning. `test` (56% of conversations) has its own templates (no turn text in
@@ -69,10 +69,10 @@ Three sources, all written for this repository:
    - IBAN and RIB with valid checksums and random digits;
    - cards from the published test ranges only (they can't be charged);
    - CIN: 8 random digits.
-2. **Hand-written hard cases (51).** Written one by one, not from a template, for what templates do badly: common-word names with
+2. **Hand-written hard cases (53).** Written one by one, not from a template, for what templates do badly: common-word names with
    and without a cue, the same words used as words, Eastern Arabic digits next to look-alike numbers, clitics
    glued to names (`لسامي`), Arabizi spellings (`Mo7amed`, `Mou3ez`), one person written in two scripts, a
-   street named after a public figure.
+   street named after a public figure, an ID-card cue next to an order number (#100).
 3. **LLM drafts (30).** Realistic requests (reply to, summarise, translate or correct a WhatsApp message or an
    e-mail) drafted by an LLM (Claude, with no external API call) around fake entities it was given, then
    checked by a human
@@ -118,7 +118,7 @@ Read the numbers with these in mind:
   another speaker could find some phrasings unnatural.
 - **Built by the system's authors.** The same people and assistant who wrote Nona wrote the templates and hard cases. Held-out
   name pools and a separate `test` template set limit that bias but don't remove it.
-- **Small counts for some types.** IP_ADDRESS (6 / 10 mentions), CARD (10 / 16) and CIN (11 / 24) give rates
+- **Small counts for some types.** IP_ADDRESS (6 / 10 mentions), CARD (10 / 16) and CIN (13 / 24) give rates
   with wide uncertainty. Per-language cells in the report can rest on a handful of mentions.
 - **Pessimistic leak check.** A gold name found at word boundaries counts as leaked even when the payload
   holds the same word as a word (05 §6, *Known limits*). Homoglyph spellings aren't covered.

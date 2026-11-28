@@ -28,7 +28,7 @@ SOURCES = frozenset({"template", "llm", "handwritten"})
 KNOWN_TAGS = frozenset(
     {
         "arabizi", "code-switching", "multi-turn", "common-word-name", "clitic", "eastern-digits",
-        "spelling-variant", "honorific", "ambiguous-reference", "no-pii",
+        "spelling-variant", "honorific", "ambiguous-reference", "context-cue", "no-pii",
     }
 )  # fmt: skip
 
