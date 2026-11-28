@@ -38,6 +38,7 @@ def test_normalize_folds_case_width_digits_and_spaces() -> None:
     assert normalize("٩٨ ٧٦٥ ٤٣٢") == "98 765 432"
     assert normalize("۰۱۲") == "012"  # Persian digits too
     assert normalize("ＡＢＣ１２") == "abc12"  # noqa: RUF001 - full-width forms on purpose (NFKC)
+    assert normalize("لـسامي سـامي") == "لسامي سامي"  # the tatweel only stretches a letter (#74)
 
 
 def test_compact_keeps_only_letters_and_digits() -> None:

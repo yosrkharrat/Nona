@@ -54,15 +54,19 @@ _IBAN_HEAD = re.compile(
 # --------------------------------------------------------------------------- normalization
 
 
+_TATWEEL = "\u0640"
+
+
 def normalize(text: str) -> str:
-    """Drop format characters (Unicode Cf: zero-width spaces and joiners, soft hyphens), NFKC, casefold,
-    Eastern Arabic digits to ASCII, collapse whitespace.
+    """Drop format characters (Unicode Cf: zero-width spaces and joiners, soft hyphens) and the Arabic
+    tatweel, NFKC, casefold, Eastern Arabic digits to ASCII, collapse whitespace.
 
     Format characters are invisible, so `Sa\u200bmi` reads as `Sami` to a model: a system that inserts them
-    hasn't protected anything. Homoglyphs (a Cyrillic a, U+0430, in `Sami`) are not caught: NFKC doesn't map
+    hasn't protected anything. The tatweel (U+0640) only stretches a letter: `لـسامي` and `سـامي` read as
+    `لسامي` and `سامي`. Homoglyphs (a Cyrillic a, U+0430, in `Sami`) are not caught: NFKC doesn't map
     them, and folding confusables would also merge real Cyrillic or Greek text. 05 §6 documents that limit.
     """
-    visible = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    visible = "".join(c for c in text if unicodedata.category(c) != "Cf" and c != _TATWEEL)
     folded = unicodedata.normalize("NFKC", visible).casefold().translate(_EASTERN_DIGITS)
     return " ".join(folded.split())
 

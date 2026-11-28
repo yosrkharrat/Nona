@@ -330,7 +330,8 @@ def test_cli_generates_the_multi_turn_set_from_a_start_number(capsys: pytest.Cap
 
 def test_dev_multi_turn_set_has_forty_conversations_of_four_turns_or_more() -> None:
     dev = load_jsonl(Path(__file__).resolve().parents[2] / "bench" / "data" / "dev.jsonl")
-    multi_turn = [c for c in dev if 81 <= int(c.id.removeprefix("dev-")) <= 137]
+    numbered = [c for c in dev if c.id.removeprefix("dev-").isdigit()]
+    multi_turn = [c for c in numbered if 81 <= int(c.id.removeprefix("dev-")) <= 137]
     assert len(multi_turn) >= 40
     assert all(len(c.turns) >= 4 for c in multi_turn)
 

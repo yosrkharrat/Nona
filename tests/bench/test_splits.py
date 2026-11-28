@@ -36,3 +36,19 @@ def test_balance(split: str) -> None:
         assert stats.share(stats.languages[language]) >= 0.15, language
     assert stats.share(stats.code_switched) >= 0.30
     assert stats.share(stats.no_pii) >= 0.10
+
+
+def test_hand_written_hard_cases_and_llm_drafts() -> None:
+    """About 50 hand-written hard cases, plus reviewed LLM drafts, split about 40/60 like the rest."""
+    dev, test = _stats("dev"), _stats("test")
+    assert 40 <= dev.sources["handwritten"] + test.sources["handwritten"] <= 60
+    for source in ("handwritten", "llm", "template"):
+        share = dev.sources[source] / (dev.sources[source] + test.sources[source])
+        assert 0.3 <= share <= 0.5, source
+
+
+@pytest.mark.parametrize("split", SPLITS)
+def test_hand_written_cases_are_tagged(split: str) -> None:
+    for conv in load_jsonl(DATA / f"{split}.jsonl"):
+        if conv.source == "handwritten":
+            assert conv.tags, conv.id
