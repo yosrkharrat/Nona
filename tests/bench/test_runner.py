@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -119,13 +120,41 @@ def frozen_mini(data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     return data_dir
 
 
-def test_bench_runs_the_frozen_split_only_when_published(frozen_mini: Path, tmp_path: Path) -> None:
+def test_bench_runs_the_frozen_split_only_when_published(
+    frozen_mini: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     out = tmp_path / "results"
     args = ["bench", "--split", "mini", "--data", str(frozen_mini), "--out", str(out)]
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exit_info:
         main(args)
+    assert exit_info.value.code == 2
+    assert "the test split is frozen" in capsys.readouterr().err
     assert main([*args, "--published"]) == 0
     assert (out / "mini-identity.json").is_file()
+
+
+def test_the_file_a_hash_beside_it_names_is_frozen_whatever_its_bytes(tmp_path: Path) -> None:
+    """Edited in place before `test.sha256` is, the split is still frozen; with no hash file, it isn't."""
+    shutil.copy(FIXTURE, tmp_path / "test.jsonl")
+    assert not is_frozen(tmp_path / "test.jsonl")
+    (tmp_path / "test.sha256").write_text(f"{'0' * 64}  bench/data/test.jsonl\n", encoding="utf-8")
+    assert is_frozen(tmp_path / "test.jsonl")
+    assert is_frozen(tmp_path / "TEST.jsonl")  # as `--split TEST` reads it on a case-insensitive disk
+    shutil.copy(FIXTURE, tmp_path / "other.jsonl")
+    assert not is_frozen(tmp_path / "other.jsonl")
+
+
+def test_bench_reports_an_unreadable_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dataset = tmp_path / "x.jsonl"
+    shutil.copy(FIXTURE, dataset)
+    dataset.chmod(0)
+    try:
+        if os.access(dataset, os.R_OK):
+            pytest.skip("running as root: every file is readable")
+        assert main(["bench", "--split", "x", "--data", str(tmp_path)]) == 1
+        assert "can't read" in capsys.readouterr().err
+    finally:
+        dataset.chmod(0o644)
 
 
 def test_another_test_file_is_not_frozen(tmp_path: Path) -> None:

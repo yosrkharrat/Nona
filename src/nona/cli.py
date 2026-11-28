@@ -17,19 +17,30 @@ from pathlib import Path
 from nona import __version__
 
 # Frozen at the end of S4 (05 §1, #75): never used for tuning, run once for the release table (06 §1, NFR-11).
-# Recognized by its committed hash, not by the split's name: `--split ./test` or `--split Test` (on a
-# case-insensitive disk) is the same file, and another folder's `test.jsonl` is not it.
+# A guard against accidents, not against someone set on it: see `is_frozen`.
 FROZEN_SPLIT = "test"
-FROZEN_HASH = Path(__file__).resolve().parents[2] / "bench" / "data" / "test.sha256"
+FROZEN_HASH = Path(__file__).resolve().parents[2] / "bench" / "data" / f"{FROZEN_SPLIT}.sha256"
+
+
+def _hash_file(path: Path) -> tuple[str, str] | None:
+    """(digest, file name) from a `shasum -a 256` line, or `None` if there's no readable one."""
+    try:
+        digest, _, name = path.read_text(encoding="utf-8").strip().partition("  ")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return (digest, Path(name).name) if digest else None
 
 
 def is_frozen(dataset: Path) -> bool:
-    """`dataset` holds the frozen split's bytes (`bench/data/test.sha256`, in a checkout only)."""
-    try:
-        digest = FROZEN_HASH.read_text(encoding="utf-8").split()[0]
-    except (OSError, IndexError):
-        return False
-    return hashlib.sha256(dataset.read_bytes()).hexdigest() == digest
+    """`dataset` is the frozen split: the file a `test.sha256` beside it names, whatever its bytes (edited
+    before the hash is, or `--split ./test`, `--split Test` on a case-insensitive disk, any install), or a
+    copy elsewhere with the committed bytes (`FROZEN_HASH`, in a checkout). Another folder's own
+    `test.jsonl` is not frozen. Raises `OSError` if `dataset` can't be read."""
+    beside = _hash_file(dataset.parent / FROZEN_HASH.name)
+    if beside is not None and beside[1].casefold() == dataset.name.casefold():
+        return True
+    digests = {h[0] for h in (beside, _hash_file(FROZEN_HASH)) if h is not None}
+    return bool(digests) and hashlib.sha256(dataset.read_bytes()).hexdigest() in digests
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,7 +119,12 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not dataset.is_file():
         print(f"error: no dataset file at {dataset}", file=sys.stderr)
         return 1
-    if not args.published and is_frozen(dataset):
+    try:
+        frozen = not args.published and is_frozen(dataset)
+    except OSError as exc:
+        print(f"error: can't read {dataset}: {exc}", file=sys.stderr)
+        return 1
+    if frozen:
         parser.error(
             f"the {FROZEN_SPLIT} split is frozen: it is never used for tuning (05 §1). Tune on dev; pass "
             "--published only for the run that gives the published numbers"

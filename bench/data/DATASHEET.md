@@ -100,8 +100,10 @@ generated name or number; no real person's data was used, and no name is tied to
   linking), per language and type, with `nona bench`. The method is in
   [05 §6](../../docs/design/05-dataset.md#6-how-leaks-are-counted-input-to-the-leak-rate-script).
 - **Rules for `test`:** never tune thresholds, lists, prompts or models on it, and never look at its
-  failures to fix them. `nona bench --split test` refuses to run without `--published`. A bug found there gets
-  its own `dev` case before it is fixed (example: #100).
+  failures to fix them. `nona bench` refuses to score it without `--published`: the file that the
+  `test.sha256` beside it names, even edited, and a byte-for-byte copy elsewhere in a checkout. It guards
+  against accidents; an edited copy in another folder gets through. A bug found there gets its own `dev`
+  case before it is fixed (example: #100).
 - **Not suitable for:** training a model (too small, and templated); measuring how often PII appears in real
   chat (the mix of types and languages was chosen to hit targets, not sampled); other Arabic dialects
   (Moroccan, Algerian, Levantine…), which it doesn't contain.

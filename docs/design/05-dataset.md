@@ -188,7 +188,8 @@ French ones (`car jack`, `grace period`, `bill`, `olivier`, `rose`). The `test` 
 `tn3` and `ar3` pools, which are in no other pool, not in the gazetteer and nowhere in `dev`. So tuning on
 `dev` can't learn the test's names or sentences. Its hash is in `bench/data/test.sha256`, and a test fails if
 the file changes without it. The owner validated its Darija items on 2026-11-28, and the split has been
-frozen since #75: `nona bench --split test` refuses to run without `--published`, and
+frozen since #75: `nona bench` refuses to score it without `--published` (the file `test.sha256` names, even
+edited, or a byte-for-byte copy; a guard against accidents, see `nona.cli.is_frozen`), and
 [`DATASHEET.md`](../../bench/data/DATASHEET.md) gives how it was made and its limits.
 
 **Hard cases and LLM drafts (#74).** The 51 hard cases exercise the #50 lists both ways. Common-word names
