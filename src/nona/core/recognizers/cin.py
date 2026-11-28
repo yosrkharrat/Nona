@@ -3,12 +3,13 @@
 Eight digits alone collide with order numbers, prices and dates, so a number counts as a CIN only when a
 context word (`cin`, `carte d'identité`, `بطاقة`…) sits within 5 word tokens before or after it.
 
-A cue belongs to **one** number (#100): the nearest 8-digit number on either side, never one reached through
-another. A cue between two numbers goes to the side without a clause break (`,` `،` `;`), then to the nearer
-one, then to the number after it (a cue usually comes first). A number joined to a CIN by a list joiner only
-(`CIN 08123456 et 01234567`, `/`, `,`, `و`) is a CIN too. Deep dive A
-allows a low-score span without context; we report nothing instead, because the resolver's threshold would
-drop such a span anyway, and it keeps the dataset's order numbers out of the results.
+One cue can sit near two numbers: `CIN 08123456, commande 45678912` (#100). A number is left out when another
+label claims it (`commande`, `facture`, `الطلبية`… between the cue and it, or just before it) **and** the same
+cue already has a number that no label claims. Without such a number the cue still counts, so
+`ma CIN pour la commande : 08123456` stays masked: a missed CIN leaks, an extra one only over-masks.
+
+Deep dive A allows a low-score span without context; we report nothing instead, because the resolver's
+threshold would drop such a span anyway, and it keeps the dataset's order numbers out of the results.
 """
 
 from __future__ import annotations
@@ -32,27 +33,39 @@ CONTEXT = re.compile(
     r")(?!\w)"
 )
 
-_CLAUSE_BREAK = re.compile(r"[,،;؛]")
-# Only separators and a coordinating word between two numbers: one list, so they share a cue.
-_LIST_JOINER = re.compile(r"[\s,،/&-]*(?:(?:et|ou|and|or|w|و)[\s,،]*)?")
+# Labels of other 8-digit numbers (order, invoice, parcel, reference). A leading و/ب/ل/ف clitic is allowed.
+OTHER_LABEL = re.compile(
+    r"(?<!\w)(?:"
+    r"commande|facture|colis|suivi|référence|reference|réf|ref|ticket|order|invoice|tracking"
+    r"|[وبلف]?(?:الطلبية|طلبية|الطلب|الفاتورة|فاتورة|الطرد|المرجع|الوصل)"
+    r")(?!\w)"
+)
+CLAIM = 2  # a label at most this many words before a number claims it
 
 
-def _owner(text: str, cue: re.Match[str], numbers: list[re.Match[str]]) -> int | None:
-    """The index of the number this cue belongs to, or None when no number is within the window."""
-    before = [i for i, n in enumerate(numbers) if n.end() <= cue.start()]
-    after = [i for i, n in enumerate(numbers) if n.start() >= cue.end()]
-    # (clause break between, words between, cue after the number, index): min() gives the owner.
-    sides: list[tuple[bool, int, bool, int]] = []
-    if before:
-        sides.append((*_gap(text[numbers[before[-1]].end() : cue.start()]), True, before[-1]))
-    if after:
-        sides.append((*_gap(text[cue.end() : numbers[after[0]].start()]), False, after[0]))
-    near = [side for side in sides if side[1] < WINDOW]
-    return min(near)[3] if near else None
+def _words(text: str) -> int:
+    return len(_WORD.findall(text))
 
 
-def _gap(text: str) -> tuple[bool, int]:
-    return bool(_CLAUSE_BREAK.search(text)), len(_WORD.findall(text))
+def _between(a: re.Match[str], b: re.Match[str]) -> tuple[int, int]:
+    return (a.end(), b.start()) if a.end() <= b.start() else (b.end(), a.start())
+
+
+def _claimed(text: str, cue: re.Match[str], number: re.Match[str], labels: list[re.Match[str]]) -> bool:
+    """Another label owns this number: it sits between the cue and the number, or right before the number
+    with no number and no cue in between (`colis : CIN 08123456` is still the CIN's)."""
+    lo, hi = _between(cue, number)
+    for label in labels:
+        if lo <= label.start() and label.end() <= hi:
+            return True
+        gap = text[label.end() : number.start()]
+        if (
+            label.end() <= number.start()
+            and _words(gap) <= CLAIM
+            and not (_NUMBER.search(gap) or CONTEXT.search(gap))
+        ):
+            return True
+    return False
 
 
 class CinRecognizer:
@@ -74,19 +87,15 @@ class CinRecognizer:
         numbers = list(_NUMBER.finditer(text))
         if not numbers:
             return []
-        cued = {_owner(text, cue, numbers) for cue in CONTEXT.finditer(text)} - {None}
-        if not cued:
-            return []
-        # Spread along lists: a run of numbers joined only by list joiners is cued as a whole.
-        runs: list[list[int]] = [[0]]
-        for i in range(1, len(numbers)):
-            if _LIST_JOINER.fullmatch(text[numbers[i - 1].end() : numbers[i].start()]):
-                runs[-1].append(i)
-            else:
-                runs.append([i])
+        labels = list(OTHER_LABEL.finditer(text))
+        cued: set[int] = set()
+        for cue in CONTEXT.finditer(text):
+            near = [i for i, n in enumerate(numbers) if _words(text[slice(*_between(cue, n))]) < WINDOW]
+            claimed = {i for i in near if _claimed(text, cue, numbers[i], labels)}
+            # Drop the claimed numbers only when the cue has another one to describe.
+            cued.update(set(near) - claimed if set(near) - claimed else near)
         return [
-            to_span(doc, numbers[i].start(), numbers[i].end(), EntityType.NATIONAL_ID, 0.95, self.name)
-            for run in runs
-            if cued.intersection(run)
-            for i in run
+            to_span(doc, n.start(), n.end(), EntityType.NATIONAL_ID, 0.95, self.name)
+            for i, n in enumerate(numbers)
+            if i in cued
         ]
