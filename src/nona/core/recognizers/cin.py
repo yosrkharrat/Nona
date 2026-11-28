@@ -36,14 +36,16 @@ CONTEXT = re.compile(
 # Labels of other 8-digit numbers: order, invoice, parcel, tracking, receipt, reference. Only nouns that
 # can't be read another way, since a label that drops a real CIN leaks it: `de suivi`, not `suivi`;
 # `الوصل` (receipt), not `وصل` (also "arrived"); `رقم الطلب`, not `الطلب` (also "the request").
-# Arabic labels take a و/ف conjunction, then ب/ل, the article, or both (`بال`, `لل`); `رقم`/`عدد` takes only
-# ب/ل, since it heads a construct phrase (`رقم الطلب`). Two-word labels don't span a line break.
+# Arabic labels take a و/ف conjunction, then ب/ل, the article, or both (`بال`, `لل`); `رقم`/`عدد` takes the
+# conjunction and ب/ل but no article, since it heads a construct phrase (`رقم الطلب`). The words of a two-word
+# label are separated by spaces or tabs only: a label wrapped onto the next line is missed, which over-masks.
+_SP = r"[ \t\u00a0]+"
 _CONJ = r"[وف]?"
 _ART = r"(?:[بل]?ال|لل)"
 OTHER_LABEL = re.compile(
     r"(?<!\w)(?:"
-    r"commande|facture|colis|de[^\S\n]+suivi|référence|reference|réf|ref|ticket|order|invoice|tracking"
-    rf"|{_CONJ}{_ART}?(?:طلبية|فاتورة|طرد|مرجع)|{_CONJ}{_ART}وصل|{_CONJ}[بل]?(?:رقم|عدد)[^\S\n]+(?:ال)?طلب"
+    rf"commande|facture|colis|de{_SP}suivi|référence|reference|réf|ref|ticket|order|invoice|tracking"
+    rf"|{_CONJ}{_ART}?(?:طلبية|فاتورة|طرد|مرجع)|{_CONJ}{_ART}وصل|{_CONJ}[بل]?(?:رقم|عدد){_SP}(?:ال)?طلب"
     r")(?!\w)"
 )
 LABEL_GAP = 2  # a label at most this many words before a number is its own
