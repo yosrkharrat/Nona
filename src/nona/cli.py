@@ -15,6 +15,9 @@ from pathlib import Path
 
 from nona import __version__
 
+# Frozen at the end of S4 (05 §1, #75): never used for tuning, run once for the release table (06 §1, NFR-11).
+FROZEN_SPLIT = "test"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -29,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--systems", default="identity", help="comma-separated systems to run (default: identity)"
     )
     bench.add_argument("--split", default="dev", help="dataset split, read from <data>/<split>.jsonl")
+    bench.add_argument(
+        "--published",
+        action="store_true",
+        help=f"required for the frozen split ({FROZEN_SPLIT}): this run gives the published numbers",
+    )
     bench.add_argument("--data", type=Path, default=Path("bench/data"), help="dataset directory")
     bench.add_argument("--out", type=Path, default=Path("results"), help="output directory")
 
@@ -78,6 +86,11 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     unknown = [n for n in names if n not in SYSTEMS]
     if not names or unknown:
         parser.error(f"unknown system(s) {unknown or names}; choose from: {', '.join(sorted(SYSTEMS))}")
+    if args.split == FROZEN_SPLIT and not args.published:
+        parser.error(
+            f"the {FROZEN_SPLIT} split is frozen: it is never used for tuning (05 §1). Tune on dev; pass "
+            "--published only for the run that gives the published numbers"
+        )
     dataset: Path = args.data / f"{args.split}.jsonl"
     if not dataset.is_file() and not args.data.is_absolute():
         from nona.bench.runner import REPO_ROOT

@@ -187,7 +187,9 @@ French ones (`car jack`, `grace period`, `bill`, `olivier`, `rose`). The `test` 
 (no turn text in common with `dev`, a test checks it), its own seed, and **its own held-out names**: the
 `tn3` and `ar3` pools, which are in no other pool, not in the gazetteer and nowhere in `dev`. So tuning on
 `dev` can't learn the test's names or sentences. Its hash is in `bench/data/test.sha256`, and a test fails if
-the file changes without it. The split is frozen once the owner has validated its Darija items (S4 exit).
+the file changes without it. The owner validated its Darija items on 2026-11-28, and the split has been
+frozen since #75: `nona bench --split test` refuses to run without `--published`, and
+[`DATASHEET.md`](../../bench/data/DATASHEET.md) gives how it was made and its limits.
 
 **Hard cases and LLM drafts (#74).** The 51 hard cases exercise the #50 lists both ways. Common-word names
 *as names*: after a cue (`kallamt Amal`, `9olt l sana`, `صاحبي كريم`, `قلت لنور`, `khalti Hayet`, `3amm
@@ -202,7 +204,7 @@ named after a public figure (`12 avenue Habib Bourguiba`, a LOCATION), `Sidi Bou
 (`public: true`) next to a private `Amal`. The 30 LLM drafts are realistic requests (reply to, summarise,
 translate or correct a WhatsApp message or an e-mail) written around supplied fake entities; `dev` drafts
 use `tn2`/`ar2` names and `test` drafts `tn3`/`ar3` ones. Every Darija item is to be validated by a native
-speaker with `python -m nona.bench.review` (D3) before the split is frozen.
+speaker with `python -m nona.bench.review` (D3) before the split is frozen; all were accepted on 2026-11-28.
 
 **History of `dev` (S3.1).** The multi-turn set exists for linking (ADR-0004): a short name before the full one, with the short form detected (`Mme Islem`, or a listed first name) so absorption is measured; two people sharing a first name with `ambiguous: true` references (held-out names, and a `-listed` copy); honorifics; assistant turns that repeat restored names; lowercase Arabizi names; cities (LOCATION); Arabic-script conversations (`ar`, `aeb-Arab`) with clitics glued to names (`لـ`, `وـ`); and no-PII controls with name-like words: `amal`, `sana`, `3amel`, `3ali`, French words that fold to names (`marié`, `claire`, `pierre`, `Grâce`), Darija expressions (`Mabrouk 3lik`, `ya sahbi`, `lazem saber`), a brand after a cue (`m3a Ooredoo`), and Arabic expressions (`رمضان كريم`, `اللهم آمين`, `أمل`).
 

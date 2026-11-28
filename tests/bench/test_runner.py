@@ -91,6 +91,22 @@ def test_bench_reports_a_missing_split(tmp_path: Path, capsys: pytest.CaptureFix
     assert "no dataset file" in capsys.readouterr().err
 
 
+def test_bench_refuses_the_frozen_split_without_published(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#75: `test` is never used for tuning, so a run on it has to say it is the published one."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["bench", "--split", "test", "--out", str(tmp_path)])
+    assert exit_info.value.code == 2
+    assert "the test split is frozen" in capsys.readouterr().err
+    assert not tmp_path.joinpath("test-identity.json").exists()
+
+
+def test_bench_runs_the_frozen_split_when_published(tmp_path: Path) -> None:
+    assert main(["bench", "--split", "test", "--published", "--out", str(tmp_path)]) == 0
+    assert json.loads((tmp_path / "test-identity.json").read_text(encoding="utf-8"))["split"] == "test"
+
+
 def test_bench_reports_an_invalid_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (tmp_path / "bad.jsonl").write_text('{"id": "x"}\n', encoding="utf-8")
     assert main(["bench", "--split", "bad", "--data", str(tmp_path), "--out", str(tmp_path / "r")]) == 1
