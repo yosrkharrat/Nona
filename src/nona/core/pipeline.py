@@ -33,7 +33,10 @@ normalized view with every such placeholder blanked out, same length, along with
 What that pass finds clear of the blanked characters is added to the first pass. Adding only, never replacing:
 `PERSON_1@example.com` is still the e-mail the first pass found. People, places and organizations aren't
 searched again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict boundaries decide
-(`core/boundaries.py`, #87).
+(`core/boundaries.py`, #87). A value found this way is often glued to a placeholder once masked
+(`PHONE_1PERSON_1`, `PERSON_1PHONE_1`, `CUSTOM_1PERSON_1`): restore doesn't write those back, so the reply
+keeps the placeholder, but no value went upstream (#87). The second pass only searches what no first-pass span
+covers, so it never takes the resolver's pick away from a value found before.
 
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
@@ -85,11 +88,16 @@ _RETYPED = frozenset({EntityType.LOCATION, EntityType.ORGANIZATION})
 _PROSE = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION})
 
 
+def _gluing(c: str, *, right: bool = False) -> bool:
+    return c.isalnum() or c in "_-" or c in DROPPED or (right and c == "+")
+
+
 def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
     """`doc` with every typed placeholder, and the `_` and `-` glued to either side, turned into spaces, and
-    the blanked original characters; `None` when no placeholder touches anything but spaces, as then none
-    can hide a value. Same length and origins, so spans found in it map back to the original text (#85).
-    Linear in the text's length, however many placeholders it holds."""
+    the blanked original characters; `None` when no placeholder touches a character a value can end or
+    start with (a letter or a digit, `_`, `-`, `+` on the right, what normalization drops), as then none can
+    hide a value: `Merci PERSON_1.` costs no second pass. Same length and origins, so spans found in it map
+    back to the original text (#85). Linear in the text's length, however many placeholders it holds."""
     text = doc.original
     mask = bytearray(len(text))
     glued = False
@@ -100,8 +108,8 @@ def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
         while end < len(text) and text[end] in "_-":
             end += 1
         mask[start:end] = b"\x01" * (end - start)
-        glued = glued or (m.start() > 0 and not text[m.start() - 1].isspace())
-        glued = glued or (m.end() < len(text) and not text[m.end()].isspace())
+        glued = glued or (m.start() > 0 and _gluing(text[m.start() - 1]))
+        glued = glued or (m.end() < len(text) and _gluing(text[m.end()], right=True))
     if not glued:
         return None
     chars = [" " if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
@@ -319,22 +327,27 @@ class Nona:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        blanked = _blanked(doc)
         found: list[Span] = []
         for recognizer in self._recognizers:
             try:
-                spans = list(recognizer.detect(doc))
-                if blanked is not None and recognizer.supported_types - _PROSE:
-                    seen = set(spans)
-                    view, mask = blanked
-                    spans.extend(
-                        s
-                        for s in recognizer.detect(view)
-                        if s.type not in _PROSE and s not in seen and not any(mask[s.start : s.end])
-                    )
-                found.extend(spans)
+                found.extend(recognizer.detect(doc))
             except Exception as exc:
                 raise DetectorError(recognizer.name) from exc
+        blanked = _blanked(doc)
+        if blanked is not None:
+            # Only where no first-pass span lies: a longer span cutting into one (an e-mail into a phone)
+            # would win the resolver and leave the rest of it in clear.
+            view, mask = blanked
+            for start, end in [(s.start, s.end) for s in found]:
+                mask[start:end] = b"\x01" * (end - start)
+            for recognizer in self._recognizers:
+                if not recognizer.supported_types - _PROSE:
+                    continue
+                try:
+                    more = recognizer.detect(view)
+                except Exception as exc:
+                    raise DetectorError(recognizer.name) from exc
+                found.extend(s for s in more if s.type not in _PROSE and not any(mask[s.start : s.end]))
         self._cache.put(key, found)
         return tuple(found)
 

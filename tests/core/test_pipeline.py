@@ -274,14 +274,35 @@ class Counting:
     [
         ("id EMP-12345PERSON_1", 2, "id CUSTOM_1PERSON_1"),  # a custom ID is searched again
         ("PERSON_1 EMP-12345 PERSON_1", 1, "PERSON_1 CUSTOM_1 PERSON_1"),  # nothing glued, one pass
+        ("Merci PERSON_1. (PERSON_1), EMP-12345", 1, "Merci PERSON_1. (PERSON_1), CUSTOM_1"),
         ("pas de placeholder", 1, "pas de placeholder"),
     ],
 )
 def test_the_second_pass_runs_only_when_a_placeholder_is_glued(text: str, calls: int, masked: str) -> None:
     recognizer = Counting()
     n = Nona([*Nona()._recognizers, recognizer], policies=ALL_REVERSIBLE)
-    assert n.anonymize(text).text == masked
+    result = n.anonymize(text)
+    assert result.text == masked
     assert recognizer.calls == calls
+    # `CUSTOM_1PERSON_1`: a masked value glued to a placeholder stays masked in the reply (#87)
+    expected = text if calls == 1 else masked
+    assert n.restore(result.text, result.mapping) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        (
+            "tel +216 22 123 456-sami.ksouri@example.tn-PERSON_1 ok",
+            "tel PHONE_1-PERSON_2.ksouri@example.tn-PERSON_1 ok",
+        ),
+        ("x+216 22 123 456_12345678b.c@y.tnPERSON_1", "xPHONE_1_12345678b.c@y.tnPERSON_1"),
+    ],
+)
+def test_the_second_pass_never_cuts_into_a_first_pass_span(text: str, masked: str) -> None:
+    """Re-review of #92: the e-mail found once the placeholder is blanked overlapped the phone, won the
+    resolver and left `+216 22 123` in clear. Output as on main."""
+    assert Nona().anonymize(text).text == masked
 
 
 @pytest.mark.parametrize(
