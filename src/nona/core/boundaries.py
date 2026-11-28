@@ -78,6 +78,12 @@ TYPED_PLACEHOLDER = re.compile(
     + "|".join(sorted((t.value for t in EntityType), key=len, reverse=True))
     + r")_\d{1,6}(?!\d)"
 )
+# The same, glued to whatever is on its left (`22 123 456PERSON_1`, `a@x.comEMAIL_1`). Group 1 is the type,
+# group 2 the number. To blank placeholders out before the structured recognizers' second pass
+# (`core/pipeline.py`, #85), which only adds, and to reserve their numbers (`reserved_numbers`).
+GLUED_PLACEHOLDER = re.compile(
+    "(" + "|".join(sorted((t.value for t in EntityType), key=len, reverse=True)) + r")_(\d{1,6})(?!\d)"
+)
 
 
 def strict_at(text: str, start: int, end: int) -> bool:

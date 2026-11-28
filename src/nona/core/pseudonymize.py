@@ -24,6 +24,7 @@ from enum import StrEnum
 
 from nona.core.boundaries import (
     ANY_PLACEHOLDER,
+    GLUED_PLACEHOLDER,
     NAME_TYPES,
     composes_after,
     loose_at,
@@ -112,8 +113,11 @@ def fold_surface(surface: str) -> str:
 
 
 def reserved_numbers(text: str) -> list[tuple[EntityType, int]]:
-    """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued."""
-    return [(_canonical_type(m.group(1)), int(m.group(2))) for m in ANY_PLACEHOLDER.finditer(text)]
+    """Placeholders the user literally wrote (`PERSON_1`, `person 2`): their numbers are never issued. Also
+    one glued on its left in its issued shape: `a@x.comEMAIL_1` must not go upstream as `EMAIL_1EMAIL_1`
+    once the address is found (#85)."""
+    found = itertools.chain(ANY_PLACEHOLDER.finditer(text), GLUED_PLACEHOLDER.finditer(text))
+    return list(dict.fromkeys((_canonical_type(m.group(1)), int(m.group(2))) for m in found))
 
 
 @dataclass(frozen=True, slots=True)

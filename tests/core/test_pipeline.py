@@ -173,6 +173,49 @@ def test_a_structured_value_glued_to_a_letter_round_trips() -> None:
         assert n.restore(result.text, result.mapping) == text
 
 
+_GLUED_VALUES = ["22 123 456", "+216 22 123 456", "a@x.com", "sami.ksouri@example.tn", "10.1.2.3"]
+_TYPED = ["PERSON_1", "PHONE_1", "EMAIL_2", "LOCATION_12"]
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    st.sampled_from(_GLUED_VALUES), st.sampled_from(_TYPED), st.sampled_from(["tel ", "mail: ", "", "x\n"])
+)
+@example("22 123 456", "PERSON_1", "tel ")  # the issue's examples
+@example("a@x.com", "PERSON_1", "mail ")
+def test_a_value_glued_before_a_typed_placeholder_is_masked(value: str, typed: str, prefix: str) -> None:
+    """#85: a typed placeholder glued after a structured value hid it from its recognizer, so the value went
+    upstream in clear on first mention. The typed placeholder stays, its number is never issued, and the
+    answer restores to the text exactly."""
+    n = Nona()
+    text = f"{prefix}{value}{typed} merci"
+    result = n.anonymize(text)
+    assert value not in result.text
+    assert typed in result.text
+    assert all(e.placeholder != typed for e in result.entities)
+    assert n.restore(result.text, result.mapping) == text
+
+
+def test_a_value_glued_before_a_typed_placeholder_is_masked_when_re_sent() -> None:
+    """The restored text goes upstream masked again in the next message."""
+    n = Nona()
+    first = "mail a@x.comEMAIL_1 et tel 22123456PHONE_1"
+    conv = n.anonymize_messages([first, first])
+    assert [m.text for m in conv.messages] == ["mail EMAIL_2EMAIL_1 et tel PHONE_2PHONE_1"] * 2
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        ("PERSON_1@example.com", "EMAIL_1"),  # the first pass's e-mail is kept, not cut at the placeholder
+        ("PERSON_1a@x.com", "EMAIL_1"),
+        ("SamiPERSON_1", "SamiPERSON_1"),  # names aren't searched again: strict boundaries, #87
+    ],
+)
+def test_the_second_pass_only_adds(text: str, masked: str) -> None:
+    assert Nona().anonymize(text).text == masked
+
+
 @pytest.mark.parametrize(
     "text",
     ["M. Samiـ", "M. ـSami", "Mme Ksouriـ w Ksouri", "M.ـSb", "M.Saaـ", " .ـلSami", "قول ـلسامي"],
