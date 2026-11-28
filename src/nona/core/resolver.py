@@ -40,7 +40,7 @@ import itertools
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 
 from nona.core.boundaries import (
     LOOSE_LEFT,
@@ -58,6 +58,9 @@ from nona.core.types import EntityType, Span
 # Higher wins when two spans have the same length. Explicit and checksum-validated types first, then
 # context-gated ones, then the rest. A CIN beats a phone on the same 8 digits because its context word
 # says what it is.
+# The types `DEFAULT_POLICIES` redacts (`core/pseudonymize.py`); `Nona` passes its own policies.
+REDACTED_BY_DEFAULT: frozenset[EntityType] = frozenset({EntityType.CARD})
+
 PRIORITY: dict[EntityType, int] = {
     EntityType.CUSTOM: 100,
     EntityType.IBAN: 90,
@@ -258,26 +261,36 @@ def resolve(
     min_score: float = 0.5,
     allowlist: Sequence[str] = (),
     pieces: bool = True,
+    redacted: Collection[EntityType] = REDACTED_BY_DEFAULT,
+    kept_as_is: Collection[EntityType] = (),
 ) -> list[Span]:
     """Non-overlapping spans, sorted by position. `original` is the text the spans index into. With
     `pieces=False`, step 5 keeps only its first pass: `fill_gaps` adds the pieces later (`core/pipeline.py`
-    does, after its look-ahead)."""
+    does, after its look-ahead). `redacted` and `kept_as_is` are the types with those policies: a widened
+    span takes the type that hides most (`_widen`)."""
     allowed = {_fold(term) for term in allowlist}
     candidates = _candidates(spans, original, min_score, allowed)
     kept: list[Span] = []
     for span in sorted(candidates, key=_rank):
         if not any(span.overlaps(k) for k in kept):
             kept.append(span)
-    kept = _widen(kept, candidates)
+    kept = _widen(kept, candidates, frozenset(redacted), frozenset(kept_as_is))
     return _fill(kept, candidates, original, allowed) if pieces else sorted(kept, key=Span.sort_key)
 
 
-def _widen(kept: list[Span], candidates: Sequence[Span]) -> list[Span]:
+def _widen(
+    kept: list[Span],
+    candidates: Sequence[Span],
+    redacted: frozenset[EntityType],
+    kept_as_is: frozenset[EntityType],
+) -> list[Span]:
     """Step 5: a structured value that lost a partial overlap to another one widens it, so no part of either
     is sent in clear (#93): the e-mail `456-a@x.com` beat the phone `22 123 456`, and `22 123` leaked.
 
     The spans kept and the values that lost to them are joined wherever they overlap, in chains: each chain
-    becomes one span, over all of it, with the type, score and detector of the best ranked span kept in it.
+    becomes one span, over all of it, with the type, score and detector of one of its spans: of a redacted
+    type if any, whether kept or lost (a card inside a phone's span must not reach the mapping), else of a
+    type not kept as is; then a span kept before a lost one, the best ranked first.
     So the result doesn't depend on the order of the candidates, and no two chains overlap. A lost value
     that overlaps a name, or lies inside one span kept (the RIB of an IBAN), joins nothing: names fill gaps
     with pieces. A chain covers nothing but its own spans, so it overlaps no other span kept.
@@ -286,9 +299,7 @@ def _widen(kept: list[Span], candidates: Sequence[Span]) -> list[Span]:
     (`22 123 456-a@x.com`) is masked inside the e-mail's span, so that message doesn't say `PHONE_1`.
     """
     held = set(kept)
-    links: list[tuple[int, int, Span | None]] = [
-        (k.start, k.end, k) for k in kept if k.type not in NAME_TYPES
-    ]
+    links = [k for k in kept if k.type not in NAME_TYPES]
     for c in candidates:
         if c.type in NAME_TYPES or c in held:
             continue
@@ -297,18 +308,19 @@ def _widen(kept: list[Span], candidates: Sequence[Span]) -> list[Span]:
             continue
         if len(hits) == 1 and hits[0].start <= c.start and c.end <= hits[0].end:
             continue
-        links.append((c.start, c.end, None))
+        links.append(c)
     out = [k for k in kept if k.type in NAME_TYPES]
     chains: list[tuple[int, int, list[Span]]] = []  # sorted by start, each over the links that overlap
-    for start, end, k in sorted(links, key=lambda x: (x[0], x[1])):
-        if not chains or start >= chains[-1][1]:
-            chains.append((start, end, []))
+    for k in sorted(links, key=lambda x: (x.start, x.end)):
+        if not chains or k.start >= chains[-1][1]:
+            chains.append((k.start, k.end, []))
         c_start, c_end, members = chains[-1]
-        chains[-1] = (c_start, max(c_end, end), members)
-        if k is not None:
-            members.append(k)
+        chains[-1] = (c_start, max(c_end, k.end), members)
+        members.append(k)
     for start, end, members in chains:
-        best = min(members, key=_rank)  # every lost value overlaps a span kept, in its chain
+        best = min(
+            members, key=lambda k: (k.type not in redacted, k.type in kept_as_is, k not in held, _rank(k))
+        )
         if (best.start, best.end) == (start, end):
             out.append(best)
         else:

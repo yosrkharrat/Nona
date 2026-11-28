@@ -10,6 +10,9 @@ from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
 from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
 from nona.core.normalize import DROPPED, normalize
+from nona.core.pipeline import _blanked
+from nona.core.pseudonymize import DEFAULT_POLICIES
+from nona.core.resolver import REDACTED_BY_DEFAULT
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -447,6 +450,19 @@ def test_arabic_look_ahead_spreads_listed_names_only() -> None:
         ("iban TN5910006035183598478831abc", "iban IBAN_1abc"),
         ("ibanTN5910006035183598478831", "ibanIBAN_1"),
         ("iban FR7630006000011234567890189x", "iban IBAN_1x"),
+        # review of #106: a glued card stays a card, though `rd` + its digits pass mod 97
+        ("card4622436890898261", "card[CARD]"),
+        ("card_4242424242424242", "card_[CARD]"),
+        # the number of a placeholder doesn't start a spaced card
+        ("PERSON_2 4139 4411 7715 1620", "PERSON_2 [CARD]"),
+        ("x_2 4139 4411 7715 1620", "x_2 [CARD]"),
+        # what was blanked keeps two numbers apart
+        ("22 123 456abc 22 123 457", "PHONE_1abc PHONE_2"),
+        # `_` and a lone `.` don't hide a value
+        (".a@x.com", ".EMAIL_1"),
+        ("10.0.0.1_ ok", "IP_ADDRESS_1_ ok"),
+        (".10.0.0.1 ok", ".IP_ADDRESS_1 ok"),
+        ("4242424242424242_ ok", "[CARD]_ ok"),
         # an e-mail after a phone and `-`; a phone cut by an e-mail
         ("tel 22123456-a@x.comPERSON_1", "tel EMAIL_1PERSON_1"),
         ("tel 22 123 456-a@x.com ok", "tel EMAIL_1 ok"),
@@ -509,3 +525,13 @@ def test_glued_values_never_fail_and_never_leak(parts: list[tuple[str, str, str]
     up = Nona().anonymize(text).text
     for _, v, _ in parts:
         assert v not in up, (text, up)
+
+
+@pytest.mark.parametrize("text", ["commande22123456", "iban TN5910006035183598478831 ok", "Merci PERSON_1."])
+def test_no_second_pass_when_nothing_is_blanked(text: str) -> None:
+    """Review of #106: an order cue or an IBAN's country code is left in place, so nothing hides a value."""
+    assert _blanked(normalize(text)) is None
+
+
+def test_the_resolver_redacts_by_default_what_the_policies_redact() -> None:
+    assert {t for t, p in DEFAULT_POLICIES.items() if p is Policy.REDACT} == REDACTED_BY_DEFAULT

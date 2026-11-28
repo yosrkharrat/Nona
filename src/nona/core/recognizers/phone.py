@@ -36,6 +36,7 @@ from collections.abc import Sequence
 
 import phonenumbers
 
+from nona.core.boundaries import BLANK
 from nona.core.normalize import NormalizedDoc
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
@@ -55,7 +56,7 @@ CUE_SCORE = 0.3  # below the resolver's default `min_score` of 0.5, so the span 
 _ORDER_CUE = re.compile(
     r"(?<!\w)(?:commande|cmd\.?|r[ée]f\.?|r[ée]f[ée]rence|facture"
     r"|order|invoice|tracking|booking|طلبية|الطلبية|فاتورة|الفاتورة)"
-    r"(?:[ \t]*(?:n°|n\.|no\.?|nº|num[ée]ro|num\.?|number|nr\.?|#|:|-|رقم))*[ \t]*\Z"
+    rf"(?:[ \t{BLANK}]*(?:n°|n\.|no\.?|nº|num[ée]ro|num\.?|number|nr\.?|#|:|-|رقم))*[ \t{BLANK}]*\Z"
 )
 _INTERNATIONAL = re.compile(r"\s*(?:\+|00)")
 

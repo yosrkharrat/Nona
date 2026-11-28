@@ -28,6 +28,9 @@ _EMAIL = re.compile(
 )
 
 
+_LONGEST = max(len(t.value) for t in EntityType) + 8  # `IP_ADDRESS_123456`, and the next character
+
+
 class EmailRecognizer:
     @property
     def fingerprint(self) -> str:
@@ -57,7 +60,8 @@ def _before_placeholder(doc: NormalizedDoc, start: int, end: int) -> int:
     the domain, or when what is left wouldn't be an address: masked whole, then, never leaked."""
     at = doc.text.index("@", start, end)
     o_end = doc.origin[end - 1][1]
-    p = GLUED_PLACEHOLDER.search(doc.original, doc.origin[at][1])
+    # Bounded: a placeholder starting before `o_end` ends within `_LONGEST` of it, so detection stays linear.
+    p = GLUED_PLACEHOLDER.search(doc.original, doc.origin[at][1], o_end + _LONGEST)
     if p is None or p.start() >= o_end:
         return end
     cut = next(i for i in range(at, end) if doc.origin[i][0] >= p.start())

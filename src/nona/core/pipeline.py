@@ -49,8 +49,9 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
+from typing import TypedDict
 
-from nona.core.boundaries import GLUED_PLACEHOLDER, PROCLITICS
+from nona.core.boundaries import BLANK, GLUED_PLACEHOLDER, PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
 from nona.core.checksums import iban_valid
@@ -66,6 +67,7 @@ from nona.core.pseudonymize import (
     restore,
 )
 from nona.core.recognizers import Recognizer, default_recognizers
+from nona.core.recognizers.financial import card_number
 from nona.core.recognizers.gazetteer import NAMES, common_as_written
 from nona.core.recognizers.ner import NER, place_or_org
 from nona.core.recognizers.phone import order_cue
@@ -109,11 +111,12 @@ def _gluing(c: str, *, right: bool = False) -> bool:
     return c.isalnum() or c in DROPPED or (right and c == "+")
 
 
-def _blank(mask: bytearray, doc: NormalizedDoc, start: int, end: int) -> None:
-    """Marks the original characters of `doc.text[start:end]` in `mask`."""
+def _blank(mask: bytearray, doc: NormalizedDoc, start: int, end: int) -> bool:
+    """Marks the original characters of `doc.text[start:end]` in `mask`; whether there were any."""
     if start < end:
         a, b = doc.origin[start][0], doc.origin[end - 1][1]
         mask[a:b] = b"\x01" * (b - a)
+    return start < end
 
 
 def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc, bytearray] | None:
@@ -149,15 +152,18 @@ def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc,
     for m in _GLUED_DIGITS.finditer(doc.text) if digits else ():
         if (m["left"] or m["right"]) and sum(c.isdigit() for c in m["digits"]) >= _GLUED_DIGITS_MIN:
             left_end = m.end("left")
-            if len(m["left"]) >= 2 and iban_valid(m["left"][-2:] + m["digits"]):
+            if (
+                len(m["left"]) >= 2
+                and iban_valid(m["left"][-2:] + m["digits"])
+                and not card_number(m["digits"])  # a card stays a card, redacted: mod 97 passes 1 in 97
+            ):
                 left_end -= 2
             if not order_cue(m["left"]):
-                _blank(mask, doc, m.start("left"), left_end)
-            _blank(mask, doc, m.end("digits"), m.end("digits") + len(m["right"]))
-            glued = True
+                glued = _blank(mask, doc, m.start("left"), left_end) or glued
+            glued = _blank(mask, doc, m.end("digits"), m.end("digits") + len(m["right"])) or glued
     if not glued:
         return None
-    chars = [" " if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
+    chars = [BLANK if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
     return NormalizedDoc(text, "".join(chars), doc.origin), mask
 
 
@@ -220,6 +226,15 @@ def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[
     return out
 
 
+class ResolveOptions(TypedDict):
+    """What `resolve` takes from a `Nona`'s configuration."""
+
+    min_score: float
+    allowlist: Sequence[str]
+    redacted: frozenset[EntityType]
+    kept_as_is: frozenset[EntityType]
+
+
 class DetectorError(RuntimeError):
     """A recognizer failed. Nothing may be sent upstream (ADR-0003); the proxy turns this into HTTP 503."""
 
@@ -251,6 +266,12 @@ class Nona:
             raise ValueError(f"terms both allowed and denied: {clash}")
         self._recognizers = list(default_recognizers() if recognizers is None else recognizers)
         self._policies = dict(DEFAULT_POLICIES if policies is None else policies)
+        self._resolving = ResolveOptions(
+            min_score=min_score,
+            allowlist=tuple(allowlist),
+            redacted=frozenset(t for t, p in self._policies.items() if p is Policy.REDACT),
+            kept_as_is=frozenset(t for t, p in self._policies.items() if p is Policy.KEEP),
+        )
         self._allowlist = tuple(allowlist)
         self._denylist = tuple(denylist)
         self._min_score = min_score
@@ -282,7 +303,7 @@ class Nona:
             for s in recognized
             if self._policies.get(s.type) is not Policy.KEEP or not any(s.overlaps(p) for p in propagated)
         )
-        spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist, pieces=False)
+        spans = resolve(candidates, text, pieces=False, **self._resolving)
         words, span_seeds = self._look_ahead_words(text, spans, recognized, seeds or {})
         # It fills gaps only, never retyping a detection, except a span kept as is (an ORGANIZATION): that
         # one gives way, so `… de la Clinique Ahmed Ben Salem` doesn't send a name found in this message.
@@ -296,9 +317,7 @@ class Nona:
             return self._fill_gaps(spans, candidates, text), span_seeds
         hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
         kept = [s for s in spans if s not in hiding]
-        final = resolve(
-            [*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist, pieces=False
-        )
+        final = resolve([*kept, *extra], text, pieces=False, **self._resolving)
         kept_spans = set(final)
         seeds_kept = {s: t for s, t in span_seeds.items() if s in kept_spans}
         return self._fill_gaps(final, [*candidates, *extra], text), seeds_kept

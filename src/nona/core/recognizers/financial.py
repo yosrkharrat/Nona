@@ -27,7 +27,8 @@ _MAX_RUN = 42  # longest IBAN (34) with a separator every 4 characters
 
 def _token_starts(text: str, token: re.Pattern[str]) -> Iterator[int]:
     """Start of every token that isn't glued to a preceding letter or digit. `_` separates words, as in
-    `core/boundaries.py`: `card_4242…` and `4242…_` are numbers (#93)."""
+    `core/boundaries.py`: `card_4242…` and `4242…_` are numbers (#93), though after `x_` a number is one
+    token (`_scan`)."""
     for m in token.finditer(text):
         if m.start() == 0 or not text[m.start() - 1].isalnum():
             yield m.start()
@@ -62,7 +63,11 @@ def _scan(
     for start in _token_starts(text, token):
         if start < covered:
             continue
-        for end in reversed(_run_ends(text, start, token)):
+        ends = _run_ends(text, start, token)
+        if start >= 2 and text[start - 1] == "_" and text[start - 2].isalnum():
+            # One token only after `x_`: in `PERSON_2 4139 4411 7715 1620` the `2` is the placeholder's.
+            ends = ends[:1]
+        for end in reversed(ends):
             if accept(text[start:end]):
                 spans.append(to_span(doc, start, end, etype, 1.0, detector))
                 covered = end
@@ -72,6 +77,11 @@ def _scan(
 
 def _iban(candidate: str) -> bool:
     return re.match(r"[a-z]{2}\d{2}", candidate) is not None and iban_valid(candidate)
+
+
+def card_number(candidate: str) -> bool:
+    """13 to 19 digits, maybe grouped, from a card network, Luhn-valid."""
+    return _card(candidate)
 
 
 def _card(candidate: str) -> bool:

@@ -74,6 +74,16 @@ def test_lost_values_overlapping_each_other_join_their_chains() -> None:
         assert resolve(list(order), TEXT) == [s(0, 28, PH)]
 
 
+def test_a_chain_holding_a_redacted_value_takes_its_type() -> None:
+    """Review of #106: a card inside a longer phone's span reached the mapping, which restore writes back."""
+    phone, card = s(0, 20, PH), s(15, 30, EntityType.CARD)
+    assert resolve([phone, card], TEXT) == [s(0, 30, EntityType.CARD)]
+    assert resolve([phone, card], TEXT, redacted=()) == [s(0, 30, PH)]
+    assert resolve([phone, s(15, 30, EntityType.EMAIL)], TEXT, kept_as_is={PH}) == [
+        s(0, 30, EntityType.EMAIL)
+    ]
+
+
 def test_a_structured_value_inside_another_is_dropped() -> None:
     assert resolve([s(0, 12, EntityType.IBAN), s(4, 12, EntityType.RIB)], TEXT) == [s(0, 12, EntityType.IBAN)]
 

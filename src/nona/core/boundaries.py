@@ -48,6 +48,11 @@ RIGHT = rf"(?=[{_DROPPED}]*+(?![^\W_]))"  # not followed by a letter or digit, p
 LOOSE_LEFT = r"(?<![A-Za-z0-9])"
 LOOSE_RIGHT = r"(?!\d)"
 
+# What the structured recognizers' second pass turns hidden characters into (`core/pipeline.py`, #93): not a
+# space, so two numbers it separates stay apart, and no recognizer reads it as part of a value. A context
+# cue reads past it as past a space (`ref AB22123456`, `recognizers/phone.py`).
+BLANK = "|"
+
 _STRICT_END = re.compile(RIGHT)
 _LOOSE_START = re.compile(LOOSE_LEFT)
 _LOOSE_END = re.compile(LOOSE_RIGHT)
