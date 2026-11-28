@@ -39,15 +39,15 @@ The `test` split is frozen: its hash is committed, and it is run once, for the p
   `system` and `tool`, which this release doesn't use), the entities it contains, and each mention's offsets.
   The schema is in [05 §3](../../docs/design/05-dataset.md#3-schema).
 - **Entity types and mentions** (`dev` / `test`): PERSON 449 / 407, PHONE 156 / 146, EMAIL 60 / 48,
-  LOCATION 30 / 55, IBAN 19 / 26, RIB 20 / 16, NATIONAL_ID (Tunisian CIN) 11 / 24, CARD 10 / 16,
+  LOCATION 30 / 55, IBAN 19 / 26, RIB 20 / 16, NATIONAL_ID (Tunisian CIN) 13 / 24, CARD 10 / 16,
   IP_ADDRESS 6 / 10. There is no ORGANIZATION entity in this release.
 - **Languages.** `fr`, `en`, `ar` (MSA), `aeb-Arab` (Darija in Arabic script), `aeb-Latn` (Arabizi). Each
   is in at least 15% of each split's conversations, and 30% of each are code-switched; the exact shares are in
   [05 §7](../../docs/design/05-dataset.md#current-splits-s4-74), and `tests/bench/test_splits.py` checks
   the targets.
-- **Difficulty tags** (`dev` / `test`): `multi-turn` 101 / 89, `code-switching` 83 / 106, `arabizi` 82 / 113,
-  `common-word-name` 47 / 93, `honorific` 32 / 26, `clitic` 23 / 24, `eastern-digits` 14 / 25,
-  `ambiguous-reference` 9 / 10, `spelling-variant` 4 / 5. Results can be broken down by them.
+- **Difficulty tags** (`dev` / `test`): `multi-turn` 101 / 89, `code-switching` 84 / 106, `arabizi` 83 / 113,
+  `common-word-name` 47 / 93, `honorific` 32 / 26, `clitic` 23 / 24, `eastern-digits` 15 / 25,
+  `ambiguous-reference` 9 / 10, `spelling-variant` 4 / 5, `context-cue` 2 / 0. Results can be broken down by them.
 - **Public figures.** One entity in `test` is marked `public: true` (a public figure named next to a private
   person); it is labelled but left out of the headline. `dev` has none.
 - **Splits.** `dev` is for tuning. `test` (56% of conversations) has its own templates (no turn text in

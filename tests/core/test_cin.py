@@ -34,6 +34,7 @@ def found(text: str) -> list[str]:
         ("رقم بطاقة التعريف 07311842 و رقم الفاتورة 52930417", ["07311842"]),
         ("رقم بطاقة التعريف 07311842 والفاتورة 52930417", ["07311842"]),
         ("رقم بطاقة التعريف 07311842 للفاتورة 52930417", ["07311842"]),
+        ("رقم بطاقة التعريف 07311842 ورقم الطلب 52930417", ["07311842"]),
         ("CIN 07311842, facture 52930417", ["07311842"]),
         ("CIN 07311842 puis la facture 52930417", ["07311842"]),
         ("CIN 07311842, commande n° 52930417", ["07311842"]),
@@ -52,6 +53,8 @@ def found(text: str) -> list[str]:
         ("CIN 08123456 (ancienne 01234567)", ["08123456", "01234567"]),
         ("cin 08123456 خاطر 01234567", ["08123456", "01234567"]),
         ("بطاقة ٠٨١٢٣٤٥٦ و ٠٨١٢٣٤٥٧", ["٠٨١٢٣٤٥٦", "٠٨١٢٣٤٥٧"]),
+        ("رقم بطاقة التعريف ٠٨١٢٣٤٥٦ وصل ٠١٢٣٤٥٦٧", ["٠٨١٢٣٤٥٦", "٠١٢٣٤٥٦٧"]),  # وصل: also "arrived"
+        ("بطاقة 08123456 طلب 01234567", ["08123456", "01234567"]),  # bare طلب: also "request"
     ],
 )
 def test_cin_found(text: str, expected: list[str]) -> None:
@@ -81,11 +84,19 @@ def test_cin_not_found(text: str) -> None:
 
 
 def test_long_input_stays_fast() -> None:
-    """Cues, labels and numbers on every line: detection stays linear-ish, not cubic."""
-    text = "paiement carte, commande 52930417, ref 71820394, CIN 07311842\n" * 2000
-    started = time.perf_counter()
-    assert "07311842" in found(text)
-    assert time.perf_counter() - started < 2.0
+    """Cues, labels and numbers on every line: 10x the input takes about 10x the time, not 100x or 1000x."""
+    line = "paiement carte, commande 52930417, ref 71820394, CIN 07311842\n"
+
+    def best_of_3(lines: int) -> float:
+        doc = normalize(line * lines)
+        times = []
+        for _ in range(3):
+            started = time.perf_counter()
+            CinRecognizer().detect(doc)
+            times.append(time.perf_counter() - started)
+        return min(times)
+
+    assert best_of_3(3000) < 40 * best_of_3(300)
 
 
 @settings(max_examples=30, deadline=None)

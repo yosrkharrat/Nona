@@ -36,8 +36,8 @@ CONTEXT = re.compile(
 # Labels of other 8-digit numbers (order, invoice, parcel, reference); Arabic takes a و/ف, ب/ل or لل prefix.
 OTHER_LABEL = re.compile(
     r"(?<!\w)(?:"
-    r"commande|facture|colis|suivi|référence|reference|réf|ref|ticket|order|invoice|tracking"
-    r"|[وف]?(?:[بل]?ال|لل)?(?:طلبية|طلب|فاتورة|طرد|مرجع|وصل)"
+    r"commande|facture|colis|référence|reference|réf|ref|ticket|order|invoice|tracking"
+    r"|[وف]?(?:[بل]?ال|لل)?(?:طلبية|فاتورة|طرد|مرجع)|[وف]?(?:[بل]?ال|لل)طلب"  # bare طلب is also "request"
     r")(?!\w)"
 )
 LABEL_GAP = 2  # a label at most this many words before a number is its own
