@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import random
 import re
 
@@ -46,8 +47,33 @@ def test_non_overlapping_spans_are_all_kept_in_order() -> None:
     assert resolve([s(10, 12), s(0, 4), s(5, 8)], TEXT) == [s(0, 4), s(5, 8), s(10, 12)]
 
 
-def test_partial_overlap_keeps_the_longer() -> None:
-    assert resolve([s(0, 6, PH), s(4, 12, PH)], TEXT) == [s(4, 12, PH)]
+def test_structured_values_in_a_partial_overlap_are_masked_as_one() -> None:
+    # #93: the longer one used to win alone, and the rest of the other was sent in clear.
+    assert resolve([s(0, 6, PH), s(4, 12, PH)], TEXT) == [s(0, 12, PH)]
+
+
+def test_the_widened_span_takes_the_best_ranked_type_whatever_the_order() -> None:
+    text = "tel 22 123 456-a@x.com ok"
+    phone = Span(4, 14, EntityType.PHONE, 1.0, "phonenumbers")
+    email = Span(11, 22, EntityType.EMAIL, 1.0, "regex:email")
+    expected = [Span(4, 22, EntityType.EMAIL, 1.0, "regex:email")]  # the e-mail is longer
+    assert resolve([phone, email], text) == resolve([email, phone], text) == expected
+
+
+def test_a_chain_of_partial_overlaps_is_one_span() -> None:
+    a, b, c = s(0, 5, PH), s(3, 9, EntityType.EMAIL), s(7, 12, PH)
+    for order in itertools.permutations([a, b, c]):
+        assert resolve(list(order), TEXT) == [s(0, 12, EntityType.EMAIL)]
+
+
+def test_a_structured_value_inside_another_is_dropped() -> None:
+    assert resolve([s(0, 12, EntityType.IBAN), s(4, 12, EntityType.RIB)], TEXT) == [s(0, 12, EntityType.IBAN)]
+
+
+def test_a_value_overlapping_a_name_widens_nothing() -> None:
+    # The name is kept first; the phone that lost to it also overlaps the one kept.
+    name, lost, kept = s(0, 8), s(6, 12, PH), s(10, 16, PH)
+    assert resolve([name, lost, kept], TEXT) == [name, kept]
 
 
 def test_a_name_keeps_its_words_outside_a_longer_partial_overlap() -> None:
@@ -262,9 +288,16 @@ def test_result_is_non_overlapping_and_independent_of_input_order(
 ) -> None:
     result = resolve(spans, MIXED)
     assert all(not a.overlaps(b) for i, a in enumerate(result) for b in result[i + 1 :])
-    # Each span kept is a candidate, or a piece of a name candidate it lost a partial overlap with (#89).
+    # Each span kept is a candidate, a piece of a name candidate it lost a partial overlap with (#89), or
+    # structured candidates in a partial overlap, made one (#93).
     assert all(
         r in spans
+        or (
+            r.type not in NAME_TYPES
+            and any((c.type, c.score, c.detector) == (r.type, r.score, r.detector) for c in spans)
+            and any(c.start == r.start for c in spans)
+            and any(c.end == r.end for c in spans)
+        )
         or any(
             c.type in NAME_TYPES
             and (c.type, c.score, PIECE_DETECTOR) == (r.type, r.score, r.detector)
@@ -307,10 +340,15 @@ def _greedy(spans: list[Span], text: str) -> list[Span]:
 
 @given(spans_strategy)
 def test_every_span_kept_before_89_is_still_kept(spans: list[Span]) -> None:
-    """#89 only adds pieces in the gaps: nothing kept before is dropped or retyped."""
+    """#89 only adds pieces in the gaps: nothing kept before is dropped or retyped. A structured value may be
+    widened, #93."""
     plain = [x for x in spans if x.detector not in ("propagation", "denylist")]
     result = resolve(plain, MIXED)
-    assert all(k in result for k in _greedy(plain, MIXED)), result
+    assert all(
+        k in result
+        or (k.type not in NAME_TYPES and any(r.start <= k.start and k.end <= r.end for r in result))
+        for k in _greedy(plain, MIXED)
+    ), result
 
 
 @given(spans_strategy)
@@ -319,7 +357,7 @@ def test_a_piece_is_never_glued_to_a_span_kept(spans: list[Span]) -> None:
     separator in between (`PERSON_1PERSON_2` would never be restored, #87)."""
     kept = resolve(spans, MIXED)
     for r in kept:
-        if r not in spans:  # a piece
+        if r.detector == PIECE_DETECTOR:
             assert r.start == 0 or not word_char(MIXED[r.start - 1]), (r, kept)
             assert r.end == len(MIXED) or not word_char(MIXED[r.end]), (r, kept)
 

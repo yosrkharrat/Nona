@@ -202,29 +202,34 @@ class Pseudonymizer:
         Also one glued to a value masked in this message, which restore will find once the value is masked:
         `4242424242424242PERSON_1` goes upstream as `[CARD]PERSON_1`, and `EMAIL_1٢٢…` (a phone in
         Arabic-Indic digits) as `EMAIL_1PHONE_1`, #85. Left as is, restore would write the earlier
-        `PERSON_1` or `EMAIL_1` there. Judged on the text as it goes upstream, with the boundaries restore
-        holds that type to: strict for names, so `PERSON_1PHONE_1` keeps the number the user typed.
+        `PERSON_1` or `EMAIL_1` there. Judged on the text as it goes upstream, each value masked here standing
+        in as a placeholder of its type, with the boundaries restore holds that type to: strict for names,
+        so `PERSON_1PHONE_1` and `a@x.comـPERSON_1` keep the number the user typed, as restore leaves them
+        (#93).
         """
-        found = {m.span(): m for m in ANY_PLACEHOLDER.finditer(original)}
-        ends = {k.end: k for k in kept}
-        starts = {k.start for k in kept}
-        for m in GLUED_PLACEHOLDER.finditer(original):
-            before = ends.get(m.start())
-            if m.span() in found or (before is None and m.end() not in starts):
-                continue  # not next to a value masked here: restore sees it as on main
-            if before is None:
-                left = original[m.start() - 1 : m.start()]
-            else:  # `[CARD]` ends with `]`, `PHONE_1` with a digit
-                left = "]" if self.policy(before.type) is Policy.REDACT else "0"
-            right = "P" if m.end() in starts else original[m.end() : m.end() + 1]
-            seen_by_restore = strict_at if _canonical_type(m.group(1)) in NAME_TYPES else loose_at
-            if seen_by_restore(f"{left}P{right}", len(left), len(left) + 1):
-                found[m.span()] = m
+        parts: list[str] = []
+        pieces: list[tuple[int, int, int]] = []  # unchanged pieces: upstream start, original start, length
+        pos = up = 0
+        for k in kept:  # sorted, not overlapping
+            pieces.append((up, pos, k.start - pos))
+            token = f"[{k.type.value}]" if self.policy(k.type) is Policy.REDACT else f"{k.type.value}_1"
+            parts += [original[pos : k.start], token]
+            up += k.start - pos + len(token)
+            pos = k.end
+        pieces.append((up, pos, len(original) - pos))
+        parts.append(original[pos:])
+        upstream = "".join(parts)
+        piece_starts = [p[0] for p in pieces]
         out: list[Span] = []
-        for (start, end), m in sorted(found.items()):
-            span = Span(start, end, _canonical_type(m.group(1)), 1.0, LITERAL_DETECTOR)
-            if self._linker.issued(span.type, int(m.group(2))) and not any(span.overlaps(k) for k in kept):
-                out.append(span)
+        for m in ANY_PLACEHOLDER.finditer(upstream):
+            up_start, o_start, length = pieces[bisect.bisect_right(piece_starts, m.start()) - 1]
+            if m.end() > up_start + length:
+                continue  # runs into a value masked here
+            etype = _canonical_type(m.group(1))
+            seen_by_restore = strict_at if etype in NAME_TYPES else loose_at
+            if seen_by_restore(upstream, m.start(), m.end()) and self._linker.issued(etype, int(m.group(2))):
+                start = o_start + m.start() - up_start
+                out.append(Span(start, start + m.end() - m.start(), etype, 1.0, LITERAL_DETECTOR))
         return out
 
     def mapping(self) -> Mapping:

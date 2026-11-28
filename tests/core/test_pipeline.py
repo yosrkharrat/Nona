@@ -296,14 +296,15 @@ def test_the_second_pass_runs_only_when_a_placeholder_is_glued(text: str, calls:
     [
         (
             "tel +216 22 123 456-sami.ksouri@example.tn-PERSON_1 ok",
-            "tel PHONE_1-PERSON_2.ksouri@example.tn-PERSON_1 ok",
+            "tel EMAIL_1-PERSON_1 ok",
         ),
-        ("x+216 22 123 456_12345678b.c@y.tnPERSON_1", "xPHONE_1_12345678b.c@y.tnPERSON_1"),
+        ("x+216 22 123 456_12345678b.c@y.tnPERSON_1", "xEMAIL_1PERSON_1"),
     ],
 )
 def test_the_second_pass_never_cuts_into_a_first_pass_span(text: str, masked: str) -> None:
     """Re-review of #92: the e-mail found once the placeholder is blanked overlapped the phone, won the
-    resolver and left `+216 22 123` in clear. Output as on main."""
+    resolver and left `+216 22 123` in clear. Main kept the phone and sent the rest of the e-mail
+    (`ksouri@example.tn`); now the phone and the e-mail the first pass finds are one span (#93)."""
     assert Nona().anonymize(text).text == masked
 
 
@@ -421,3 +422,53 @@ def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
 def test_arabic_look_ahead_spreads_listed_names_only() -> None:
     """No capitals in Arabic: an unlisted word of a name (`الثاني`, the second) must not spread."""
     assert Nona().anonymize("رقم محمد الثاني. الطابق الثاني").text == "رقم PERSON_1 الثاني. الطابق الثاني"
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        # a value glued to letters, a lower- or mixed-case placeholder among them
+        ("tel 22123456abc", "tel PHONE_1abc"),
+        ("tel22123456", "telPHONE_1"),
+        ("tel 22 123 456abc", "tel PHONE_1abc"),
+        ("tel 22123456person_1", "tel PHONE_1person_1"),
+        ("tel 22123456Person_1", "tel PHONE_1Person_1"),
+        ("ip10.0.0.1", "ipIP_ADDRESS_1"),
+        ("card4242424242424242", "card[CARD]"),
+        # an e-mail followed by `-` or `_`
+        ("mail a@x.com- merci", "mail EMAIL_1- merci"),
+        ("mail a@x.com-merci", "mail EMAIL_1-merci"),
+        ("mail a@x.com_x", "mail EMAIL_1_x"),
+        ("mail a@x.com_person_1", "mail EMAIL_1_person_1"),
+        ("a@x.comPERSON_1 ok", "EMAIL_1PERSON_1 ok"),  # the TLD stops at the typed placeholder
+        # an e-mail after a phone and `-`; a phone cut by an e-mail
+        ("tel 22123456-a@x.comPERSON_1", "tel EMAIL_1PERSON_1"),
+        ("tel 22 123 456-a@x.com ok", "tel EMAIL_1 ok"),
+        # `.` and `/` between a typed placeholder and a value
+        ("ip PERSON_1.10.1.2.3", "ip PERSON_1.IP_ADDRESS_1"),
+        ("cin PERSON_1/12345678", "cin PERSON_1/NATIONAL_ID_1"),
+        # left as they were: letters and digits mixed, an order reference, a short number
+        ("sha 3f2a91827364e5", "sha 3f2a91827364e5"),
+        ("ref AB22123456", "ref AB22123456"),
+        ("commande22123456", "commande22123456"),  # an order cue glued: an order number, as after a space
+        ("ref22123456abc", "ref22123456abc"),
+        ("iPhone15 pro", "iPhone15 pro"),
+    ],
+)
+def test_a_value_glued_to_a_word_is_found(text: str, masked: str) -> None:
+    """#93: each recognizer ended a value at a word boundary, so a value glued to a word went upstream."""
+    assert Nona().anonymize(text).text == masked
+
+
+def test_a_denylist_term_glued_to_a_typed_placeholder_is_found() -> None:
+    assert (
+        Nona(denylist=["projet zeta"]).anonymize("le projet zetaPERSON_1 ok").text == "le CUSTOM_1PERSON_1 ok"
+    )
+
+
+def test_a_typed_placeholder_restore_never_reads_keeps_its_number() -> None:
+    """#93: `a@x.comـPERSON_1` came back as `…PERSON_2`, though restore never rewrites a name glued to a
+    letter past a tatweel. Judged on the text as it goes upstream."""
+    out = Nona().anonymize_messages(["Sami", "a@x.comـPERSON_1"])
+    assert out.messages[1].text == "EMAIL_1ـPERSON_1"
+    assert Nona.restore(out.messages[1].text, out.mapping) == "a@x.comـPERSON_1"

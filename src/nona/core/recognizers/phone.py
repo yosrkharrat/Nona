@@ -107,6 +107,13 @@ class PhoneRecognizer:
         ]
 
 
+def order_cue(word: str) -> bool:
+    """Whether `word` (normalized) is an order cue on its own (`commande`, `ref`, `طلبية`): the letters glued
+    in front of a number that the structured recognizers' second pass leaves in place (`core/pipeline.py`),
+    so `commande22123456` stays an order number, as `commande 22123456` is (#93)."""
+    return bool(_ORDER_CUE.fullmatch(word))
+
+
 def _score(text: str, start: int, end: int) -> float:
     """1.0, or `CUE_SCORE` for an unbroken national number right after an order cue.
 

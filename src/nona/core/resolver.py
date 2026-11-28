@@ -13,7 +13,8 @@ CIN on the same 8 digits). The resolver:
 4. drops a recognizer span with exactly the extent of a propagated name: the name keeps the placeholder, and
    the type, it was first given (ADR-0004, ADR-0008). Denylist terms aren't dropped: their policy wins;
 5. keeps non-overlapping spans greedily: longest first, then type priority, then score, then `Span.sort_key`.
-   Then the names that lost a partial overlap fill the gaps (#89): each keeps, as pieces, the words of the
+   A structured value that lost a partial overlap to another one widens it to cover both (#93). Then the
+   names that lost a partial overlap fill the gaps (#89): each keeps, as pieces, the words of the
    text that lie wholly inside it and touch nothing kept, nor a propagated name's piece still pending. The
    model's confident `Zorgati Sami` against the gazetteer's longer `Sami Mo3ez Sami` would otherwise send
    `Zorgati` in clear. Pieces never displace a span the first pass kept, so the result only adds pieces to
@@ -267,7 +268,49 @@ def resolve(
     for span in sorted(candidates, key=_rank):
         if not any(span.overlaps(k) for k in kept):
             kept.append(span)
+    kept = _widen(kept, candidates)
     return _fill(kept, candidates, original, allowed) if pieces else sorted(kept, key=Span.sort_key)
+
+
+def _widen(kept: list[Span], candidates: Sequence[Span]) -> list[Span]:
+    """Step 5: a structured value that lost a partial overlap to another one widens it, so no part of either
+    is sent in clear (#93): the e-mail `456-a@x.com` beat the phone `22 123 456`, and `22 123` leaked.
+    Spans kept that one lost value overlaps become one span, with the extent of all of them and the type,
+    score and detector of the best ranked span kept among them, so the result doesn't depend on the order
+    of the candidates. A lost value next to a name changes nothing: names fill gaps with pieces. The span
+    widened overlaps nothing else kept: whatever it covers, a lost value or a span kept, overlapped it."""
+    held = set(kept)
+    parent = {k: k for k in kept if k.type not in NAME_TYPES}
+    extent: dict[Span, tuple[int, int]] = {k: (k.start, k.end) for k in parent}
+
+    def root(k: Span) -> Span:
+        while parent[k] != k:
+            k = parent[k]
+        return k
+
+    for c in candidates:
+        if c.type in NAME_TYPES or c in held:
+            continue
+        hits = [k for k in kept if k.overlaps(c)]
+        if not hits or any(k.type in NAME_TYPES for k in hits):
+            continue
+        if len(hits) == 1 and hits[0].start <= c.start and c.end <= hits[0].end:
+            continue  # inside the span kept: the RIB of an IBAN
+        roots = sorted({root(k) for k in hits}, key=_rank)
+        top = roots[0]
+        start, end = min(c.start, *(extent[r][0] for r in roots)), max(c.end, *(extent[r][1] for r in roots))
+        for r in roots[1:]:
+            parent[r] = top
+        extent[top] = (start, end)
+    groups: dict[Span, list[Span]] = {}
+    for k in parent:
+        groups.setdefault(root(k), []).append(k)
+    out = [k for k in kept if k not in parent]
+    for r, members in groups.items():
+        best = min(members, key=_rank)
+        start, end = extent[r]
+        out.append(Span(start, end, best.type, best.score, best.detector))
+    return out
 
 
 def fill_gaps(
