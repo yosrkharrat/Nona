@@ -7,13 +7,46 @@ in the milestone that implements them, so the CLI never advertises something tha
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import re
 import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from nona import __version__
+
+# Frozen at the end of S4 (05 §1, #75): never used for tuning, run once for the release table (06 §1, NFR-11).
+# A guard against accidents, not against someone set on it: see `is_frozen`.
+FROZEN_SPLIT = "test"
+FROZEN_HASH = Path(__file__).resolve().parents[2] / "bench" / "data" / f"{FROZEN_SPLIT}.sha256"
+
+
+def _hash_file(path: Path) -> tuple[str, str] | None:
+    """(digest, file name) from a `shasum -a 256` line, text or binary mode (`*name`), or `None` if there's
+    no readable one."""
+    try:
+        fields = path.read_text(encoding="utf-8").split(maxsplit=1)
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(fields) != 2 or not re.fullmatch(r"[0-9a-fA-F]{64}", fields[0]):
+        return None
+    return fields[0].lower(), Path(fields[1].strip().removeprefix("*")).name
+
+
+def is_frozen(dataset: Path) -> bool:
+    """`dataset` is the frozen split: the file a `test.sha256` beside it names, whatever its bytes (edited
+    before the hash is, or `--split ./test`, `--split Test` on a case-insensitive disk, any install, through
+    a symlink), or a copy elsewhere with the committed bytes (`FROZEN_HASH`, in a checkout). So a folder of
+    one's own with a `test.sha256` naming its `test.jsonl` counts as frozen too; without one, it doesn't.
+    Raises `OSError` if `dataset` can't be read."""
+    real = dataset.resolve()
+    beside = _hash_file(real.parent / FROZEN_HASH.name)
+    if beside is not None and beside[1].casefold() == real.name.casefold():
+        return True
+    digests = {h[0] for h in (beside, _hash_file(FROZEN_HASH)) if h is not None}
+    return bool(digests) and hashlib.sha256(dataset.read_bytes()).hexdigest() in digests
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--systems", default="identity", help="comma-separated systems to run (default: identity)"
     )
     bench.add_argument("--split", default="dev", help="dataset split, read from <data>/<split>.jsonl")
+    bench.add_argument(
+        "--published",
+        action="store_true",
+        help=f"required for the frozen split ({FROZEN_SPLIT}): this run gives the published numbers",
+    )
     bench.add_argument("--data", type=Path, default=Path("bench/data"), help="dataset directory")
     bench.add_argument("--out", type=Path, default=Path("results"), help="output directory")
 
@@ -87,12 +125,22 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not dataset.is_file():
         print(f"error: no dataset file at {dataset}", file=sys.stderr)
         return 1
+    try:
+        frozen = not args.published and is_frozen(dataset)
+    except OSError as exc:
+        print(f"error: can't read {dataset}: {exc}", file=sys.stderr)
+        return 1
+    if frozen:
+        parser.error(
+            f"the {FROZEN_SPLIT} split is frozen: it is never used for tuning (05 §1). Tune on dev; pass "
+            "--published only for the run that gives the published numbers"
+        )
     from nona.models import ModelError
 
     for i, name in enumerate(names):
         try:
             result = run(SYSTEMS[name](), args.split, dataset)
-        except (DatasetError, ModelError) as exc:
+        except (DatasetError, ModelError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if i:

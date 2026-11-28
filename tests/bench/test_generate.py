@@ -423,7 +423,10 @@ def test_generated_parts_are_pinned(
 
 
 def test_test_split_hash_is_committed() -> None:
-    """05 §1: the test split is frozen. Changing it means changing `test.sha256` in the same commit."""
+    """05 §1, #75: the test split is frozen. Changing it means changing `test.sha256` in the same commit.
+    The hash is of the file's bytes, so `shasum -a 256 -c bench/data/test.sha256` checks it too, and the
+    file is in canonical form, so it is also the hash the report prints."""
     digest, _, name = (DATA / "test.sha256").read_text(encoding="utf-8").strip().partition("  ")
     assert name == "bench/data/test.jsonl"
+    assert hashlib.sha256((DATA / "test.jsonl").read_bytes()).hexdigest() == digest
     assert dataset_hash(load_jsonl(DATA / "test.jsonl")) == digest

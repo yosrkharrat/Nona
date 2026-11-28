@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -10,7 +12,7 @@ from nona.bench.dataset import Conversation, dumps_jsonl, load_jsonl, parse_conv
 from nona.bench.metrics import Rate
 from nona.bench.runner import causal_payloads, run, summary
 from nona.bench.systems import IdentitySystem, NonaSystem
-from nona.cli import main
+from nona.cli import is_frozen, main
 from nona.core import Entity, EntityType, Nona
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,6 +91,89 @@ def test_bench_rejects_unknown_systems(capsys: pytest.CaptureFixture[str]) -> No
 def test_bench_reports_a_missing_split(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["bench", "--split", "nope", "--data", str(tmp_path)]) == 1
     assert "no dataset file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("split", ["test", "./test", "../data/test"])
+def test_bench_refuses_the_frozen_split_without_published(
+    split: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#75: `test` is never used for tuning, so a run on it has to say it is the published one, however the
+    path is written."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["bench", "--split", split, "--data", str(ROOT / "bench" / "data"), "--out", str(tmp_path)])
+    assert exit_info.value.code == 2
+    assert "the test split is frozen" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_committed_test_split_is_the_frozen_one() -> None:
+    assert is_frozen(ROOT / "bench" / "data" / "test.jsonl")
+    assert not is_frozen(DEV)
+
+
+@pytest.fixture
+def frozen_mini(data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The `mini` fixture stands for the frozen split, so the flag is tested without scoring the real one."""
+    digest = hashlib.sha256((data_dir / "mini.jsonl").read_bytes()).hexdigest()
+    elsewhere = tmp_path / "elsewhere"  # not beside it: recognized by its bytes, as a copy would be
+    elsewhere.mkdir()
+    (elsewhere / "test.sha256").write_text(f"{digest}  bench/data/test.jsonl\n", encoding="utf-8")
+    monkeypatch.setattr("nona.cli.FROZEN_HASH", elsewhere / "test.sha256")
+    return data_dir
+
+
+def test_bench_runs_the_frozen_split_only_when_published(
+    frozen_mini: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "results"
+    args = ["bench", "--split", "mini", "--data", str(frozen_mini), "--out", str(out)]
+    with pytest.raises(SystemExit) as exit_info:
+        main(args)
+    assert exit_info.value.code == 2
+    assert "the test split is frozen" in capsys.readouterr().err
+    assert main([*args, "--published"]) == 0
+    assert (out / "mini-identity.json").is_file()
+
+
+def test_the_file_a_hash_beside_it_names_is_frozen_whatever_its_bytes(tmp_path: Path) -> None:
+    """Edited in place before `test.sha256` is, the split is still frozen; with no hash file, it isn't."""
+    shutil.copy(FIXTURE, tmp_path / "test.jsonl")
+    assert not is_frozen(tmp_path / "test.jsonl")
+    (tmp_path / "test.sha256").write_text(f"{'0' * 64}  bench/data/test.jsonl\n", encoding="utf-8")
+    assert is_frozen(tmp_path / "test.jsonl")
+    (tmp_path / "test.sha256").write_text(f"{'A' * 64} *test.jsonl\n", encoding="utf-8")  # binary mode
+    assert is_frozen(tmp_path / "test.jsonl")
+    link = tmp_path / "link"
+    link.mkdir()
+    (link / "t.jsonl").symlink_to(tmp_path / "test.jsonl")
+    assert is_frozen(link / "t.jsonl")
+    shutil.copy(FIXTURE, tmp_path / "other.jsonl")
+    assert not is_frozen(tmp_path / "other.jsonl")
+
+
+@pytest.mark.parametrize("hash_file", [True, False], ids=["checkout", "no-hash-file"])
+def test_bench_reports_an_unreadable_dataset(
+    hash_file: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not hash_file:  # as in an install from a wheel: the dataset is first read by the run itself
+        monkeypatch.setattr("nona.cli.FROZEN_HASH", tmp_path / "missing.sha256")
+    dataset = tmp_path / "x.jsonl"
+    shutil.copy(FIXTURE, dataset)
+    dataset.chmod(0)
+    try:
+        if os.access(dataset, os.R_OK):
+            pytest.skip("running as root: every file is readable")
+        assert main(["bench", "--split", "x", "--data", str(tmp_path)]) == 1
+        assert "Permission denied" in capsys.readouterr().err
+    finally:
+        dataset.chmod(0o644)
+
+
+def test_another_test_file_is_not_frozen(tmp_path: Path) -> None:
+    """A `test.jsonl` of one's own, with no hash file beside it, runs without the flag."""
+    shutil.copy(FIXTURE, tmp_path / "test.jsonl")
+    out = tmp_path / "results"
+    assert main(["bench", "--split", "test", "--data", str(tmp_path), "--out", str(out)]) == 0
 
 
 def test_bench_reports_an_invalid_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -160,7 +160,8 @@ class Recognizer(Protocol):
 ```
 nona serve   [--config nona.yaml] [--port 8787] [--upstream https://api.openai.com/v1]
 nona scan    <file|->  [--format text|json|html]        # anonymize a file, print a diff
-nona bench   [--systems nona,presidio,llmguard] [--split test] [--out results/]
+nona bench   [--systems nona,presidio,llmguard] [--split dev] [--out results/]
+nona bench   --split test --published ...               # the frozen split: only for the published run
 nona models  pull   [--dir ~/.cache/nona/models]        # explicit, pinned, hash-checked download (NFR-3)
 ```
 
