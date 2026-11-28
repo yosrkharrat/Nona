@@ -3,10 +3,9 @@
 Eight digits alone collide with order numbers, prices and dates, so a number counts as a CIN only when a
 context word (`cin`, `carte d'identité`, `بطاقة`…) sits within 5 word tokens before or after it.
 
-One cue can sit near two numbers: `CIN 08123456, commande 45678912` (#100). A number is left out when another
-label claims it (`commande`, `facture`, `الطلبية`… between the cue and it, or just before it) **and** the same
-cue already has a number that no label claims. Without such a number the cue still counts, so
-`ma CIN pour la commande : 08123456` stays masked: a missed CIN leaks, an extra one only over-masks.
+A cue followed by two numbers serves the first one only when the second has its own label right before it:
+`CIN 08123456, commande 45678912`, `رقم بطاقة التعريف …، ورقم الطلبية …` (#100). Nothing else is dropped: a
+missed CIN leaks, while an extra one only over-masks.
 
 Deep dive A allows a low-score span without context; we report nothing instead, because the resolver's
 threshold would drop such a span anyway, and it keeps the dataset's order numbers out of the results.
@@ -15,6 +14,7 @@ threshold would drop such a span anyway, and it keeps the dataset's order number
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 
 from nona.core.normalize import NormalizedDoc
 from nona.core.recognizers.span import to_span
@@ -33,37 +33,21 @@ CONTEXT = re.compile(
     r")(?!\w)"
 )
 
-# Labels of other 8-digit numbers (order, invoice, parcel, reference). A leading و/ب/ل/ف clitic is allowed.
+# Labels of other 8-digit numbers (order, invoice, parcel, reference); Arabic takes a و/ف, ب/ل or لل prefix.
 OTHER_LABEL = re.compile(
     r"(?<!\w)(?:"
     r"commande|facture|colis|suivi|référence|reference|réf|ref|ticket|order|invoice|tracking"
-    r"|[وبلف]?(?:الطلبية|طلبية|الطلب|الفاتورة|فاتورة|الطرد|المرجع|الوصل)"
+    r"|[وف]?(?:[بل]?ال|لل)?(?:طلبية|طلب|فاتورة|طرد|مرجع|وصل)"
     r")(?!\w)"
 )
-CLAIM = 2  # a label at most this many words before a number claims it
+LABEL_GAP = 2  # a label at most this many words before a number is its own
 
 
-def _words(text: str) -> int:
-    return len(_WORD.findall(text))
-
-
-def _between(a: re.Match[str], b: re.Match[str]) -> tuple[int, int]:
-    return (a.end(), b.start()) if a.end() <= b.start() else (b.end(), a.start())
-
-
-def _claimed(text: str, cue: re.Match[str], number: re.Match[str], labels: list[re.Match[str]]) -> bool:
-    """Another label owns this number: it sits between the cue and the number, or right before the number
-    with no number and no cue in between (`colis : CIN 08123456` is still the CIN's)."""
-    lo, hi = _between(cue, number)
-    for label in labels:
-        if lo <= label.start() and label.end() <= hi:
-            return True
-        gap = text[label.end() : number.start()]
-        if (
-            label.end() <= number.start()
-            and _words(gap) <= CLAIM
-            and not (_NUMBER.search(gap) or CONTEXT.search(gap))
-        ):
+def _own_label(gap: str) -> bool:
+    """`gap` (the text between two numbers) ends with a label for the second one, with no cue after it."""
+    for label in OTHER_LABEL.finditer(gap):
+        tail = gap[label.end() :]
+        if len(_WORD.findall(tail)) <= LABEL_GAP and not CONTEXT.search(tail):
             return True
     return False
 
@@ -87,13 +71,25 @@ class CinRecognizer:
         numbers = list(_NUMBER.finditer(text))
         if not numbers:
             return []
-        labels = list(OTHER_LABEL.finditer(text))
+        starts = [m.start() for m in _WORD.finditer(text)]
+
+        def words(lo: int, hi: int) -> int:  # word tokens starting in [lo, hi)
+            return bisect_left(starts, hi) - bisect_left(starts, lo)
+
         cued: set[int] = set()
+        first_after = [n.start() for n in numbers]
         for cue in CONTEXT.finditer(text):
-            near = [i for i, n in enumerate(numbers) if _words(text[slice(*_between(cue, n))]) < WINDOW]
-            claimed = {i for i in near if _claimed(text, cue, numbers[i], labels)}
-            # Drop the claimed numbers only when the cue has another one to describe.
-            cued.update(set(near) - claimed if set(near) - claimed else near)
+            # The whole cue must fit in the 5 tokens next to the number.
+            j = bisect_left(first_after, cue.end())
+            k = j
+            while k < len(numbers) and words(cue.start(), numbers[k].start()) <= WINDOW:
+                if k == j or not _own_label(text[numbers[k - 1].end() : numbers[k].start()]):
+                    cued.add(k)
+                k += 1
+            k = j - 1
+            while k >= 0 and words(numbers[k].end(), cue.end()) <= WINDOW:
+                cued.add(k)
+                k -= 1
         return [
             to_span(doc, n.start(), n.end(), EntityType.NATIONAL_ID, 0.95, self.name)
             for i, n in enumerate(numbers)
