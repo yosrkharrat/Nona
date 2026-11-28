@@ -28,6 +28,18 @@ def found(text: str) -> list[str]:
         ("national ID 08123456", ["08123456"]),
         ("cin one two three four 08123456", ["08123456"]),  # context exactly 5 tokens away
         ("CIN 08123456 et 01234567", ["08123456", "01234567"]),
+        # A cue belongs to one number: the nearest, never through another 8-digit number (#100).
+        ("رقم بطاقة التعريف 07311842 و رقم الفاتورة 52930417", ["07311842"]),
+        ("CIN 07311842, facture 52930417", ["07311842"]),
+        ("CIN 07311842 puis la facture 52930417", ["07311842"]),
+        ("commande 52930417, CIN 07311842", ["07311842"]),  # cue between: the side without a comma
+        ("commande 52930417 CIN 07311842", ["07311842"]),  # cue between, same distance: the next number
+        ("07311842 c'est ma cin, commande 52930417", ["07311842"]),
+        # A list after one cue: every number joined by a list joiner counts.
+        ("CIN 08123456 / 08123457", ["08123456", "08123457"]),
+        ("CIN 08123456, 08123457 et 08123458", ["08123456", "08123457", "08123458"]),
+        ("بطاقة ٠٨١٢٣٤٥٦ و ٠٨١٢٣٤٥٧", ["٠٨١٢٣٤٥٦", "٠٨١٢٣٤٥٧"]),
+        ("08123456 ou 08123457 c'est ma cin", ["08123456", "08123457"]),
     ],
 )
 def test_cin_found(text: str, expected: list[str]) -> None:

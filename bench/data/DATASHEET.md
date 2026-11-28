@@ -4,7 +4,7 @@ Answers to the questions of *Datasheets for Datasets* (Gebru et al.) for `bench/
 follows are in [05-dataset.md](../../docs/design/05-dataset.md); this file says what was actually built,
 and what it can't tell you.
 
-**In one paragraph.** 628 synthetic chat conversations (1,223 turns) in French, English, Modern Standard
+**In one paragraph.** 630 synthetic chat conversations (1,225 turns) in French, English, Modern Standard
 Arabic and Tunisian Darija (in Arabic script and in Latin script, "Arabizi"), often mixed in one message,
 with every piece of personal data labelled by hand or by construction. It measures how much personal data a
 pseudonymizing proxy lets through to an LLM. Nothing in it comes from a real conversation or a real person.
@@ -26,14 +26,14 @@ The `test` split is frozen: its hash is committed, and it is run once, for the p
 
 | | `dev` | `test` |
 |---|---|---|
-| Conversations | 275 | 353 |
-| Turns (user / assistant) | 609 (420 / 189) | 614 (447 / 167) |
+| Conversations | 277 | 353 |
+| Turns (user / assistant) | 611 (422 / 189) | 614 (447 / 167) |
 | Conversations of 4+ turns | 88 | 78 |
-| Gold entities | 448 | 488 |
-| Gold mentions | 761 | 748 |
-| Distractors (look like PII, are not) | 153 | 182 |
-| `no-pii` controls | 60 (21.8%) | 86 (24.4%) |
-| Hand-written / LLM-drafted / templated | 21 / 12 / 242 | 30 / 18 / 305 |
+| Gold entities | 450 | 488 |
+| Gold mentions | 763 | 748 |
+| Distractors (look like PII, are not) | 155 | 182 |
+| `no-pii` controls | 60 (21.7%) | 86 (24.4%) |
+| Hand-written / LLM-drafted / templated | 23 / 12 / 242 | 30 / 18 / 305 |
 
 - **One instance** is a conversation: a list of turns (`user` or `assistant`; the schema also allows
   `system` and `tool`, which this release doesn't use), the entities it contains, and each mention's offsets.
@@ -69,10 +69,10 @@ Three sources, all written for this repository:
    - IBAN and RIB with valid checksums and random digits;
    - cards from the published test ranges only (they can't be charged);
    - CIN: 8 random digits.
-2. **Hand-written hard cases (51).** Written one by one, not from a template, for what templates do badly: common-word names with
+2. **Hand-written hard cases (53).** Written one by one, not from a template, for what templates do badly: common-word names with
    and without a cue, the same words used as words, Eastern Arabic digits next to look-alike numbers, clitics
    glued to names (`لسامي`), Arabizi spellings (`Mo7amed`, `Mou3ez`), one person written in two scripts, a
-   street named after a public figure.
+   street named after a public figure, an ID-card cue next to an order number (#100).
 3. **LLM drafts (30).** Realistic requests (reply to, summarise, translate or correct a WhatsApp message or an
    e-mail) drafted by an LLM (Claude, with no external API call) around fake entities it was given, then
    checked by a human

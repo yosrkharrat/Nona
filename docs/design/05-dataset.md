@@ -76,7 +76,7 @@ One **conversation** per line. A single message is a conversation with one turn,
 
 ### 3.2 Difficulty tags (open list; the validator warns on unknown tags)
 
-`arabizi`, `code-switching`, `multi-turn`, `common-word-name` (Amal, Nour, Salam…), `clitic` (لسامي), `eastern-digits` (٩٨٧), `spelling-variant` (Mohamed/Med), `honorific`, `ambiguous-reference`, `no-pii` (control: nothing to find).
+`arabizi`, `code-switching`, `multi-turn`, `common-word-name` (Amal, Nour, Salam…), `clitic` (لسامي), `eastern-digits` (٩٨٧), `spelling-variant` (Mohamed/Med), `honorific`, `ambiguous-reference`, `context-cue` (a cue next to a number it doesn't belong to), `no-pii` (control: nothing to find).
 
 ## 4. Labelling guidelines
 
@@ -152,17 +152,17 @@ for every conversation it appears in, so a code-switched conversation counts onc
 
 | | Target | `dev` | `test` |
 |---|---|---|---|
-| Conversations | | 275 | 353 (56% of 628) |
-| Turns | ≥ 300 in all | 609 | 614 |
+| Conversations | | 277 | 353 (56% of 630) |
+| Turns | ≥ 300 in all | 611 | 614 |
 | Conversations of 4+ turns | ≥ 40 in all | 88 | 78 |
-| `fr` | ≥ 15% | 114 (41.5%) | 120 (34.0%) |
-| `en` | ≥ 15% | 62 (22.5%) | 77 (21.8%) |
-| `ar` | ≥ 15% | 46 (16.7%) | 73 (20.7%) |
-| `aeb-Arab` | ≥ 15% | 54 (19.6%) | 76 (21.5%) |
-| `aeb-Latn` | ≥ 15% | 82 (29.8%) | 113 (32.0%) |
-| Code-switched | ≥ 30% | 83 (30.2%) | 106 (30.0%) |
-| `no-pii` | ≥ 10% | 60 (21.8%) | 86 (24.4%) |
-| Hand-written hard cases | about 50 | 21 | 30 |
+| `fr` | ≥ 15% | 115 (41.5%) | 120 (34.0%) |
+| `en` | ≥ 15% | 62 (22.4%) | 77 (21.8%) |
+| `ar` | ≥ 15% | 47 (17.0%) | 73 (20.7%) |
+| `aeb-Arab` | ≥ 15% | 54 (19.5%) | 76 (21.5%) |
+| `aeb-Latn` | ≥ 15% | 83 (30.0%) | 113 (32.0%) |
+| Code-switched | ≥ 30% | 84 (30.3%) | 106 (30.0%) |
+| `no-pii` | ≥ 10% | 60 (21.7%) | 86 (24.4%) |
+| Hand-written hard cases | about 50 | 23 | 30 |
 | LLM drafts | | 12 | 18 |
 
 How each part is made (every generated part is pinned by `test_generated_parts_are_pinned`):
@@ -173,7 +173,7 @@ How each part is made (every generated part is pinned by `test_generated_parts_a
 | `dev` | multi-turn (`dev-0081`…`0137`) | 57, 4–5 turns each | `generate --set multi-turn --seed 2 --count 57 --prefix dev --start 81`: 19 templates, three times each (S3 #41, extended in #58) |
 | `dev` | S4 (`dev-0138`…`0242`) | 105 | `generate --set dev-s4 --seed 4 --count 105 --prefix dev --start 138`: 35 templates, three times each (#74) |
 | `test` | templates (`test-0001`…`0305`) | 305 | `generate --set test --seed 20261128 --count 305 --prefix test`: 61 templates, five times each (#74) |
-| `dev` | hard cases (`dev-hard-01`…`21`) | 21 | Hand-written (#74), see below |
+| `dev` | hard cases (`dev-hard-01`…`23`) | 23 | Hand-written (#74; `22`–`23` in #100), see below |
 | `dev` | LLM drafts (`dev-llm-01`…`12`) | 12 | Drafted by an LLM around supplied fake entities, then reviewed (#74) |
 | `test` | hard cases (`test-hard-01`…`30`) | 30 | Hand-written (#74) |
 | `test` | LLM drafts (`test-llm-01`…`18`) | 18 | Drafted by an LLM, then reviewed (#74) |
@@ -192,7 +192,7 @@ frozen since #75: `nona bench` refuses to score it without `--published` (the fi
 edited, or a byte-for-byte copy; a guard against accidents, see `nona.cli.is_frozen`), and
 [`DATASHEET.md`](../../bench/data/DATASHEET.md) gives how it was made and its limits.
 
-**Hard cases and LLM drafts (#74).** The 51 hard cases exercise the #50 lists both ways. Common-word names
+**Hard cases and LLM drafts (#74).** The 53 hard cases exercise the #50 lists both ways. Common-word names
 *as names*: after a cue (`kallamt Amal`, `9olt l sana`, `صاحبي كريم`, `قلت لنور`, `khalti Hayet`, `3amm
 Salah`, `الحاجّة رحمة`), and with no cue at all (`سلّملي على كريم`, `ken tchouf amal`, `حضرت أمال`), which
 the owner's rule leaves unmasked in Arabic script and lower-case Arabizi, so they are expected leaks. The same
