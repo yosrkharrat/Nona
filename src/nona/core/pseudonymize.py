@@ -202,7 +202,8 @@ class Pseudonymizer:
         Also one glued to a value masked in this message, which restore will find once the value is masked:
         `4242424242424242PERSON_1` goes upstream as `[CARD]PERSON_1`, and `EMAIL_1٢٢…` (a phone in
         Arabic-Indic digits) as `EMAIL_1PHONE_1`, #85. Left as is, restore would write the earlier
-        `PERSON_1` or `EMAIL_1` there. Judged with the loose boundaries on the text as it goes upstream.
+        `PERSON_1` or `EMAIL_1` there. Judged on the text as it goes upstream, with the boundaries restore
+        holds that type to: strict for names, so `PERSON_1PHONE_1` keeps the number the user typed.
         """
         found = {m.span(): m for m in ANY_PLACEHOLDER.finditer(original)}
         ends = {k.end: k for k in kept}
@@ -216,7 +217,8 @@ class Pseudonymizer:
             else:  # `[CARD]` ends with `]`, `PHONE_1` with a digit
                 left = "]" if self.policy(before.type) is Policy.REDACT else "0"
             right = "P" if m.end() in starts else original[m.end() : m.end() + 1]
-            if loose_at(f"{left}P{right}", len(left), len(left) + 1):
+            seen_by_restore = strict_at if _canonical_type(m.group(1)) in NAME_TYPES else loose_at
+            if seen_by_restore(f"{left}P{right}", len(left), len(left) + 1):
                 found[m.span()] = m
         out: list[Span] = []
         for (start, end), m in sorted(found.items()):

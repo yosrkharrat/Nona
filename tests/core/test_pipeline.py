@@ -235,6 +235,8 @@ _AR_PHONE = "\u0662\u0662\u0661\u0662\u0663\u0664\u0665\u0666"  # 22123456 in Ar
             "carte [CARD]PERSON_1 merci",
         ),
         (["mail b@y.com", f"EMAIL_1{_AR_PHONE} merci"], "EMAIL_2PHONE_1 merci", "EMAIL_1PHONE_1 merci"),
+        # restore holds names to strict boundaries: it never reads PERSON_1 here, so it keeps its number
+        (["Sami est la", f"ok PERSON_1{_AR_PHONE}"], "ok PERSON_1PHONE_1", "ok PERSON_1PHONE_1"),
         # glued to a digit once masked, as on main: restore doesn't touch it
         (["tel 22123456", "x 22123457PHONE_1"], "x PHONE_2PHONE_1", None),
         (["ip 10.9.9.9", "ip PERSON_1_10.1.2.3 ok"], "ip PERSON_1_IP_ADDRESS_2 ok", None),
