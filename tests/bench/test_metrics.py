@@ -7,7 +7,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from nona.bench.dataset import Conversation, parse_conversation
-from nona.bench.generate import MULTI_TURN_TEMPLATES, TEMPLATES, generate
+from nona.bench.generate import TEMPLATE_SETS, TEMPLATES, generate
 from nona.bench.metrics import (
     Linking,
     MentionResult,
@@ -391,7 +391,7 @@ def test_masking_everything_over_masks_everything(seed: int) -> None:
     assert report.masked_distractors.value == 1.0
 
 
-ALL_TEMPLATES = (*TEMPLATES, *MULTI_TURN_TEMPLATES)
+ALL_TEMPLATES = tuple(t for templates in TEMPLATE_SETS.values() for t in templates)
 
 
 def _generated(seed: int) -> list[Conversation]:

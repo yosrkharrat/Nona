@@ -12,17 +12,20 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from nona.bench.dataset import dumps_jsonl, load_jsonl, parse_conversation
+from nona.bench.dataset import dataset_hash, dumps_jsonl, load_jsonl, parse_conversation
 from nona.bench.generate import (
     CITIES,
+    CITIES_AR,
     EMAIL_DOMAINS,
     FIRST_NAMES,
+    KINDS,
     MULTI_TURN_TEMPLATES,
     PUBLIC_FIGURES,
     SURNAMES,
     TEMPLATE_SETS,
     TEMPLATES,
     TEST_CARDS,
+    TEST_TEMPLATES,
     Template,
     check_template,
     generate,
@@ -35,12 +38,16 @@ from nona.core.checksums import iban_valid, tn_rib_valid
 from nona.core.recognizers import gazetteer
 
 seeds = st.integers(min_value=0, max_value=2**32 - 1)
+ALL_TEMPLATES = tuple(t for templates in TEMPLATE_SETS.values() for t in templates)
+DATA = Path(__file__).resolve().parents[2] / "bench" / "data"
+EASTERN_DIGITS = "\u0660-\u0669"
+ASCII_DIGITS = str.maketrans("".join(chr(0x0660 + i) for i in range(10)), "0123456789")
 
 
 # --------------------------------------------------------------------------- templates
 
 
-@pytest.mark.parametrize("template", TEMPLATES, ids=lambda t: t.name)
+@pytest.mark.parametrize("template", ALL_TEMPLATES, ids=lambda t: t.name)
 def test_every_template_is_valid(template: Template) -> None:
     check_template(template)
 
@@ -112,9 +119,9 @@ def test_generated_conversations_round_trip_through_the_loader(seed: int) -> Non
 @given(seed=seeds)
 def test_synthetic_values_follow_the_rules(seed: int) -> None:
     """05 §5: reserved domains, valid checksums, test cards, documentation IPs, no public figures."""
-    for conv in generate(len(TEMPLATES), seed=seed, prefix="g"):
+    for conv in generate(len(ALL_TEMPLATES), seed=seed, prefix="g", templates=ALL_TEMPLATES):
         for e in conv.entities:
-            v = e.value
+            v = e.value.translate(ASCII_DIGITS)  # Eastern Arabic digits are the same number
             if e.type is EntityType.EMAIL:
                 assert v.rsplit("@", 1)[1] in EMAIL_DOMAINS
             elif e.type is EntityType.PHONE:
@@ -143,19 +150,20 @@ def test_synthetic_values_follow_the_rules(seed: int) -> None:
 @given(seed=seeds)
 def test_a_cin_only_appears_next_to_a_context_word(seed: int) -> None:
     """Deep dive A: 8 digits are only an ID when the context says so; otherwise they're a distractor."""
-    for conv in generate(len(TEMPLATES), seed=seed, prefix="g"):
+    for conv in generate(len(ALL_TEMPLATES), seed=seed, prefix="g", templates=ALL_TEMPLATES):
         for turn in conv.turns:
             for m in turn.mentions:
                 if conv.entity(m.entity).type is EntityType.NATIONAL_ID:
-                    assert re.search(r"\bCIN\b|carte d'identité", turn.text)
+                    assert re.search(r"\bCIN\b|carte d'identité|بطاقة التعريف", turn.text)
 
 
 @settings(max_examples=40, deadline=None)
 @given(seed=seeds)
 def test_people_in_one_conversation_have_distinct_names(seed: int) -> None:
-    for conv in generate(len(TEMPLATES), seed=seed, prefix="g"):
+    templates = [t for t in ALL_TEMPLATES if not any("=" in kind for kind in t.slots.values())]
+    for conv in generate(len(templates), seed=seed, prefix="g", templates=templates):
         people = [e.value for e in conv.entities if e.type is EntityType.PERSON]
-        tokens = [tok for p in people for tok in p.split()]
+        tokens = [tok for p in people for tok in p.split() if tok != "Ben"]  # a particle, not a name
         assert len(tokens) == len(set(tokens))
 
 
@@ -254,7 +262,7 @@ DEV_PATH = Path(__file__).resolve().parents[2] / "bench" / "data" / "dev.jsonl"
 
 def test_held_out_names_are_not_in_the_gazetteer() -> None:
     """`tn2` and `ar2` measure detection, not list overlap: none of their names may be in the gazetteer."""
-    for held_out in ("tn2", "ar2"):
+    for held_out in ("tn2", "ar2", "tn3", "ar3"):
         pool = [*FIRST_NAMES[held_out]["m"], *FIRST_NAMES[held_out]["f"], *SURNAMES[held_out]]
         leaked = [name for name in pool if canonical_tokens(name) & gazetteer.NAMES]
         assert leaked == [], held_out
@@ -322,7 +330,7 @@ def test_cli_generates_the_multi_turn_set_from_a_start_number(capsys: pytest.Cap
 
 def test_dev_multi_turn_set_has_forty_conversations_of_four_turns_or_more() -> None:
     dev = load_jsonl(Path(__file__).resolve().parents[2] / "bench" / "data" / "dev.jsonl")
-    multi_turn = [c for c in dev if int(c.id.removeprefix("dev-")) >= 81]
+    multi_turn = [c for c in dev if 81 <= int(c.id.removeprefix("dev-")) <= 137]
     assert len(multi_turn) >= 40
     assert all(len(c.turns) >= 4 for c in multi_turn)
 
@@ -338,3 +346,83 @@ def test_start_must_be_positive() -> None:
 
 
 V0_SHA256 = "af0d2d996693785c5b36c07c2ef35f997cb8742d862ac2df39448da300ddd760"
+
+
+# --------------------------------------------------------------------------- S4 sets and the test split (#74)
+
+
+def _pool_names(*pools: str) -> set[str]:
+    return {n for p in pools for n in (*FIRST_NAMES[p]["m"], *FIRST_NAMES[p]["f"], *SURNAMES[p])}
+
+
+def _pools(templates: tuple[Template, ...]) -> set[str]:
+    return {m.group(1) for t in templates for k in t.slots.values() if (m := re.match(r"person:(\w+)", k))}
+
+
+def test_test_split_names_are_held_out_from_dev_too() -> None:
+    """`tn3`/`ar3` are for `test` only: no name in them is used by another pool or appears in `dev`."""
+    test_only = _pool_names("tn3", "ar3")
+    others = _pool_names(*(p for p in FIRST_NAMES if p not in {"tn3", "ar3"}))
+    assert test_only.isdisjoint(others)
+    assert _pools(TEST_TEMPLATES).isdisjoint({"tn2", "ar2"})
+    assert not _pools(ALL_TEMPLATES[: -len(TEST_TEMPLATES)]) & {"tn3", "ar3"}
+    dev_text = (DATA / "dev.jsonl").read_text(encoding="utf-8")
+    assert [n for n in test_only if re.search(rf"(?<!\w){re.escape(n)}(?!\w)", dev_text)] == []
+
+
+def test_test_templates_are_not_dev_templates() -> None:
+    dev_turns = {text for t in ALL_TEMPLATES[: -len(TEST_TEMPLATES)] for _, text in t.turns}
+    assert all(t.name.startswith("t-") for t in TEST_TEMPLATES)
+    assert [text for t in TEST_TEMPLATES for _, text in t.turns if text in dev_turns] == []
+
+
+def test_every_distractor_kind_is_used() -> None:
+    kinds = {kind for t in ALL_TEMPLATES for kind in t.slots.values() if kind.startswith("~")}
+    assert kinds == {k for k in KINDS if k.startswith("~")}
+
+
+def test_arabic_script_values() -> None:
+    t = Template(
+        "t", ("ar",), (("user", "{p1} {c} {ph} {cin} {em}"),),
+        {"p1": "person:ar3", "c": "city:ar", "ph": "phone:tn-east@p1", "cin": "cin:east", "em": "email@p1"},
+    )  # fmt: skip
+    for seed in range(20):
+        conv = render(t, random.Random(seed), "c")  # noqa: S311
+        person, city, phone, cin, email = (conv.entity(m.entity) for m in conv.turns[0].mentions)
+        assert city.value in CITIES_AR
+        assert re.fullmatch(rf"[+()\s.\-{EASTERN_DIGITS}]+", phone.value)
+        assert re.fullmatch(rf"[{EASTERN_DIGITS}]{{8}}", cin.value)
+        assert email.value.isascii()  # an Arabic name gets a Latin address
+        assert email.owner == person.id
+
+
+# Each generated part of a committed split, with the command that makes it (05 §7). Hand-written and LLM
+# parts follow them in the same files.
+GENERATED_PARTS = [
+    ("dev.jsonl", 0, "v0", 20261120, 80, "dev", 1),
+    ("dev.jsonl", 80, "multi-turn", 2, 57, "dev", 81),
+    ("dev.jsonl", 137, "dev-s4", 4, 105, "dev", 138),
+    ("test.jsonl", 0, "test", 20261128, 305, "test", 1),
+]
+
+
+@pytest.mark.parametrize(
+    ("file", "skip", "template_set", "seed", "count", "prefix", "start"),
+    GENERATED_PARTS,
+    ids=lambda v: str(v),
+)
+def test_generated_parts_are_pinned(
+    file: str, skip: int, template_set: str, seed: int, count: int, prefix: str, start: int
+) -> None:
+    """The documented commands still give the committed lines, byte for byte."""
+    lines = (DATA / file).read_text(encoding="utf-8").splitlines(keepends=True)
+    committed = "".join(lines[skip : skip + count])
+    generated = generate(count, seed=seed, prefix=prefix, templates=TEMPLATE_SETS[template_set], start=start)
+    assert dumps_jsonl(generated) == committed
+
+
+def test_test_split_hash_is_committed() -> None:
+    """05 §1: the test split is frozen. Changing it means changing `test.sha256` in the same commit."""
+    digest, _, name = (DATA / "test.sha256").read_text(encoding="utf-8").strip().partition("  ")
+    assert name == "bench/data/test.jsonl"
+    assert dataset_hash(load_jsonl(DATA / "test.jsonl")) == digest

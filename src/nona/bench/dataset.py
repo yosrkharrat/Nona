@@ -4,6 +4,7 @@ Usage:
     python -m nona.bench.dataset check bench/data/dev.jsonl bench/data/test.jsonl
     python -m nona.bench.dataset fmt bench/data/dev.jsonl      # fill offsets, rewrite in canonical form
     python -m nona.bench.dataset hash bench/data/test.jsonl
+    python -m nona.bench.dataset stats bench/data/dev.jsonl    # the 05 §7 size and balance counts
 """
 
 from __future__ import annotations
@@ -363,6 +364,49 @@ def dumps_jsonl(conversations: Iterable[Conversation]) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
+@dataclass(frozen=True, slots=True)
+class Stats:
+    """The 05 §7 size and balance counts of a set of conversations."""
+
+    conversations: int
+    turns: int
+    long: int  # conversations of 4+ turns
+    code_switched: int
+    no_pii: int
+    languages: Mapping[str, int]  # conversations in which each language appears
+    sources: Mapping[str, int]
+
+    @classmethod
+    def of(cls, conversations: Iterable[Conversation]) -> Stats:
+        convs = list(conversations)
+        return cls(
+            conversations=len(convs),
+            turns=sum(len(c.turns) for c in convs),
+            long=sum(len(c.turns) >= 4 for c in convs),
+            code_switched=sum(c.code_switched for c in convs),
+            no_pii=sum("no-pii" in c.tags for c in convs),
+            languages={lang: sum(lang in c.languages for c in convs) for lang in sorted(LANGUAGES)},
+            sources={src: sum(c.source == src for c in convs) for src in sorted(SOURCES)},
+        )
+
+    def share(self, count: int) -> float:
+        return count / self.conversations if self.conversations else 0.0
+
+    def format(self) -> str:
+        def row(label: str, count: int) -> str:
+            return f"  {label:<16}{count:>5}  {100 * self.share(count):5.1f}%"
+
+        return "\n".join(
+            [
+                f"{self.conversations} conversations, {self.turns} turns, {self.long} of 4+ turns",
+                *(row(lang, n) for lang, n in self.languages.items()),
+                row("code-switched", self.code_switched),
+                row("no-pii", self.no_pii),
+                *(row(src, n) for src, n in self.sources.items()),
+            ]
+        )
+
+
 def dataset_hash(conversations: Iterable[Conversation]) -> str:
     """sha256 of the canonical form: formatting changes don't change it, content changes do."""
     return hashlib.sha256(dumps_jsonl(conversations).encode("utf-8")).hexdigest()
@@ -373,7 +417,7 @@ def dataset_hash(conversations: Iterable[Conversation]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m nona.bench.dataset")
-    parser.add_argument("command", choices=["check", "fmt", "hash"])
+    parser.add_argument("command", choices=["check", "fmt", "hash", "stats"])
     parser.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args(argv)
     files: list[Path] = args.files
@@ -387,9 +431,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             for path in files:
                 path.write_text(dumps_jsonl(load_jsonl(path)), encoding="utf-8")
                 print(f"formatted {path}")
-        else:
+        elif args.command == "hash":
             for path in files:
                 print(f"{dataset_hash(load_jsonl(path))}  {path}")
+        else:
+            for path in files:
+                print(f"{path}: {Stats.of(load_jsonl(path)).format()}")
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

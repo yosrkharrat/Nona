@@ -64,7 +64,9 @@ Benchmark (all data synthetic, see [05](docs/design/05-dataset.md)):
 
 ```bash
 uv run nona bench --systems identity --split dev     # table on stdout, JSON in results/
-uv run python -m nona.bench.dataset check bench/data/dev.jsonl
+uv run python -m nona.bench.dataset check bench/data/dev.jsonl bench/data/test.jsonl
+uv run python -m nona.bench.dataset stats bench/data/dev.jsonl    # size and language balance (05 §7)
+uv run python -m nona.bench.review bench/data/dev.jsonl --source llm   # each conversation with its labels
 uv run python -m nona.bench.generate --seed 20261120 --count 80 --prefix dev   # how dev.jsonl v0 was made
 ```
 

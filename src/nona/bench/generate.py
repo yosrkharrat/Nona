@@ -4,10 +4,16 @@ Templates are written by hand. The generator fills their slots with synthetic va
 the gold labels are exact by construction: the generator knows where it put every value. Output goes through
 `parse_conversation`, so a generated conversation is held to the same rules as a hand-written one.
 
-Usage (`bench/data/dev.jsonl` is the v0 set followed by the multi-turn set, 19 templates three times each):
+Usage. `bench/data/dev.jsonl` starts with the v0 set, the multi-turn set (19 templates three times each)
+and the S4 set (35 templates three times each); `bench/data/test.jsonl` starts with the test set (61
+templates five times each). Hand-written and LLM-drafted conversations follow in both files (05 §7). A test
+pins every generated part:
     python -m nona.bench.generate --seed 20261120 --count 80 --prefix dev > bench/data/dev.jsonl
     python -m nona.bench.generate --set multi-turn --seed 2 --count 57 --prefix dev --start 81 \
         >> bench/data/dev.jsonl
+    python -m nona.bench.generate --set dev-s4 --seed 4 --count 105 --prefix dev --start 138 \
+        >> bench/data/dev.jsonl
+    python -m nona.bench.generate --set test --seed 20261128 --count 305 --prefix test > bench/data/test.jsonl
 
 Slot syntax inside a template turn: `{name}` or `{name.form}`. Each slot name is declared once per template
 with a kind (see `KINDS`). Person slots have the forms `first`, `last` and `lower` (the first name in lower
@@ -19,8 +25,9 @@ distractors: they look like personal data but aren't, and they're recorded for o
 
 The `tn2` and `ar2` pools hold Tunisian names, in Latin and Arabic script, that are deliberately **not** in
 the gazetteer (`nona.core.recognizers.gazetteer_data`), so the benchmark measures detection, not list overlap
-(a test keeps it that way). Templates that use listed names (`tn`, `ar`) say so in their name (`-listed`) or
-are in the v0 set, and the report's held-out rate leaves them out.
+(a test keeps it that way). `tn3` and `ar3` are held out the same way and used by the `test` split only, so
+no name of the frozen split is seen while tuning on `dev`. Templates that use listed names (`tn`, `ar`) say
+so in their name (`-listed`) or are in the v0 set, and the report's held-out rate leaves them out.
 
 Determinism: the same seed and the same templates give the same output on the same Python minor version.
 `random.Random` methods other than `random()` may change between Python versions, so the committed files,
@@ -79,6 +86,18 @@ FIRST_NAMES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
         "m": ("غيث", "معتز", "أشرف", "نضال", "ريان", "شهاب", "حازم", "زكرياء"),
         "f": ("شيماء", "خلود", "رنيم", "ميساء", "شيرين", "إسلام", "أحلام", "ملك"),
     },
+    # Held out too, and used by the `test` split only (#74): the frozen split measures detection on names
+    # that never appear in `dev`, so tuning on `dev` can't learn them.
+    "tn3": {
+        "m": ("Iyed", "Dhafer", "Ghazi", "Louay", "Mortadha", "Talel", "Seifeddine", "Sadri", "Amenallah",
+              "Mehrez", "Rami"),
+        "f": ("Tasnim", "Hadil", "Oumaima", "Ichraf", "Sondes", "Rabeb", "Arwa", "Nihel", "Soumaya",
+              "Henda"),
+    },
+    "ar3": {
+        "m": ("إياد", "ظافر", "غازي", "لؤي", "مرتضى", "طلال", "صدري", "محرز"),
+        "f": ("تسنيم", "هديل", "أميمة", "سندس", "رباب", "أروى", "نهال", "سمية"),
+    },
 }  # fmt: skip
 SURNAMES: Mapping[str, tuple[str, ...]] = {
     "tn": ("Ben Salem", "Trabelsi", "Gharbi", "Mejri", "Ayari", "Sassi", "Dridi", "Khelifi", "Chaabane",
@@ -91,11 +110,20 @@ SURNAMES: Mapping[str, tuple[str, ...]] = {
             "Sellami", "Lahmar", "Mnif", "Ben Fraj", "Hachicha", "Jaouadi", "Ghorbel", "Boukadida"),
     "ar": ("الطرابلسي", "الغربي", "الجلاصي", "المنصوري", "الخليفي", "الماجري"),
     "ar2": ("بوهلال", "الشتيوي", "الزغل", "دريرة", "كمون", "الحشيشة", "الغرياني", "المنيف"),
+    "tn3": ("Chelbi", "Ghedira", "Mzoughi", "Feki", "Chakroun", "Frikha", "Elloumi", "Hentati", "Baklouti",
+            "Dammak", "Ouni", "Khiari", "Sahnoun", "Ben Ayed", "Ben Jemaa", "Ben Hamouda"),
+    "ar3": ("الشلبي", "غديرة", "المزوغي", "الفقي", "شقرون", "فريخة", "اللومي", "الهنتاتي", "البقلوطي",
+            "الدماق"),
 }  # fmt: skip
 # Cities for LOCATION values, some of them outside the gazetteer's list.
 CITIES: tuple[str, ...] = (
     "Sfax", "Sousse", "Bizerte", "Nabeul", "Monastir", "Kairouan", "La Marsa", "Menzel Temime", "El Jem",
     "Teboulba", "Sbeitla", "Tinja", "Ksour Essef", "Bekalta",
+)  # fmt: skip
+# The same in Arabic script (#74), as Tunisians write them.
+CITIES_AR: tuple[str, ...] = (
+    "صفاقس", "سوسة", "بنزرت", "نابل", "المنستير", "القيروان", "المرسى", "قليبية", "الحمامات", "توزر", "قابس",
+    "المهدية", "باجة", "منزل تميم",
 )  # fmt: skip
 PUBLIC_FIGURES = frozenset(
     {
@@ -256,6 +284,14 @@ def _cin(rng: random.Random) -> str:
     return rng.choice("01") + _digits(rng, 7)
 
 
+_EASTERN = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+
+
+def _eastern(make: Callable[[random.Random], str]) -> Callable[[random.Random], str]:
+    """The same value written with Eastern Arabic digits (٢٢ ١٢٣ ٤٥٦), as some Arabic-script messages do."""
+    return lambda rng: make(rng).translate(_EASTERN)
+
+
 def _ip(rng: random.Random) -> str:
     return f"{rng.choice(IP_PREFIXES)}.{rng.randint(1, 254)}"
 
@@ -280,11 +316,13 @@ _STRUCTURED: Mapping[str, tuple[EntityType, Callable[[random.Random], str]]] = {
     "phone:tn": (EntityType.PHONE, _phone_tn),
     "phone:tn-fixed": (EntityType.PHONE, _phone_tn_fixed),
     "phone:fr": (EntityType.PHONE, _phone_fr),
+    "phone:tn-east": (EntityType.PHONE, _eastern(_phone_tn)),
     "iban:tn": (EntityType.IBAN, _iban_tn),
     "iban:fr": (EntityType.IBAN, _iban_fr),
     "rib": (EntityType.RIB, _rib),
     "card": (EntityType.CARD, _card),
     "cin": (EntityType.NATIONAL_ID, _cin),
+    "cin:east": (EntityType.NATIONAL_ID, _eastern(_cin)),
     "ip": (EntityType.IP_ADDRESS, _ip),
 }
 _DISTRACTORS: Mapping[str, tuple[str, Callable[[random.Random], str]]] = {
@@ -312,12 +350,32 @@ _DISTRACTORS: Mapping[str, tuple[str, Callable[[random.Random], str]]] = {
     "~word:karim-ar": ("Arabic word that is also a name (generous, in Ramadan kareem)", lambda rng: "كريم"),
     "~word:amine-ar": ("Arabic word that is also a name (amen)", lambda rng: "آمين"),
     "~word:amal-ar": ("Arabic word that is also a name (hope)", lambda rng: "أمل"),
+    # #74: the common words of #50 used as words, in fixed expressions and after the cues' look-alikes.
+    "~price:east": ("price in Eastern Arabic digits", _eastern(_price)),
+    "~word:karim": ("Darija word that is also a name (generous, in ramdhan karim)", lambda rng: "karim"),
+    "~word:amine": ("Darija word that is also a name (amen)", lambda rng: "amine"),
+    "~word:farah": ("Darija word that is also a name (joy)", lambda rng: "farah"),
+    "~word:chams": ("Darija word that is also a name (sun)", lambda rng: "chams"),
+    "~word:kmar": ("Darija word that is also a name (moon)", lambda rng: "kmar"),
+    "~word:sana-ar": ("Arabic word that is also a name (year)", lambda rng: "سنة"),
+    "~word:mabrouk-ar": ("Arabic word that is also a name (congratulations)", lambda rng: "مبروك"),
+    "~word:rahma-ar": ("Arabic word that is also a name (mercy)", lambda rng: "رحمة"),
+    "~word:nour-ar": ("Arabic word that is also a name (light, in nour 3iniya)", lambda rng: "نور"),
+    "~word:jari-ar": ("Arabic word that is also a kin cue (current, of an account)", lambda rng: "جاري"),
+    "~word:farah-ar": ("Arabic word that is also a name (joy)", lambda rng: "فرح"),
+    "~word:hayet-ar": ("Arabic word that is also a name (life)", lambda rng: "حياة"),
+    "~word:chams-ar": ("Arabic word that is also a name (sun)", lambda rng: "شمس"),
+    "~word:olivier": ("French word that is also a name (olive tree)", lambda rng: "olivier"),
+    "~word:rose": ("French word that is also a name (rose)", lambda rng: "rose"),
+    "~word:grace-en": ("English word that is also a name (grace period)", lambda rng: "grace"),
+    "~word:jack-en": ("English word that is also a name (car jack)", lambda rng: "jack"),
+    "~word:bill-en": ("English word that is also a name (invoice)", lambda rng: "bill"),
 }
-_PERSON = re.compile(r"person:(tn2|tn|fr|en|ar2|ar)(?::([mf]))?(?:=(\w+))?")
+_PERSON = re.compile(r"person:(tn3|tn2|tn|fr|en|ar3|ar2|ar)(?::([mf]))?(?:=(\w+))?")
 KINDS = (
     frozenset(_STRUCTURED)
     | frozenset(_DISTRACTORS)
-    | {"email", "city"}
+    | {"email", "city", "city:ar"}
     | {f"person:{pool}{g}" for pool in FIRST_NAMES for g in ("", ":m", ":f")}
 )
 PERSON_FORMS = frozenset({"first", "last", "lower"})
@@ -660,7 +718,332 @@ MULTI_TURN_TEMPLATES: tuple[Template, ...] = (
          tags="common-word-name"),
 )  # fmt: skip
 
-TEMPLATE_SETS: Mapping[str, tuple[Template, ...]] = {"v0": TEMPLATES, "multi-turn": MULTI_TURN_TEMPLATES}
+# S4 set for `dev` (#74): Arabic script, Darija and code-switching, to reach the 05 §7 balance. People come
+# from the held-out `tn2` and `ar2` pools, except in `-listed` templates. Some numbers use Eastern Arabic
+# digits.
+DEV_S4_TEMPLATES: tuple[Template, ...] = (
+    # ---- Tunisian Darija in Arabic script
+    _tpl("s4-aeb-arab-intro-phone", "aeb-Arab", {"p1": "person:ar2", "ph": "phone:tn@p1"},
+         "عسلامة، أنا {p1} وهذا النومرو متاعي {ph}."),
+    _tpl("s4-aeb-arab-callback", "aeb-Arab", {"p1": "person:ar2:m", "ph": "phone:tn@p1"},
+         "عيّط ل{p1.first} على {ph}، راهو يستنّى فيك من الصباح.", tags="clitic"),
+    _tpl("s4-aeb-arab-cin", "aeb-Arab", {"cin": "cin:east"},
+         "رقم بطاقة التعريف متاعي {cin}، نحتاجو باش نكمّل التسجيل.", tags="eastern-digits"),
+    _tpl("s4-aeb-arab-two-people", "aeb-Arab",
+         {"p1": "person:ar2:m", "p2": "person:ar2:m", "ph": "phone:tn@p2"},
+         "{p1.first} و{p2.first} جايين غدوة، {p2.first} خلّى النومرو متاعو: {ph}.", tags="clitic"),
+    _tpl("s4-aeb-arab-moved-city", "aeb-Arab", {"p1": "person:ar2:m", "c1": "city:ar", "rib": "rib@p1"},
+         "{p1} بدّل السكنى ل{c1}، لازم نبدّلو العنوان في الملف متاعو.",
+         (A, "باهي، شنوّة العنوان الجديد متاع {p1.first} في {c1}؟"),
+         "باش يبعثهولك بالمايل. وهذا الـRIB الجديد متاعو: {rib}.",
+         (A, "الملف متاع {p1} تبدّل، بالـRIB {rib}."),
+         tags="clitic"),
+    _tpl("s4-aeb-arab-listed", "aeb-Arab", {"p1": "person:ar:m", "ph": "phone:tn@p1"},
+         "قلت ل{p1.first} يجيب الأوراق غدوة.",
+         (A, "باهي، {p1.first} عندو النومرو متاعك؟"),
+         "إيه، أما ابعثلو زادة على {ph}.",
+         (A, "بعثتلو ل{p1} على {ph}."),
+         tags="clitic"),
+    _tpl("s4-aeb-arab-no-pii", "aeb-Arab",
+         {"w1": "~word:jari-ar", "w2": "~word:sana-ar", "w3": "~word:farah-ar"},
+         "صباح الخير، عندي حساب {w1} في البنك ونحب نسكّرو.",
+         (A, "باهي، لازمك تمشي للفرع ببطاقة التعريف."),
+         "يعيشك. و{w2} سعيدة لكل العايلة!",
+         (A, "وانت من أهلو!"),
+         "نشالله العام الجاي يكون فيه {w3} أكثر.",
+         tags="common-word-name"),
+    # ---- Modern Standard Arabic
+    _tpl("s4-ar-doctor", "ar", {"p1": "person:ar2:m", "ph": "phone:tn-fixed@p1"},
+         "أريد حجز موعد مع الدكتور {p1.last} الأسبوع القادم.",
+         (A, "حسنًا. أي يوم يناسب الدكتور {p1.last}؟"),
+         "الثلاثاء. رقم العيادة {ph}، واسمه الكامل {p1}.",
+         (A, "تم الحجز مع {p1} يوم الثلاثاء، وسأؤكد على {ph}."),
+         tags="honorific"),
+    _tpl("s4-ar-email", "ar", {"p1": "person:ar2", "em": "email"},
+         "أرسل التقرير إلى {em} وضع {p1.first} في النسخة."),
+    _tpl("s4-ar-iban", "ar", {"p1": "person:ar2", "ib": "iban:tn@p1"},
+         "يرجى تحويل المبلغ إلى الحساب {ib} باسم {p1}."),
+    _tpl("s4-ar-short-then-full", "ar", {"p1": "person:ar2:m", "ph": "phone:tn-east@p1"},
+         "اتصل ب{p1.first} صباح الغد، الأمر عاجل.",
+         (A, "حسنًا، ما رقم {p1.first}؟"),
+         "رقمه {ph}، واسمه الكامل {p1}.",
+         (A, "تم تسجيل {p1} على الرقم {ph}."),
+         "وأخبر {p1.first} أن الاجتماع تأجل إلى الثالثة.",
+         tags="clitic eastern-digits"),
+    _tpl("s4-ar-no-pii", "ar", {"w1": "~word:mabrouk-ar", "w2": "~word:sana-ar"},
+         "{w1} عليك النجاح! كل {w2} وأنت بخير.", tags="common-word-name"),
+    # ---- Code-switched
+    _tpl("s4-mix-arab-fr-rib", "aeb-Arab+fr", {"rib": "rib"},
+         "ابعثلي الفلوس على الـRIB هذا: {rib}، merci d'avance."),
+    _tpl("s4-mix-arab-fr-appointment", "aeb-Arab+fr", {"p1": "person:ar2:m", "ph": "phone:tn@p1"},
+         "عندي rendez-vous مع {p1} lundi à 10h، النومرو متاعو {ph}."),
+    _tpl("s4-mix-ar-fr-card", "ar+fr", {"cd": "card", "pr": "~price:east"},
+         "تم خصم {pr} دينار مرتين من ma carte {cd}، comment je peux contester ?", tags="eastern-digits"),
+    _tpl("s4-mix-ar-fr-invoice", "ar+fr", {"p1": "person:ar2:m", "em": "email"},
+         "Bonjour, السيد {p1} يطلب نسخة من الفاتورة، envoyez-la à {em} svp.", tags="honorific"),
+    _tpl("s4-mix-aeb-en-call", "aeb-Latn+en", {"p1": "person:tn2:m", "ph": "phone:tn@p1"},
+         "Can you call {p1.first}? nomrou {ph}, w 9ollou el meeting tfaskhet."),
+    _tpl("s4-mix-aeb-en-invoice", "aeb-Latn+en", {"p1": "person:tn2:m", "em": "email@p1"},
+         "Send the invoice to {em}, w 9oul l {p1.lower} y5alles 9bal el jem3a."),
+    _tpl("s4-mix-en-ar-contract", "en+ar", {"p1": "person:ar2", "em": "email"},
+         "Please email the contract to {em}. The signer is {p1}."),
+    _tpl("s4-mix-aeb-fr-cin", "aeb-Latn+fr", {"p1": "person:tn2", "cin": "cin"},
+         "Bonjour, el CIN mte3i {cin} w ismi {p1}, je voudrais retirer ma carte."),
+    _tpl("s4-mix-aeb-fr-honorific", "aeb-Latn+fr", {"p1": "person:tn2:f", "ph": "phone:tn@p1"},
+         "Mme {p1.last} 9alet bech tji lundi.",
+         (A, "D'accord, je note Mme {p1.last} pour lundi. Vous avez son numéro ?"),
+         "Ey, {ph}, w esmha {p1}.",
+         (A, "Très bien, j'appellerai {p1} au {ph}."),
+         tags="honorific"),
+    _tpl("s4-mix-en-fr-account", "en+fr", {"p1": "person:tn2:m", "em": "email@p1"},
+         "Hi, je vous écris pour {p1}: he can't access his account, son mail est {em}."),
+    _tpl("s4-mix-arab-en-call", "aeb-Arab+en", {"p1": "person:ar2:m", "ph": "phone:tn@p1"},
+         "Please call {p1.first} على {ph}، قلّو الـmeeting تفسخ."),
+    _tpl("s4-mix-ar-en-meeting", "ar+en", {"p1": "person:ar2:f", "ph": "phone:tn-fixed@p1"},
+         "The meeting with الدكتورة {p1.last} is moved to Thursday, please confirm on {ph}.",
+         tags="honorific"),
+    _tpl("s4-mix-fr-ar-address", "fr+ar", {"p1": "person:ar2", "c1": "city:ar"},
+         "Merci de mettre à jour le dossier de {p1}، العنوان الجديد في {c1}."),
+    _tpl("s4-mix-en-ar-fees", "en+ar", {"p1": "person:ar2", "ib": "iban:tn@p1"},
+         "Transfer the fees to IBAN {ib}، صاحب الحساب {p1}."),
+    _tpl("s4-mix-arab-fr-sister", "aeb-Arab+fr",
+         {"p1": "person:ar2:f", "c1": "city:ar", "em": "email@p1"},
+         "أختي {p1.first} عندها entretien غدوة في {c1}.",
+         (A, "Bonne chance à {p1.first} ! Vous voulez que je l'aide à se préparer ?"),
+         "إيه، ابعثلها les questions على {em}.",
+         (A, "C'est envoyé à {em}.")),
+    _tpl("s4-mix-latn-arab-no-pii", "aeb-Latn+aeb-Arab", {"w1": "~word:mabrouk", "w2": "~word:mabrouk-ar"},
+         "{w1} 3lik! ألف {w2} يا صاحبي.", tags="common-word-name"),
+    _tpl("s4-mix-aeb-fr-friend", "aeb-Latn+fr",
+         {"p1": "person:tn2:m", "em": "email@p1", "ph": "phone:tn@p1"},
+         "sa7bi {p1.first} y9ra m3aya, il cherche un stage.",
+         (A, "D'accord, dans quel domaine ? Je peux aider {p1.first} à rédiger son CV."),
+         "Informatique. Ab3athlou 3al {em}, w nomrou {ph}.",
+         (A, "C'est fait, j'ai écrit à {p1.first} sur {em}.")),
+    _tpl("s4-mix-aeb-fr-prescription", "aeb-Latn+fr", {"p1": "person:tn2", "ph": "phone:tn@p1"},
+         "Docteur, l'ordonnance mta3 {p1.first} ndhanni ta7et, tnajjem t3awedha ? Nomrou {ph}."),
+    _tpl("s4-mix-en-ar-eid", "en+ar", {"w1": "~word:mabrouk-ar", "w2": "~word:sana-ar"},
+         "Happy Eid! عيد {w1} وكل {w2} وأنتم بخير.", tags="common-word-name"),
+    _tpl("s4-mix-arab-fr-fees", "aeb-Arab+fr", {"p1": "person:ar2", "ib": "iban:tn@p1"},
+         "حوّل les frais d'inscription على الـIBAN {ib}، باسم {p1}."),
+    # ---- No PII: common-word names as words, in Arabizi, English and French
+    _tpl("s4-aeb-no-pii-ramadan", "aeb-Latn",
+         {"w1": "~word:karim", "w2": "~word:sana", "w3": "~word:farah", "w4": "~word:amine"},
+         "Ramdhan {w1} lkol!",
+         (A, "Allah akram, saha ftourkom."),
+         "{w2} sa3ida zeda, w rabbi y5alli el {w3} fi darkom.",
+         (A, "{w4} ya rabbi."),
+         tags="common-word-name"),
+    _tpl("s4-en-no-pii", "en", {"w1": "~word:jack-en", "w2": "~word:grace-en", "w3": "~word:bill-en"},
+         "The car {w1} is in the trunk, the {w2} period ends Friday, and the {w3} is paid.",
+         tags="common-word-name"),
+    _tpl("s4-fr-no-pii", "fr", {"w1": "~word:olivier", "w2": "~word:rose"},
+         "On a planté un {w1} et une {w2} dans le jardin, ça change tout.", tags="common-word-name"),
+)  # fmt: skip
+
+
+# `test` split (#74): its own templates and its own held-out names (`tn3`, `ar3`), so nothing tuned on `dev`
+# carries over by construction. Frozen with the split: its output is pinned by a test.
+TEST_TEMPLATES: tuple[Template, ...] = (
+    # ---- French
+    _tpl("t-fr-intro-email", "fr", {"p1": "person:tn3", "em": "email@p1", "ph": "phone:tn@p1"},
+         "Bonjour, ici {p1}. Pour le dossier, écrivez-moi à {em} ou appelez le {ph}."),
+    _tpl("t-fr-salary-iban", "fr", {"ib": "iban:tn"},
+         "Merci de verser mon salaire sur l'IBAN {ib} à partir de ce mois."),
+    _tpl("t-fr-cin-renewal", "fr", {"cin": "cin", "d": "~date"},
+         "Ma carte d'identité n° {cin} expire le {d}, comment la renouveler ?"),
+    _tpl("t-fr-lawyer", "fr", {"p1": "person:tn3", "em": "email@p1"},
+         "Maître {p1.last} n'a pas encore envoyé le contrat.",
+         (A, "Voulez-vous que je relance Maître {p1.last} ?"),
+         "Oui, par mail : {em}. Son prénom, c'est {p1.first}.",
+         (A, "J'écris à {p1} ({em}) tout de suite."),
+         tags="honorific"),
+    _tpl("t-fr-no-pii-garden", "fr", {"w1": "~word:olivier", "w2": "~word:rose"},
+         "On a planté un {w1} près de la maison et une {w2} rouge devant la porte.", tags="common-word-name"),
+    _tpl("t-fr-parcel", "fr", {"r": "~ref", "d": "~date", "pr": "~price"},
+         "Le colis {r} est bloqué en douane depuis le {d}, le montant est de {pr} DT."),
+    _tpl("t-fr-two-same-first-name", "fr",
+         {"p1": "person:tn3:m", "p2": "person:tn3:m=p1", "ph": "phone:tn@p1"},
+         "{p1} et {p2} sont convoqués à l'entretien de mardi.",
+         (A, "Entendu, je convoque {p1} et {p2}."),
+         "{p1.first?} a demandé à décaler l'heure.",
+         (A, "S'agit-il de {p1} ou de {p2} ?"),
+         "De {p1}. Son numéro : {ph}.",
+         tags="ambiguous-reference"),
+    _tpl("t-fr-shop-city", "fr", {"p1": "person:tn3:f", "c1": "city", "ph": "phone:tn@p1"},
+         "{p1} ouvre une boutique à {c1} le mois prochain.",
+         (A, "Bonne nouvelle ! {p1.first} a déjà un local à {c1} ?"),
+         "Oui, et elle cherche un comptable. Son numéro : {ph}.",
+         (A, "Je transmets le {ph} de {p1} au cabinet.")),
+    _tpl("t-fr-card-fraud", "fr", {"cd": "card"},
+         "Quelqu'un a utilisé ma carte {cd} sur un site que je ne connais pas, je fais quoi ?"),
+    _tpl("t-fr-block-ip", "fr", {"ip": "ip"},
+         "Bloque l'adresse {ip}, elle scanne nos ports depuis hier soir."),
+    # ---- English
+    _tpl("t-en-intro", "en", {"p1": "person:tn3", "ph": "phone:fr@p1"},
+         "Hello, my name is {p1} and my number is {ph}."),
+    _tpl("t-en-refund-iban", "en", {"p1": "person:tn3", "ib": "iban:fr@p1"},
+         "Please refund the deposit to {ib}, the account is under {p1}."),
+    _tpl("t-en-ticket", "en", {"p1": "person:tn3", "em": "email@p1", "ph": "phone:tn-fixed@p1"},
+         "Our client {p1} reported a bug in the billing page.",
+         (A, "Thanks. Do you have {p1.first}'s contact details?"),
+         "Yes, {em}, and the office line is {ph}.",
+         (A, "I'll email {p1.first} at {em} today."),
+         "Great, cc me please."),
+    _tpl("t-en-no-pii-car", "en", {"w1": "~word:jack-en", "w2": "~word:grace-en"},
+         "My car {w1} broke, and the insurance {w2} period ends on Friday.", tags="common-word-name"),
+    _tpl("t-en-no-pii-bill", "en", {"w1": "~word:bill-en", "pr": "~price"},
+         "The electricity {w1} is {pr} TND this month, can you check if that's normal?",
+         tags="common-word-name"),
+    _tpl("t-en-professor", "en", {"p1": "person:tn3:f", "p2": "person:en"},
+         "Professor {p1.last} will review the thesis; her assistant is {p2}.", tags="honorific"),
+    _tpl("t-en-vpn", "en", {"ip": "ip"},
+         "Whitelist {ip} for the VPN, it's the new office gateway."),
+    # ---- Modern Standard Arabic
+    _tpl("t-ar-intro", "ar", {"p1": "person:ar3", "ph": "phone:tn@p1"},
+         "مرحبًا، أنا {p1}، ويمكنكم التواصل معي على الرقم {ph}."),
+    _tpl("t-ar-salary-iban", "ar", {"ib": "iban:tn"},
+         "الرجاء تحويل الراتب إلى الحساب {ib}."),
+    _tpl("t-ar-cin", "ar", {"cin": "cin:east"},
+         "رقم بطاقة التعريف الوطنية الخاصة بي هو {cin}.", tags="eastern-digits"),
+    _tpl("t-ar-phone-east", "ar", {"p1": "person:ar3", "ph": "phone:tn-east@p1"},
+         "اتصلوا ب{p1.first} على الرقم {ph} بعد الظهر.", tags="clitic eastern-digits"),
+    _tpl("t-ar-professor", "ar", {"p1": "person:ar3:m", "ph": "phone:tn@p1"},
+         "الأستاذ {p1.last} سيتأخر عن الاجتماع.",
+         (A, "هل أبلغ بقية الفريق بتأخر الأستاذ {p1.last}؟"),
+         "نعم، واسمه الكامل {p1} إن احتجت إليه، ورقمه {ph}.",
+         (A, "حسنًا، سأتصل بالأستاذ {p1.last} على {ph} عند الحاجة."),
+         tags="honorific clitic"),
+    _tpl("t-ar-moved", "ar", {"p1": "person:ar3:f", "c1": "city:ar"},
+         "انتقلت {p1} إلى {c1} وتحتاج إلى تحديث عنوانها."),
+    _tpl("t-ar-no-pii", "ar", {"w1": "~word:mabrouk-ar", "w2": "~word:rahma-ar"},
+         "{w1} على هذا الإنجاز، و{w2} الله على من رحلوا.", tags="common-word-name"),
+    _tpl("t-ar-no-pii-life", "ar", {"w1": "~word:hayet-ar", "w2": "~word:chams-ar"},
+         "ال{w1} جميلة رغم كل شيء.",
+         (A, "صحيح، المهم الصحة."),
+         "و{w2} الصباح تعطيني طاقة.",
+         (A, "جميل! هل تريد نصائح للنوم المبكر؟"),
+         tags="common-word-name"),
+    _tpl("t-ar-card", "ar", {"cd": "card"},
+         "سُحب مبلغ من بطاقتي {cd} دون علمي."),
+    # ---- Tunisian Darija in Arabic script
+    _tpl("t-aeb-arab-intro", "aeb-Arab", {"p1": "person:ar3", "ph": "phone:tn@p1"},
+         "عسلامة، معاك {p1}، النومرو متاعي {ph}."),
+    _tpl("t-aeb-arab-rib", "aeb-Arab", {"rib": "rib"},
+         "حوّلّي الفلوس على الحساب هذا {rib} وكلّمني."),
+    _tpl("t-aeb-arab-called", "aeb-Arab", {"p1": "person:ar3:m", "ph": "phone:tn@p1"},
+         "عيّطت ل{p1.first} ما جاوبنيش، ابعثلو مساج على {ph}.", tags="clitic"),
+    _tpl("t-aeb-arab-said", "aeb-Arab", {"p1": "person:ar3:m", "ph": "phone:tn@p1"},
+         "{p1.first} قالّي باش يتأخّر شويّة.",
+         (A, "باهي، عندك النومرو متاع {p1.first}؟"),
+         "إيه، {ph}، واسمو الكامل {p1}.",
+         (A, "باهي، نكلّم {p1} على {ph}.")),
+    _tpl("t-aeb-arab-two-same-first-name", "aeb-Arab",
+         {"p1": "person:ar3:m", "p2": "person:ar3:m=p1", "ph": "phone:tn@p1"},
+         "{p1} و{p2} جايين للاجتماع نهار الخميس.",
+         (A, "باهي، نستنّاو {p1} و{p2}."),
+         "{p1.first?} قالّي باش يجيب الأوراق.",
+         (A, "شكون فيهم، {p1} ولا {p2}؟"),
+         "{p1}، والنومرو متاعو {ph}.",
+         tags="ambiguous-reference clitic"),
+    _tpl("t-aeb-arab-cin", "aeb-Arab", {"cin": "cin:east"},
+         "رقم بطاقة التعريف متاعي {cin}، تنجم تعمّرلي الاستمارة؟", tags="eastern-digits"),
+    _tpl("t-aeb-arab-no-pii", "aeb-Arab", {"w1": "~word:mabrouk-ar", "w2": "~word:sana-ar"},
+         "ألف {w1} عالنجاح! وكل {w2} وانتوما طيبين.", tags="common-word-name"),
+    _tpl("t-aeb-arab-no-pii-account", "aeb-Arab", {"w1": "~word:nour-ar", "w2": "~word:jari-ar"},
+         "يعيشك يا {w1} عينيا، حلّيتلي حساب {w2} في البوسطة.", tags="common-word-name"),
+    _tpl("t-aeb-arab-city", "aeb-Arab", {"p1": "person:ar3:m", "c1": "city:ar"},
+         "{p1} سكن في {c1} من عام، وتوّا يلوّج على خدمة."),
+    # ---- Tunisian Arabizi
+    _tpl("t-aeb-intro", "aeb-Latn", {"p1": "person:tn3", "ph": "phone:tn@p1"},
+         "Ahla, ena {p1}, kallemni 3al {ph} ki tfadda."),
+    _tpl("t-aeb-cv", "aeb-Latn+fr", {"em": "email"},
+         "Ab3ath el CV l {em}, houwa elli ychouf les candidatures."),
+    _tpl("t-aeb-lowercase", "aeb-Latn", {"p1": "person:tn3:m", "ph": "phone:tn@p1"},
+         "kallamt {p1.lower} el bera7, ma jewebnich.",
+         (A, "Behi, n3awed nkallmou ena? Chnowa nomrou {p1.first}?"),
+         "{ph}, ama 5ir ab3athlou msg.",
+         (A, "Ok, b3athtlou msg 3al {ph}.")),
+    _tpl("t-aeb-brother", "aeb-Latn", {"p1": "person:tn3:m", "ph": "phone:tn@p1"},
+         "khouya {p1.first} y7eb ychri karhba, 3andek fikra?",
+         (A, "Ey, 9oulli chnowa el budget mta3 {p1.first}?"),
+         "Mech barcha, w ken t7eb tkallmou nomrou {ph}.",
+         (A, "Behi, nkallem {p1.first} 3al {ph} ghodwa.")),
+    _tpl("t-aeb-sister", "aeb-Latn", {"p1": "person:tn3:f", "c1": "city"},
+         "o5ti {p1.first} 3orsha ghodwa fi {c1}, enti jeya?"),
+    _tpl("t-aeb-iban", "aeb-Latn", {"ib": "iban:tn"},
+         "Ha el IBAN mte3i: {ib}, 7awelli 3lih el flous ki tnajjem."),
+    _tpl("t-aeb-no-pii-sky", "aeb-Latn", {"w1": "~word:chams", "w2": "~word:kmar"},
+         "El {w1} 7arga barcha lyoum, ama fel lil el {w2} ya3jeb.", tags="common-word-name"),
+    _tpl("t-aeb-no-pii-new-job", "aeb-Latn",
+         {"w1": "~word:mabrouk", "w2": "~word:amal", "w3": "~word:karim"},
+         "{w1} 3lik el 5edma jdida!",
+         (A, "Allah ybarek fik."),
+         "3andi {w2} kbir fik, w rabbi {w3}.",
+         (A, "Rabbi y5allik."),
+         tags="common-word-name"),
+    _tpl("t-aeb-service", "aeb-Latn+fr", {"sv": "~service"},
+         "Kallemt le service client {sv} w ma jewbounich."),
+    # ---- Code-switched
+    _tpl("t-mix-aeb-fr-doctor", "aeb-Latn+fr", {"p1": "person:tn3", "ph": "phone:tn-fixed@p1"},
+         "3andi rendez-vous m3a Dr {p1.last} nhar el jem3a.",
+         (A, "D'accord, voulez-vous que je confirme avec le Dr {p1.last} ?"),
+         "Ey, w nomrou el cabinet {ph}.",
+         (A, "Je confirme avec le Dr {p1.last} au {ph}."),
+         tags="honorific"),
+    _tpl("t-mix-aeb-fr-rib", "aeb-Latn+fr", {"p1": "person:tn3", "rib": "rib@p1"},
+         "Le RIB mta3 {p1} houwa {rib}, fais le virement aujourd'hui."),
+    _tpl("t-mix-aeb-en-file", "aeb-Latn+en", {"p1": "person:tn3:m", "em": "email@p1"},
+         "Bro, {p1.first} sent me the file, ama ma t7allech. Email him at {em}."),
+    _tpl("t-mix-aeb-en-no-pii", "aeb-Latn+en", {"w1": "~word:sana", "w2": "~word:amal"},
+         "Kol {w1} w enti bkhir! Happy new year, w nchallah fama {w2} fel 3am jey.",
+         tags="common-word-name"),
+    _tpl("t-mix-fr-ar-request", "fr+ar", {"p1": "person:ar3", "ph": "phone:tn@p1"},
+         "Bonjour, je vous transmets la demande de {p1}، رقم الهاتف {ph}."),
+    _tpl("t-mix-arab-fr-meeting", "aeb-Arab+fr", {"p1": "person:ar3:m", "em": "email"},
+         "عندي réunion مع {p1} الصباح.",
+         (A, "D'accord. Vous voulez que je prévienne {p1.first} ?"),
+         "إيه، ابعثلو mail على {em}.",
+         (A, "Message envoyé à {em}.")),
+    _tpl("t-mix-arab-en-cancel", "aeb-Arab+en", {"p1": "person:ar3"},
+         "The meeting with {p1} تفسخ، قلّو please."),
+    _tpl("t-mix-en-ar-address", "en+ar", {"p1": "person:ar3:f", "c1": "city:ar"},
+         "Please update the address for {p1}: انتقلت إلى {c1}."),
+    _tpl("t-mix-fr-en-call", "fr+en", {"p1": "person:tn3", "ph": "phone:fr@p1"},
+         "Le client {p1} demande un call ASAP, his number is {ph}."),
+    _tpl("t-mix-aeb-arab-ramadan", "aeb-Latn+aeb-Arab", {"w1": "~word:karim"},
+         "Ramdhan {w1} lkol! وصحّة شريبتكم.", tags="common-word-name"),
+    _tpl("t-mix-aeb-fr-overmask", "aeb-Latn+fr",
+         {"w1": "~word:mabrouk", "w2": "~word:sahbi", "w3": "~brand:ooredoo"},
+         "{w1} 3lik el diplôme ya {w2} !",
+         (A, "Merci, c'est gentil !"),
+         "Taw nemchi m3a {w3} nbadel l'abonnement.",
+         (A, "D'accord, tu veux que je compare les offres ?"),
+         tags="common-word-name"),
+    _tpl("t-mix-aeb-fr-cin", "aeb-Latn+fr", {"cin": "cin"},
+         "Svp, el CIN mta3 baba {cin}, il faut le mettre fel formulaire."),
+    _tpl("t-mix-aeb-en-atm", "aeb-Latn+en", {"cd": "card"},
+         "The ATM kla my card {cd}, chnowa na3mel?"),
+    _tpl("t-mix-ar-fr-iban", "ar+fr", {"p1": "person:ar3", "ib": "iban:tn@p1"},
+         "يرجى تحويل المبلغ sur l'IBAN {ib} باسم {p1}."),
+    _tpl("t-mix-aeb-fr-landlord", "aeb-Latn+fr", {"p1": "person:tn3", "rib": "rib@p1"},
+         "Le propriétaire {p1} y7eb el kera 9bal le 5 du mois, ab3athlou 3al RIB {rib}."),
+    _tpl("t-mix-ar-en-eid", "ar+en", {"w1": "~word:mabrouk-ar"},
+         "{w1} عليكم العيد, and have a great holiday!", tags="common-word-name"),
+    _tpl("t-mix-arab-fr-moved", "aeb-Arab+fr",
+         {"p1": "person:ar3:m", "c1": "city:ar", "ph": "phone:tn@p1"},
+         "{p1} بدّل الدار، توّا ساكن في {c1}.",
+         (A, "D'accord, je mets à jour l'adresse de {p1.first} à {c1}."),
+         "Merci، وهذا النومرو الجديد متاعو {ph}.",
+         (A, "C'est noté, {p1} : {ph}.")),
+)  # fmt: skip
+
+TEMPLATE_SETS: Mapping[str, tuple[Template, ...]] = {
+    "v0": TEMPLATES,
+    "multi-turn": MULTI_TURN_TEMPLATES,
+    "dev-s4": DEV_S4_TEMPLATES,
+    "test": TEST_TEMPLATES,
+}
 
 
 # --------------------------------------------------------------------------- generation
@@ -686,6 +1069,8 @@ def _email(rng: random.Random, person: _Value | None) -> str:
         pool = rng.choice(("tn", "fr", "en"))  # the v0 pools: adding a pool must not change v0 output
         person = _person(rng, f"person:{pool}", set())
     f, last = _fold(person.forms["first"]), _fold(person.forms["last"])
+    if not f or not last:  # an Arabic-script name has no ASCII letters: the address uses a Latin one
+        return _email(rng, None)
     number = rng.randint(10, 99)
     local = rng.choice((f"{f}.{last}", f"{f[0]}.{last}", f"{f}{last}", f"{f}.{last[:2]}", f"{f}{number}"))
     return f"{local}@{rng.choice(EMAIL_DOMAINS)}"
@@ -706,6 +1091,8 @@ def _fill(t: Template, rng: random.Random) -> dict[str, _Value]:
             values[slot] = _person(rng, base, taken, values[shared].forms["first"] if shared else None)
         elif base == "city":
             values[slot] = _Value(EntityType.LOCATION, {"": rng.choice(CITIES)})
+        elif base == "city:ar":
+            values[slot] = _Value(EntityType.LOCATION, {"": rng.choice(CITIES_AR)})
         elif base == "email":
             values[slot] = _Value(EntityType.EMAIL, {"": _email(rng, values.get(owner or ""))}, owner)
         elif base in _STRUCTURED:

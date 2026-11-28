@@ -12,6 +12,7 @@ from nona.bench.dataset import (
     Conversation,
     DatasetError,
     DatasetWarning,
+    Stats,
     dataset_hash,
     dumps_jsonl,
     load_dataset,
@@ -224,3 +225,19 @@ def test_cli_reports_errors_without_traceback(tmp_path: Path, capsys: pytest.Cap
     path.write_text('{"id": "x"}\n', encoding="utf-8")
     assert main(["check", str(path)]) == 1
     assert "missing field" in capsys.readouterr().err
+
+
+def test_stats_count_the_05_section_7_quantities(convs: dict[str, Conversation]) -> None:
+    stats = Stats.of(convs.values())
+    assert (stats.conversations, stats.turns, stats.long) == (3, 7, 1)
+    assert stats.code_switched == 1
+    assert stats.languages["fr"] == 2
+    assert stats.languages["en"] == 0
+    assert stats.sources["handwritten"] == 3
+    assert stats.share(stats.languages["fr"]) == pytest.approx(2 / 3)
+    assert "3 conversations, 7 turns, 1 of 4+ turns" in stats.format()
+
+
+def test_cli_stats(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["stats", str(FIXTURE)]) == 0
+    assert "code-switched" in capsys.readouterr().out
