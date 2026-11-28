@@ -39,7 +39,7 @@ CONTEXT = re.compile(
 # Arabic labels take a و/ف conjunction, then ب/ل, the article, or both (`بال`, `لل`); `رقم`/`عدد` takes the
 # conjunction and ب/ل but no article, since it heads a construct phrase (`رقم الطلب`). The words of a two-word
 # label are separated by spaces or tabs only: a label wrapped onto the next line is missed, which over-masks.
-_SP = r"[ \t\u00a0]+"
+_SP = r"[ \t]+"  # NFKC already turned no-break spaces into spaces
 _CONJ = r"[وف]?"
 _ART = r"(?:[بل]?ال|لل)"
 OTHER_LABEL = re.compile(
