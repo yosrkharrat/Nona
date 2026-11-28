@@ -70,6 +70,7 @@ few characters.
 from __future__ import annotations
 
 import functools
+import itertools
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -126,7 +127,7 @@ WEAK_HONORIFICS = frozenset({"si", "me", "m", "pr", "sir", "miss", "3am"})  # `3
 STRONG_HONORIFICS = HONORIFICS - WEAK_HONORIFICS
 # Matched on the normalized text that ends where the run starts. `[ \t]`, not `\s`, and `\Z`, not `$` (which
 # matches before a final newline): no cue across lines.
-_NAME_PHRASE = re.compile(
+NAME_PHRASE = re.compile(
     r"(?<!\w)(?:je m['\u2019]appelle|m['\u2019]appelle|my name is|name is"
     r"|esmou|ismou|ism-ou|esmi|ismi|esm|اسمي|اسمه)[ \t]*[:,]?[ \t]*\Z"
 )
@@ -150,11 +151,10 @@ def _alternation(words: tuple[str, ...]) -> str:
     return "|".join(one(w) for w in sorted(set(words), key=len, reverse=True))
 
 
-STRONG_PHRASE = re.compile(
-    rf"(?<![^\W_])(?:{_alternation(data.KIN_CUES)})[ \t]*[:,]?[ \t]*\Z|" + _NAME_PHRASE.pattern
-)
+KIN_PHRASE = re.compile(rf"(?<![^\W_])(?:{_alternation(data.KIN_CUES)})[ \t]*[:,]?[ \t]*\Z")
+STRONG_PHRASE = re.compile(KIN_PHRASE.pattern + "|" + NAME_PHRASE.pattern)
 SPEECH_PHRASE = re.compile(
-    rf"(?<![^\W_])(?:{_alternation(data.SPEECH_CUES + data.KIN_CUES_AR)})[ \t]*[:,]?[ \t]*\Z"
+    rf"(?<![^\W_])(?:{_alternation(data.SPEECH_CUES + data.KIN_CUES_LISTED)})[ \t]*[:,]?[ \t]*\Z"
 )
 # A verb agreeing with a person right after the name, in the same clause, and the article that rules it out.
 _VERB_AFTER = re.compile(rf"[ \t]+(?:{_alternation(data.VERBS_AFTER_NAME)})(?![^\W_])")
@@ -229,7 +229,8 @@ class _Word:
             self.honorific
             or (self.text in STOPWORDS and self.key not in NAMES)
             or self.text in ARABIC_STOP
-            or (self.cap is not True and _fold_ar(self.text) in _CONTEXT_WORDS)
+            or (self.cap is not True and _fold_ar(self.text) in _VERB_WORDS)
+            or (self.cap is not True and self.key not in NAMES and _fold_ar(self.text) in _CONTEXT_WORDS)
         )
 
 
@@ -239,11 +240,14 @@ def _fold_ar(text: str) -> str:
 
 
 _AR_FOLD = str.maketrans({c: group[0] for group in (_ALEFS, _TA_HEH, _YEHS) for c in group})
-# The one-word cues and verbs of #50 never join a name run unless capitalized: `sa7bi` (my friend) folds to
-# the name Sahbi, but in `sa7bi karim` it is the cue. `Sahbi Ben Salah` stays a name.
+# The one-word cues and verbs of #50 never join a name run unless capitalized (`سليم كلمني`). One that is
+# also a listed name (`sa7bi`, the name Sahbi) is the cue only before a first name (`_cue_word`).
+_VERB_WORDS = frozenset(
+    _fold_ar(normalize(w).text) for w in data.SPEECH_CUES + data.VERBS_AFTER_NAME if " " not in w
+)
 _CONTEXT_WORDS = frozenset(
     _fold_ar(normalize(w).text)
-    for w in data.KIN_CUES + data.KIN_CUES_AR + data.SPEECH_CUES + data.VERBS_AFTER_NAME
+    for w in data.KIN_CUES + data.KIN_CUES_LISTED + data.SPEECH_CUES + data.VERBS_AFTER_NAME
     if " " not in w
 )
 
@@ -329,7 +333,7 @@ class GazetteerRecognizer:
                 i += 1
                 continue
             run = words[i:end]
-            if cue != "strong" and run[0].start + run[0].clitic in never and len(run) > 1:
+            if cue != "strong" and run[0].start + run[0].clitic in never and _separate(run):
                 i += 1  # `3idek mabrouk Sami`: the blessing stays out, the name after it is tried on its own
                 continue
             if cue != "strong" and (
@@ -431,7 +435,11 @@ def _cue(doc: NormalizedDoc, words: list[_Word], i: int) -> str:
             return "strong" if doc.text.startswith(".", prev.end) else ""
         return "strong" if prev.text in STRONG_HONORIFICS or prev.cap is None else "weak"
     before = doc.text[max(0, words[i].start - 30) : words[i].start]
-    if STRONG_PHRASE.search(before):
+    if KIN_PHRASE.search(before):
+        # a Latin kinship word: a capital still has to start an unlisted name, so an Arabic word after it
+        # (no capitals) is lifted only if listed (`alf sa7bi الله` stays unmasked)
+        return "strong" if words[i].cap is not None else "speech"
+    if NAME_PHRASE.search(before):
         return "strong"
     if SPEECH_PHRASE.search(before):
         return "speech"
@@ -442,12 +450,20 @@ def _cue(doc: NormalizedDoc, words: list[_Word], i: int) -> str:
 
 def _score(run: list[_Word], cue: str) -> float:
     listed = [w for w in run if w.name]
-    common_only = bool(listed) and all(common(w.key, w.cap is not None) for w in listed)
+    # a word right after a particle is a surname, never the ordinary word: `ben salah` isn't "prayer"
+    surnames = {id(w) for prev, w in itertools.pairwise(run) if prev.text in PARTICLES - _ARTICLES}
+
+    def plain(w: _Word, cased: bool) -> bool:
+        return id(w) not in surnames and common(w.key, cased)
+
+    common_only = bool(listed) and all(plain(w, w.cap is not None) for w in listed)
     if cue == "strong":
         return 0.95
     if not listed:
         return 0.3  # an unlisted word after a weak cue, or a particle alone
     if cue == "speech":
+        if run[0].text in ("el", "al") or run[0].text.startswith("ال"):
+            return 0.3  # `chouft el nour`: I saw the light
         lowercase = all(w.cap is False for w in run)
         # in lowercase, only a Tunisian name: `chouft pierre`, `kallamt grace` are ordinary words
         return 0.3 if lowercase and not any(w.key in TUNISIAN for w in listed) else 0.9
@@ -469,23 +485,36 @@ def _score(run: list[_Word], cue: str) -> float:
         return 0.7 if len(run) > 1 else 0.3
     # All lowercase: only Tunisian names count (see `TUNISIAN`)
     tunisian = [w for w in listed if w.key in TUNISIAN]
-    if not tunisian or all(common(w.key, True) for w in tunisian):
+    if not tunisian or all(plain(w, True) for w in tunisian):
         return 0.3
     if len(run) > 1:
         return 0.7
     return 0.6 if any(w.key in FIRST_TN for w in tunisian) else 0.3
 
 
+_ARTICLES = frozenset({"el", "al", "l"})  # particles that are also the article: `el aziz` (the dear one)
 _CUE_GAP = re.compile(r"[ \t]*[:,][ \t]*|[ \t]+|-")
 
 
+def _separate(run: list[_Word]) -> bool:
+    """Whether the words after a run's first word are a name of their own (`mabrouk Sami`), not the rest of a
+    full name (`Amal Trabelsi`, `Karim Ben Salah`): no surname or particle among them."""
+    return len(run) > 1 and not any(w.key in LAST or w.text in _RUN_PARTICLES for w in run[1:])
+
+
 def _cue_word(doc: NormalizedDoc, words: list[_Word], i: int) -> bool:
-    """A capitalized one-word cue that folds to a listed name, right before a listed name: `Sa7bi karim`,
-    `SA7BI, karim` (a phone capitalizes the first word). `Sahbi Ben Salah` stays a name: `Ben` is unlisted."""
-    if i + 1 >= len(words) or words[i].cap is not True or _fold_ar(words[i].text) not in _CONTEXT_WORDS:
+    """A one-word cue that is also a listed name (`sa7bi`: my friend, or the name Sahbi), right before a
+    first name: the cue. In lowercase anywhere (`m3a sa7bi karim`); capitalized only at the start of a
+    sentence (`Sa7bi, karim`: a phone capitalizes the first word). Before a surname or a particle it is the
+    name (`sa7bi trabelsi`, `Sahbi Ben Salah`), and mid-sentence `Sa7bi Karim` too."""
+    w = words[i]
+    if i + 1 >= len(words) or w.key not in NAMES or _fold_ar(w.text) not in _CONTEXT_WORDS:
+        return False
+    if w.cap is True and not w.initial:
         return False
     nxt = words[i + 1]
-    return nxt.name and _CUE_GAP.fullmatch(doc.text[words[i].end : nxt.start]) is not None
+    first_only = nxt.key in FIRST and nxt.key not in LAST and nxt.text not in _RUN_PARTICLES
+    return first_only and _CUE_GAP.fullmatch(doc.text[w.end : nxt.start]) is not None
 
 
 def _verb_after(doc: NormalizedDoc, run: list[_Word]) -> bool:

@@ -100,26 +100,18 @@ COMMON_WORDS: tuple[str, ...] = (
 # marbuta or heh, alef maqsura or yeh) are handled by the recognizer.
 
 # Kinship and relations: a person comes next. Strong cues in Latin letters, where a capital still has to
-# start an unlisted name. `rajel` and `weld` are kept knowing that `rajel karim` (a generous man) and
-# `weld 3aziz` (a dear boy) get masked.
+# start an unlisted name.
 KIN_CUES: tuple[str, ...] = (
     "khouya", "khou", "okhti", "o5ti", "ou5ti", "5ti", "sa7bi", "sa7bti", "s7abi", "jari", "jarti", "mart",
-    "rajel", "weld",
 )  # fmt: skip
-# The Arabic forms lift listed names only, like the speech verbs: Arabic has no capitals to tell a name from
-# a word, and `جاري` is also "current" (`حساب جاري`), `ولد` also "born" (review of #97).
-KIN_CUES_AR: tuple[str, ...] = (
-    "خويا",
-    "أختي",
-    "ختي",
-    "صاحبي",
-    "صاحبتي",
-    "جاري",
-    "جارتي",
-    "مرت",
-    "راجل",
-    "ولد",
-)
+# These lift listed names only, like the speech verbs. The Arabic forms: Arabic has no capitals to tell a
+# name from a word, and `جاري` is also "current" (`حساب جاري`), `ولد` also "born" (review of #97). `rajel`
+# and `weld` also precede adjectives (`rajel Tounsi`); they are kept knowing that `rajel karim` (a generous
+# man) and `weld 3aziz` (a dear boy) get masked.
+KIN_CUES_LISTED: tuple[str, ...] = (
+    "rajel", "weld",
+    "خويا", "أختي", "ختي", "صاحبي", "صاحبتي", "جاري", "جارتي", "مرت", "راجل", "ولد",
+)  # fmt: skip
 
 # Speech and contact verbs, with their preposition: they lift a listed name only (owner's choice, 2026-11-28),
 # so `kallamt Ooredoo` stays unmasked. `chouft` is kept knowing `chouft amal` (I saw hope) gets masked. In

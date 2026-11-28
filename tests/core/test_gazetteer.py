@@ -423,6 +423,24 @@ def test_fixed_expressions_give_way_to_names(text: str, name: str) -> None:
         ("Nour Amal kbir", [("Nour", P)]),  # the run stops before the expression's word
         ("Sa7bi, karim 3andou karhba", [("karim", P)]),  # the cue with a comma
         ("شفت كريم اليوم", [("كريم", P)]),  # `chouft` in Arabic script
+        # third review of #97
+        ("fama Amal Trabelsi?", [("Amal Trabelsi", P)]),  # a full name, not `fama amal`
+        ("3andi Amal Ben Salah fil classe", [("Amal Ben Salah", P)]),
+        ("Ramdhan Karim Ben Salah", [("Karim Ben Salah", P)]),
+        ("Le dossier de Sa7bi Trabelsi est prêt", [("Sa7bi Trabelsi", P)]),
+        ("Rdv m3a Sa7bi Karim ghodwa", [("Sa7bi Karim", P)]),  # mid-sentence: a full name
+        ("sa7bi trabelsi ja", [("sa7bi trabelsi", P)]),  # before a surname: the name Sahbi
+        ("kallamt sa7bi ben salah", [("sa7bi ben salah", P)]),
+        ("m3a sa7bi karim", [("karim", P)]),  # lowercase before a first name: the cue
+        ("chouft el nour lbare7", []),  # an article: I saw the light
+        ("kallamt el amal", []),
+        ("rajel Tounsi", []),  # `rajel` lifts listed names only
+        ("rajel karim", [("karim", P)]),
+        # differential fuzz against main
+        ("alf sa7bi الله", []),  # a Latin kinship word starts no unlisted Arabic word
+        ("sa7bi سامي", [("سامي", P)]),
+        ("kol bechir ben salah kbir", [("bechir ben salah", P)]),  # `salah` after `ben` is a surname
+        ("fama Aziz ben salah sa3ida", [("Aziz ben salah", P)]),
     ],
 )
 def test_review_cases_of_97(text: str, expected: list[tuple[str, EntityType]]) -> None:

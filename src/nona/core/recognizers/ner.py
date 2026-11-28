@@ -63,9 +63,9 @@ from nona.core.recognizers import gazetteer_data
 from nona.core.recognizers.gazetteer import (
     ARABIC_STOP,
     FIRST,
+    NAME_PHRASE,
     NAMES,
     STOPWORDS,
-    STRONG_PHRASE,
     WEAK_PHRASE,
     cities,
     common_as_written,
@@ -494,10 +494,11 @@ def _cased(word: str) -> bool:
 
 
 def _person_cue(text: str, start: int) -> bool:
-    """A person cue right before `start`, on the same line: an honorific, or a gazetteer cue phrase. Not the
-    speech verbs of #50: a place or company follows them as often (`b3atht l Canada`, review of #97)."""
+    """A person cue right before `start`, on the same line: an honorific, or a gazetteer name phrase. Not the
+    kinship words or speech verbs of #50: a place follows them as often (`b3atht l Canada`, `weld Bab Jdid`,
+    `jari Menzah`, reviews of #97)."""
     before = normalize(text[max(0, start - 30) : start]).text
     words = before.split()
     if words and _honorific(words[-1]) and before[-1:] in (" ", "\t"):
         return True
-    return bool(STRONG_PHRASE.search(before) or WEAK_PHRASE.search(before) or _WITH.search(before))
+    return bool(NAME_PHRASE.search(before) or WEAK_PHRASE.search(before) or _WITH.search(before))
