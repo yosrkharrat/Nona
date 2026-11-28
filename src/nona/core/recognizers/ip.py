@@ -9,7 +9,9 @@ from nona.core.normalize import NormalizedDoc
 from nona.core.recognizers.span import to_span
 from nona.core.types import EntityType, Span
 
-_IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)")
+# `_` or a lone `.` around it doesn't hide it (`10.0.0.1_`, `.10.0.0.1`, #93); a letter, a digit or a longer
+# dotted number (`1.10.0.0.1`) does.
+_IPV4 = re.compile(r"(?<![^\W_])(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?![^\W_]|\.\d)")
 # Candidates only; `ipaddress` decides. Times like `10:30:00` are candidates and get rejected.
 _IPV6 = re.compile(r"(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])")
 

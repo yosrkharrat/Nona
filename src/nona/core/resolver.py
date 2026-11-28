@@ -275,19 +275,20 @@ def resolve(
 def _widen(kept: list[Span], candidates: Sequence[Span]) -> list[Span]:
     """Step 5: a structured value that lost a partial overlap to another one widens it, so no part of either
     is sent in clear (#93): the e-mail `456-a@x.com` beat the phone `22 123 456`, and `22 123` leaked.
-    Spans kept that one lost value overlaps become one span, with the extent of all of them and the type,
-    score and detector of the best ranked span kept among them, so the result doesn't depend on the order
-    of the candidates. A lost value next to a name changes nothing: names fill gaps with pieces. The span
-    widened overlaps nothing else kept: whatever it covers, a lost value or a span kept, overlapped it."""
+
+    The spans kept and the values that lost to them are joined wherever they overlap, in chains: each chain
+    becomes one span, over all of it, with the type, score and detector of the best ranked span kept in it.
+    So the result doesn't depend on the order of the candidates, and no two chains overlap. A lost value
+    that overlaps a name, or lies inside one span kept (the RIB of an IBAN), joins nothing: names fill gaps
+    with pieces. A chain covers nothing but its own spans, so it overlaps no other span kept.
+
+    Leak first: a phone propagated from an earlier message that loses to a longer e-mail glued to it
+    (`22 123 456-a@x.com`) is masked inside the e-mail's span, so that message doesn't say `PHONE_1`.
+    """
     held = set(kept)
-    parent = {k: k for k in kept if k.type not in NAME_TYPES}
-    extent: dict[Span, tuple[int, int]] = {k: (k.start, k.end) for k in parent}
-
-    def root(k: Span) -> Span:
-        while parent[k] != k:
-            k = parent[k]
-        return k
-
+    links: list[tuple[int, int, Span | None]] = [
+        (k.start, k.end, k) for k in kept if k.type not in NAME_TYPES
+    ]
     for c in candidates:
         if c.type in NAME_TYPES or c in held:
             continue
@@ -295,21 +296,23 @@ def _widen(kept: list[Span], candidates: Sequence[Span]) -> list[Span]:
         if not hits or any(k.type in NAME_TYPES for k in hits):
             continue
         if len(hits) == 1 and hits[0].start <= c.start and c.end <= hits[0].end:
-            continue  # inside the span kept: the RIB of an IBAN
-        roots = sorted({root(k) for k in hits}, key=_rank)
-        top = roots[0]
-        start, end = min(c.start, *(extent[r][0] for r in roots)), max(c.end, *(extent[r][1] for r in roots))
-        for r in roots[1:]:
-            parent[r] = top
-        extent[top] = (start, end)
-    groups: dict[Span, list[Span]] = {}
-    for k in parent:
-        groups.setdefault(root(k), []).append(k)
-    out = [k for k in kept if k not in parent]
-    for r, members in groups.items():
-        best = min(members, key=_rank)
-        start, end = extent[r]
-        out.append(Span(start, end, best.type, best.score, best.detector))
+            continue
+        links.append((c.start, c.end, None))
+    out = [k for k in kept if k.type in NAME_TYPES]
+    chains: list[tuple[int, int, list[Span]]] = []  # sorted by start, each over the links that overlap
+    for start, end, k in sorted(links, key=lambda x: (x[0], x[1])):
+        if not chains or start >= chains[-1][1]:
+            chains.append((start, end, []))
+        c_start, c_end, members = chains[-1]
+        chains[-1] = (c_start, max(c_end, end), members)
+        if k is not None:
+            members.append(k)
+    for start, end, members in chains:
+        best = min(members, key=_rank)  # every lost value overlaps a span kept, in its chain
+        if (best.start, best.end) == (start, end):
+            out.append(best)
+        else:
+            out.append(Span(start, end, best.type, best.score, best.detector))
     return out
 
 

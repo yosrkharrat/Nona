@@ -26,9 +26,10 @@ _MAX_RUN = 42  # longest IBAN (34) with a separator every 4 characters
 
 
 def _token_starts(text: str, token: re.Pattern[str]) -> Iterator[int]:
-    """Start of every token that isn't glued to a preceding word character."""
+    """Start of every token that isn't glued to a preceding letter or digit. `_` separates words, as in
+    `core/boundaries.py`: `card_4242…` and `4242…_` are numbers (#93)."""
     for m in token.finditer(text):
-        if m.start() == 0 or not (text[m.start() - 1].isalnum() or text[m.start() - 1] == "_"):
+        if m.start() == 0 or not text[m.start() - 1].isalnum():
             yield m.start()
 
 
@@ -38,7 +39,7 @@ def _run_ends(text: str, start: int, token: re.Pattern[str]) -> list[int]:
     pos = start
     while (m := token.match(text, pos)) is not None and m.end() - start <= _MAX_RUN:
         end = m.end()
-        if end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        if end < len(text) and text[end].isalnum():
             break  # the token continues with other characters: `1234abc` is not a number
         ends.append(end)
         if end + 1 < len(text) and text[end] in _SEPARATORS and token.match(text, end + 1):

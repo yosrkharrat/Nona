@@ -441,6 +441,12 @@ def test_arabic_look_ahead_spreads_listed_names_only() -> None:
         ("mail a@x.com_x", "mail EMAIL_1_x"),
         ("mail a@x.com_person_1", "mail EMAIL_1_person_1"),
         ("a@x.comPERSON_1 ok", "EMAIL_1PERSON_1 ok"),  # the TLD stops at the typed placeholder
+        ("a@x.com.PERSON_1 ok", "EMAIL_1.PERSON_1 ok"),
+        ("a@x.com-PERSON_1 ok", "EMAIL_1-PERSON_1 ok"),
+        # an IBAN keeps its country code when letters are glued to it
+        ("iban TN5910006035183598478831abc", "iban IBAN_1abc"),
+        ("ibanTN5910006035183598478831", "ibanIBAN_1"),
+        ("iban FR7630006000011234567890189x", "iban IBAN_1x"),
         # an e-mail after a phone and `-`; a phone cut by an e-mail
         ("tel 22123456-a@x.comPERSON_1", "tel EMAIL_1PERSON_1"),
         ("tel 22 123 456-a@x.com ok", "tel EMAIL_1 ok"),
@@ -472,3 +478,34 @@ def test_a_typed_placeholder_restore_never_reads_keeps_its_number() -> None:
     out = Nona().anonymize_messages(["Sami", "a@x.comـPERSON_1"])
     assert out.messages[1].text == "EMAIL_1ـPERSON_1"
     assert Nona.restore(out.messages[1].text, out.mapping) == "a@x.comـPERSON_1"
+
+
+def test_a_denylist_term_glued_to_digits_is_another_word() -> None:
+    """A term is matched as whole words: `zeta2024` isn't `zeta`, as on main."""
+    assert Nona(denylist=["zeta"]).anonymize("projet zeta2024 ok").text == "projet zeta2024 ok"
+
+
+_GLUE = st.sampled_from(["", "", " ", "-", "_", ".", "/", "ـ", "abc", "PERSON_1", "person_1"])
+_VALUE = st.sampled_from(
+    [
+        "22123456",
+        "22 123 456",
+        "+216 22 123 456",
+        "a@x.com",
+        "k_ben@example.tn",
+        "10.0.0.1",
+        "4242424242424242",
+    ]
+)
+
+
+@given(st.lists(st.tuples(_GLUE, _VALUE, _GLUE), min_size=1, max_size=5))
+def test_glued_values_never_fail_and_never_leak(parts: list[tuple[str, str, str]]) -> None:
+    """Review of #106: overlapping widened spans made `anonymize` raise. Every value planted, however glued,
+    is masked: none of it goes upstream in clear. Not a digit glued to a digit: `PERSON_122123456` can't be
+    read as `PERSON_1` and `22123456`. Parts are a word apart, so two values don't make one longer number."""
+    assume(not any(a[-1:].isdigit() and v[0].isdigit() for a, v, _ in parts))
+    text = " et ".join(a + v + b for a, v, b in parts)
+    up = Nona().anonymize(text).text
+    for _, v, _ in parts:
+        assert v not in up, (text, up)

@@ -53,6 +53,7 @@ from collections.abc import Mapping as AbcMapping
 from nona.core.boundaries import GLUED_PLACEHOLDER, PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
+from nona.core.checksums import iban_valid
 from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
@@ -115,7 +116,7 @@ def _blank(mask: bytearray, doc: NormalizedDoc, start: int, end: int) -> None:
         mask[a:b] = b"\x01" * (b - a)
 
 
-def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
+def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc, bytearray] | None:
     """`doc` with what may hide a value turned into spaces, and the blanked original characters; `None` when
     nothing does, so most messages cost no second pass. Same length and origins, so spans found in it map
     back to the original text. Linear in the text's length. Two things are blanked:
@@ -126,6 +127,7 @@ def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
     - the letters glued to a run of digits (`_GLUED_DIGITS`): `22123456abc`, `tel22123456`,
       `22123456person_1`, a lower-case placeholder being just a word (#93). Not an order cue in front
       (`commande22123456`): an order number, left as it is, as after `commande ` (`recognizers/phone.py`).
+      Nor an IBAN's country code (`ibanTN59…abc`): blanked, it would hide the IBAN. Only with `digits`.
     """
     text = doc.original
     mask = bytearray(len(text))
@@ -144,10 +146,13 @@ def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
             or (m.start() > 0 and text[m.start() - 1] in "_-")
             or (m.end() < len(text) and text[m.end()] in "_-")
         )
-    for m in _GLUED_DIGITS.finditer(doc.text):
+    for m in _GLUED_DIGITS.finditer(doc.text) if digits else ():
         if (m["left"] or m["right"]) and sum(c.isdigit() for c in m["digits"]) >= _GLUED_DIGITS_MIN:
+            left_end = m.end("left")
+            if len(m["left"]) >= 2 and iban_valid(m["left"][-2:] + m["digits"]):
+                left_end -= 2
             if not order_cue(m["left"]):
-                _blank(mask, doc, m.start("left"), m.end("left"))
+                _blank(mask, doc, m.start("left"), left_end)
             _blank(mask, doc, m.end("digits"), m.end("digits") + len(m["right"]))
             glued = True
     if not glued:
@@ -300,9 +305,10 @@ class Nona:
 
     def _denied(self, doc: NormalizedDoc) -> list[Span]:
         """Denylist terms, also where a typed placeholder glued to one hid it (`projet zetaPERSON_1`, #93),
-        as the structured recognizers' second pass finds them."""
+        as the structured recognizers' second pass finds them. Not letters glued to digits: a term is matched
+        as whole words, and `zeta2024` is another word than `zeta`."""
         found = denylist_spans(doc, self._denylist)
-        blanked = _blanked(doc) if self._denylist else None
+        blanked = _blanked(doc, digits=False) if self._denylist else None
         if blanked is None:
             return found
         view, mask = blanked

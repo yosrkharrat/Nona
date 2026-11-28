@@ -66,6 +66,14 @@ def test_a_chain_of_partial_overlaps_is_one_span() -> None:
         assert resolve(list(order), TEXT) == [s(0, 12, EntityType.EMAIL)]
 
 
+def test_lost_values_overlapping_each_other_join_their_chains() -> None:
+    """Review of #106: two lost values that overlap each other, each touching a different span kept, made two
+    groups whose extents overlapped, and `Pseudonymizer.add` raised."""
+    spans = [s(0, 10, PH), s(18, 28, PH), s(6, 14, PH), s(12, 20, PH)]
+    for order in itertools.permutations(spans):
+        assert resolve(list(order), TEXT) == [s(0, 28, PH)]
+
+
 def test_a_structured_value_inside_another_is_dropped() -> None:
     assert resolve([s(0, 12, EntityType.IBAN), s(4, 12, EntityType.RIB)], TEXT) == [s(0, 12, EntityType.IBAN)]
 
