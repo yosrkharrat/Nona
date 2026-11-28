@@ -46,6 +46,34 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest --cov --cov-report=term-missing
 
+  model:
+    name: Model tests
+    runs-on: ubuntu-latest
+    env:
+      NONA_MODELS_DIR: ${{ github.workspace }}/.models
+      NONA_MODEL_TESTS: required  # fail instead of skipping when the model is missing (tests/model)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra ner
+      # Keyed on every pinned repo, revision and file hash: a new pin downloads once, then hits the cache.
+      - id: pins
+        run: |
+          key=$(uv run python -c "import hashlib; from nona.models import PINNED as P; print('-'.join(r.folder for r in P.repos) + '-' + hashlib.sha256(repr(P).encode()).hexdigest()[:16])")
+          echo "key=nona-models-$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .models
+          key: ${{ steps.pins.outputs.key }}
+      # On a cache hit this downloads nothing, but still checks every file against its pinned SHA-256:
+      # a cache entry that doesn't match is replaced, never loaded.
+      - run: uv run nona models pull
+      - run: uv run pytest -m model
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

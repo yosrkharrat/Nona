@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -30,6 +31,9 @@ def _pulled() -> bool:
 
 
 if importlib.util.find_spec("gliner") is None or not _pulled():
+    # CI's model job sets this, so a missing model fails the job instead of skipping every test (#73).
+    if os.environ.get("NONA_MODEL_TESTS") == "required":
+        pytest.fail("NONA_MODEL_TESTS=required, but the `ner` extra or the model is missing", pytrace=False)
     pytest.skip("needs the `ner` extra and `nona models pull`", allow_module_level=True)
 
 from nona.models import load_ner_model  # noqa: E402
