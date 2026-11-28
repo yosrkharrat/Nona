@@ -26,17 +26,19 @@ message-local rules are in `core/recognizers/ner.py`):
 - the resolver keeps a propagated form over a recognizer span with the same extent and another type
   (`core/resolver.py`), so a name keeps the placeholder it was given.
 
-A value glued to a placeholder the user typed (`22 123 456PERSON_1`, `a@x.com_PERSON_1`) is found too, #85.
-The structured recognizers end a value where a word ends, so the glued placeholder hid it. When a placeholder
-in its issued shape (`GLUED_PLACEHOLDER`) touches something other than a space, they run a second time on the
-normalized view with every such placeholder blanked out, same length, along with the `_` and `-` glued to it.
-What that pass finds clear of the blanked characters is added to the first pass. Adding only, never replacing:
-`PERSON_1@example.com` is still the e-mail the first pass found. People, places and organizations aren't
-searched again: a name glued to a placeholder (`SamiPERSON_1`) stays as the strict boundaries decide
-(`core/boundaries.py`, #87). A value found this way is often glued to a placeholder once masked
-(`PHONE_1PERSON_1`, `PERSON_1PHONE_1`, `CUSTOM_1PERSON_1`): restore doesn't write those back, so the reply
-keeps the placeholder, but no value went upstream (#87). The second pass only searches what no first-pass span
-covers, so it never takes the resolver's pick away from a value found before.
+A value glued to a placeholder the user typed (`22 123 456PERSON_1`, `a@x.com_PERSON_1`) is found too, #85,
+as is one glued to other letters (`tel22123456`, `22123456abc`, `22123456person_1`), #93. The structured
+recognizers end a value where a word ends, so what was glued hid it. When a placeholder in its issued shape
+(`GLUED_PLACEHOLDER`) touches something other than a space, or letters are glued to a run of digits, they run
+a second time on the normalized view with those blanked out, same length (`_blanked`). Denylist terms are
+searched for again on it too (`projet zetaPERSON_1`). What that pass finds clear of the blanked characters
+is added to the first pass. Adding only, never replacing: `PERSON_1@example.com` is still the e-mail the
+first pass found. People, places and organizations aren't searched again: a name glued to a placeholder
+(`SamiPERSON_1`) stays as the strict boundaries decide (`core/boundaries.py`, #87). A value found this way
+is often glued to a placeholder once masked (`PHONE_1PERSON_1`, `PERSON_1PHONE_1`, `CUSTOM_1PERSON_1`), or
+to letters on its left (`telPHONE_1`): restore doesn't write those back, so the reply keeps the placeholder,
+but no value went upstream (#87). The second pass only searches what no first-pass span covers, so it never
+takes the resolver's pick away from a value found before.
 
 Fail closed (ADR-0003): if any recognizer raises, `anonymize` raises `DetectorError` and returns nothing.
 A partly masked text is never produced, so a caller can't forward it by mistake.
@@ -47,10 +49,12 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from collections.abc import Mapping as AbcMapping
+from typing import TypedDict
 
-from nona.core.boundaries import GLUED_PLACEHOLDER, PROCLITICS
+from nona.core.boundaries import BLANK, GLUED_PLACEHOLDER, PROCLITICS
 from nona.core.cache import DetectionCache, cache_key, fingerprint
 from nona.core.canonical import canonical_tokens, compatible, name_words
+from nona.core.checksums import iban_valid
 from nona.core.normalize import DROPPED, NormalizedDoc, normalize
 from nona.core.pseudonymize import (
     DEFAULT_POLICIES,
@@ -63,8 +67,10 @@ from nona.core.pseudonymize import (
     restore,
 )
 from nona.core.recognizers import Recognizer, default_recognizers
+from nona.core.recognizers.financial import card_number
 from nona.core.recognizers.gazetteer import NAMES, common_as_written
 from nona.core.recognizers.ner import NER, place_or_org
+from nona.core.recognizers.phone import order_cue
 from nona.core.resolver import (
     cut_at_placeholders,
     denylist_spans,
@@ -88,32 +94,83 @@ _RETYPED = frozenset({EntityType.LOCATION, EntityType.ORGANIZATION})
 _PROSE = frozenset({EntityType.PERSON, EntityType.LOCATION, EntityType.ORGANIZATION})
 
 
+# What may sit between a placeholder and the value it hides: blanked with the placeholder.
+_JOINERS = "_-./"
+# A run of digits, maybe grouped (`22 123 456`, `10.0.0.1`), with the letters glued to either end of it
+# (`tel22123456`, `22123456abc`), when nothing but those letters is on that side of the word: a hash or a
+# random key (`3f2a91827364e5`, `ade4-6172902ed461`), letters and digits mixed, keeps its letters. The
+# letters on the right are taken whole (`*+`): `ed` before `4` is no match by stopping at `e`.
+_GLUED_DIGITS = re.compile(
+    r"(?<![^\W\d_])(?<![0-9])(?P<left>[^\W\d_]*)(?P<digits>[0-9](?:[ .\-/]?[0-9])*)"
+    r"(?=(?P<right>[^\W\d_]*+)(?![0-9]))"
+)
+_GLUED_DIGITS_MIN = 4  # digits in the run: no personal value is shorter (`1.2.3.4`)
+
+
 def _gluing(c: str, *, right: bool = False) -> bool:
-    return c.isalnum() or c in "_-" or c in DROPPED or (right and c == "+")
+    return c.isalnum() or c in DROPPED or (right and c == "+")
 
 
-def _blanked(doc: NormalizedDoc) -> tuple[NormalizedDoc, bytearray] | None:
-    """`doc` with every typed placeholder, and the `_` and `-` glued to either side, turned into spaces, and
-    the blanked original characters; `None` when no placeholder touches a character a value can end or
-    start with (a letter or a digit, `_`, `-`, `+` on the right, what normalization drops), as then none can
-    hide a value: `Merci PERSON_1.` costs no second pass. Same length and origins, so spans found in it map
-    back to the original text (#85). Linear in the text's length, however many placeholders it holds."""
+def _blank(mask: bytearray, doc: NormalizedDoc, start: int, end: int) -> bool:
+    """Marks the original characters of `doc.text[start:end]` in `mask`; whether there were any."""
+    if start < end:
+        a, b = doc.origin[start][0], doc.origin[end - 1][1]
+        mask[a:b] = b"\x01" * (b - a)
+    return start < end
+
+
+def _blanked(doc: NormalizedDoc, *, digits: bool = True) -> tuple[NormalizedDoc, bytearray] | None:
+    """`doc` with what may hide a value turned into `BLANK`, and the blanked original characters; `None` when
+    nothing does, so most messages cost no second pass. Same length and origins, so spans found in it map
+    back to the original text. Linear in the text's length. Two things are blanked:
+    - a typed placeholder (`GLUED_PLACEHOLDER`) and the `_`, `-`, `.` and `/` glued to either side, when a
+      character a value can end or start with is next to that (a letter, a digit, what normalization drops,
+      `+` on the right), or the placeholder itself touches a `_` or `-`: `Merci PERSON_1.` needs nothing,
+      `PERSON_1.10.1.2.3` does (#85, #93);
+    - the letters glued to a run of digits (`_GLUED_DIGITS`): `22123456abc`, `tel22123456`,
+      `22123456person_1`, a lower-case placeholder being just a word (#93). Not an order cue in front
+      (`commande22123456`): an order number, left as it is, as after `commande ` (`recognizers/phone.py`).
+      Nor an IBAN's country code (`ibanTN59…abc`): blanked, it would hide the IBAN. Only with `digits`.
+    """
     text = doc.original
     mask = bytearray(len(text))
     glued = False
     for m in GLUED_PLACEHOLDER.finditer(text):
         start, end = m.span()
-        while start and text[start - 1] in "_-" and not mask[start - 1]:
+        while start and text[start - 1] in _JOINERS and not mask[start - 1]:
             start -= 1
-        while end < len(text) and text[end] in "_-":
+        while end < len(text) and text[end] in _JOINERS:
             end += 1
         mask[start:end] = b"\x01" * (end - start)
-        glued = glued or (m.start() > 0 and _gluing(text[m.start() - 1]))
-        glued = glued or (m.end() < len(text) and _gluing(text[m.end()], right=True))
+        glued = (
+            glued
+            or (start > 0 and _gluing(text[start - 1]))
+            or (end < len(text) and _gluing(text[end], right=True))
+            or (m.start() > 0 and text[m.start() - 1] in "_-")
+            or (m.end() < len(text) and text[m.end()] in "_-")
+        )
+    # Scanned once placeholders are blanked: the `1` of `PERSON_1abc22123456` isn't part of the value's word.
+    stage = _apply(doc, mask) if glued else doc.text
+    for m in _GLUED_DIGITS.finditer(stage) if digits else ():
+        if (m["left"] or m["right"]) and sum(c.isdigit() for c in m["digits"]) >= _GLUED_DIGITS_MIN:
+            left_end = m.end("left")
+            if (
+                len(m["left"]) >= 2
+                and iban_valid(m["left"][-2:] + m["digits"])
+                and not card_number(m["digits"])  # a card stays a card, redacted: mod 97 passes 1 in 97
+            ):
+                left_end -= 2
+            if not order_cue(m["left"]):
+                glued = _blank(mask, doc, m.start("left"), left_end) or glued
+            glued = _blank(mask, doc, m.end("digits"), m.end("digits") + len(m["right"])) or glued
     if not glued:
         return None
-    chars = [" " if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True)]
-    return NormalizedDoc(text, "".join(chars), doc.origin), mask
+    return NormalizedDoc(text, _apply(doc, mask), doc.origin), mask
+
+
+def _apply(doc: NormalizedDoc, mask: bytearray) -> str:
+    """`doc.text` with every character whose original is marked in `mask` turned into `BLANK`."""
+    return "".join(BLANK if any(mask[a:b]) else c for c, (a, b) in zip(doc.text, doc.origin, strict=True))
 
 
 def _cased(word: str) -> bool:
@@ -175,6 +232,15 @@ def _behind_clitics(text: str, recognized: Sequence[Span], propagated: Sequence[
     return out
 
 
+class ResolveOptions(TypedDict):
+    """What `resolve` takes from a `Nona`'s configuration."""
+
+    min_score: float
+    allowlist: Sequence[str]
+    redacted: frozenset[EntityType]
+    kept_as_is: frozenset[EntityType]
+
+
 class DetectorError(RuntimeError):
     """A recognizer failed. Nothing may be sent upstream (ADR-0003); the proxy turns this into HTTP 503."""
 
@@ -206,9 +272,13 @@ class Nona:
             raise ValueError(f"terms both allowed and denied: {clash}")
         self._recognizers = list(default_recognizers() if recognizers is None else recognizers)
         self._policies = dict(DEFAULT_POLICIES if policies is None else policies)
-        self._allowlist = tuple(allowlist)
+        self._resolving = ResolveOptions(
+            min_score=min_score,
+            allowlist=tuple(allowlist),
+            redacted=frozenset(t for t, p in self._policies.items() if p is Policy.REDACT),
+            kept_as_is=frozenset(t for t, p in self._policies.items() if p is Policy.KEEP),
+        )
         self._denylist = tuple(denylist)
-        self._min_score = min_score
         self._cache = DetectionCache() if cache is None else cache
         self._fingerprint = fingerprint(self._recognizers)
 
@@ -229,7 +299,7 @@ class Nona:
         propagated = known_spans(doc, known)
         recognized = self._recognize(doc, text)
         recognized = _behind_clitics(text, _as_people(text, recognized, known, propagated), propagated)
-        candidates: list[Span] = denylist_spans(doc, self._denylist) + propagated
+        candidates: list[Span] = self._denied(doc) + propagated
         # A span kept as is (an ORGANIZATION, by default) must not hide a value already masked earlier:
         # `Clinique Ahmed Ben Salem` after `Ahmed Ben Salem` was issued would send the name in clear.
         candidates.extend(
@@ -237,7 +307,7 @@ class Nona:
             for s in recognized
             if self._policies.get(s.type) is not Policy.KEEP or not any(s.overlaps(p) for p in propagated)
         )
-        spans = resolve(candidates, text, min_score=self._min_score, allowlist=self._allowlist, pieces=False)
+        spans = resolve(candidates, text, pieces=False, **self._resolving)
         words, span_seeds = self._look_ahead_words(text, spans, recognized, seeds or {})
         # It fills gaps only, never retyping a detection, except a span kept as is (an ORGANIZATION): that
         # one gives way, so `… de la Clinique Ahmed Ben Salem` doesn't send a name found in this message.
@@ -251,18 +321,32 @@ class Nona:
             return self._fill_gaps(spans, candidates, text), span_seeds
         hiding = {k for k in keep if any(k.overlaps(c) for c in extra)}
         kept = [s for s in spans if s not in hiding]
-        final = resolve(
-            [*kept, *extra], text, min_score=self._min_score, allowlist=self._allowlist, pieces=False
-        )
+        final = resolve([*kept, *extra], text, pieces=False, **self._resolving)
         kept_spans = set(final)
         seeds_kept = {s: t for s, t in span_seeds.items() if s in kept_spans}
         return self._fill_gaps(final, [*candidates, *extra], text), seeds_kept
+
+    def _denied(self, doc: NormalizedDoc) -> list[Span]:
+        """Denylist terms, also where a typed placeholder glued to one hid it (`projet zetaPERSON_1`, #93),
+        as the structured recognizers' second pass finds them. Not letters glued to digits: a term is matched
+        as whole words, and `zeta2024` is another word than `zeta`."""
+        found = denylist_spans(doc, self._denylist)
+        blanked = _blanked(doc, digits=False) if self._denylist else None
+        if blanked is None:
+            return found
+        view, mask = blanked
+        for s in found:
+            mask[s.start : s.end] = b"\x01" * (s.end - s.start)
+        return found + [s for s in denylist_spans(view, self._denylist) if not any(mask[s.start : s.end])]
 
     def _fill_gaps(self, spans: list[Span], candidates: Sequence[Span], text: str) -> list[Span]:
         """The pieces of the names that lost a partial overlap, in what nothing covers once the look-ahead
         has run (`core/resolver.py`, step 5, #89): they never change a span kept, nor what the look-ahead
         finds. A piece carries no seeds, so it never spreads."""
-        return fill_gaps(spans, candidates, text, min_score=self._min_score, allowlist=self._allowlist)
+        options = self._resolving
+        return fill_gaps(
+            spans, candidates, text, min_score=options["min_score"], allowlist=options["allowlist"]
+        )
 
     @staticmethod
     def _look_ahead_words(

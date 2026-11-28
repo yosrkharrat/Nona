@@ -22,7 +22,7 @@ from nona.core.types import EntityType, Span
 
 WINDOW = 5  # word tokens on each side
 
-_NUMBER = re.compile(r"(?<![\w.,/-])\d{8}(?![\w]|[.,/-]\d)")
+_NUMBER = re.compile(r"(?<![\w.,/-])\d{8}(?![^\W_]|[.,/-]\d)")  # `_` after it hides nothing (#93)
 _WORD = re.compile(r"\w+")
 # Matched on the normalized (lower-case) view. `carte` alone is in the list on purpose (deep dive A): a bank
 # card number is 13-19 digits, so it can't be mistaken for 8.

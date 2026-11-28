@@ -10,6 +10,9 @@ from nona import Nona as TopLevelNona
 from nona.bench.generate import TEMPLATES, generate
 from nona.core import Anonymized, DetectorError, EntityType, Nona, NormalizedDoc, Policy, Span
 from nona.core.normalize import DROPPED, normalize
+from nona.core.pipeline import _blanked
+from nona.core.pseudonymize import DEFAULT_POLICIES
+from nona.core.resolver import REDACTED_BY_DEFAULT
 
 ALL_REVERSIBLE = {t: Policy.PSEUDONYMIZE for t in EntityType}
 
@@ -296,14 +299,15 @@ def test_the_second_pass_runs_only_when_a_placeholder_is_glued(text: str, calls:
     [
         (
             "tel +216 22 123 456-sami.ksouri@example.tn-PERSON_1 ok",
-            "tel PHONE_1-PERSON_2.ksouri@example.tn-PERSON_1 ok",
+            "tel EMAIL_1-PERSON_1 ok",
         ),
-        ("x+216 22 123 456_12345678b.c@y.tnPERSON_1", "xPHONE_1_12345678b.c@y.tnPERSON_1"),
+        ("x+216 22 123 456_12345678b.c@y.tnPERSON_1", "xEMAIL_1PERSON_1"),
     ],
 )
 def test_the_second_pass_never_cuts_into_a_first_pass_span(text: str, masked: str) -> None:
     """Re-review of #92: the e-mail found once the placeholder is blanked overlapped the phone, won the
-    resolver and left `+216 22 123` in clear. Output as on main."""
+    resolver and left `+216 22 123` in clear. Main kept the phone and sent the rest of the e-mail
+    (`ksouri@example.tn`); now the phone and the e-mail the first pass finds are one span (#93)."""
     assert Nona().anonymize(text).text == masked
 
 
@@ -421,3 +425,140 @@ def test_a_placeholder_detection_leaves_glued_stays_masked(text: str) -> None:
 def test_arabic_look_ahead_spreads_listed_names_only() -> None:
     """No capitals in Arabic: an unlisted word of a name (`الثاني`, the second) must not spread."""
     assert Nona().anonymize("رقم محمد الثاني. الطابق الثاني").text == "رقم PERSON_1 الثاني. الطابق الثاني"
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        # a value glued to letters, a lower- or mixed-case placeholder among them
+        ("tel 22123456abc", "tel PHONE_1abc"),
+        ("tel22123456", "telPHONE_1"),
+        ("tel 22 123 456abc", "tel PHONE_1abc"),
+        ("tel 22123456person_1", "tel PHONE_1person_1"),
+        ("tel 22123456Person_1", "tel PHONE_1Person_1"),
+        ("ip10.0.0.1", "ipIP_ADDRESS_1"),
+        ("card4242424242424242", "card[CARD]"),
+        # an e-mail followed by `-` or `_`
+        ("mail a@x.com- merci", "mail EMAIL_1- merci"),
+        ("mail a@x.com-merci", "mail EMAIL_1-merci"),
+        ("mail a@x.com_x", "mail EMAIL_1_x"),
+        ("mail a@x.com_person_1", "mail EMAIL_1_person_1"),
+        ("a@x.comPERSON_1 ok", "EMAIL_1PERSON_1 ok"),  # the TLD stops at the typed placeholder
+        ("a@x.com.PERSON_1 ok", "EMAIL_1.PERSON_1 ok"),
+        ("a@x.com-PERSON_1 ok", "EMAIL_1-PERSON_1 ok"),
+        # an IBAN keeps its country code when letters are glued to it
+        ("iban TN5910006035183598478831abc", "iban IBAN_1abc"),
+        ("ibanTN5910006035183598478831", "ibanIBAN_1"),
+        ("iban FR7630006000011234567890189x", "iban IBAN_1x"),
+        # review of #106: a glued card stays a card, though `rd` + its digits pass mod 97
+        ("card4622436890898261", "card[CARD]"),
+        ("card_4242424242424242", "card_[CARD]"),
+        # the number of a placeholder doesn't start a spaced card
+        ("PERSON_2 4139 4411 7715 1620", "PERSON_2 [CARD]"),
+        ("x_2 4139 4411 7715 1620", "x_2 [CARD]"),
+        ("card_4242 4242 4242 4242", "card_[CARD]"),
+        # review round 3: a placeholder's digit doesn't hide the letters glued to a value
+        ("PERSON_1abc22123456", "PERSON_1abcPHONE_1"),
+        ("PERSON_1tel22123456", "PERSON_1telPHONE_1"),
+        # `_` hides nothing after a CIN or an IPv6, nor before an IPv4 that no placeholder holds
+        ("cin 12345678_", "cin NATIONAL_ID_1_"),
+        ("ip fe80::1_x", "ip IP_ADDRESS_1_x"),
+        ("ip x_10.0.0.1", "ip x_IP_ADDRESS_1"),
+        ("email_10.0.0.1", "email_IP_ADDRESS_1"),  # a word, not a placeholder
+        ("PERSON_10.0.0.1", "PERSON_10.0.0.1"),  # `PERSON_1` and `0.0.0.1`, or `PERSON_10`: left alone
+        # what was blanked keeps two numbers apart
+        ("22 123 456abc 22 123 457", "PHONE_1abc PHONE_2"),
+        # `_` and a lone `.` don't hide a value
+        (".a@x.com", ".EMAIL_1"),
+        ("10.0.0.1_ ok", "IP_ADDRESS_1_ ok"),
+        (".10.0.0.1 ok", ".IP_ADDRESS_1 ok"),
+        ("4242424242424242_ ok", "[CARD]_ ok"),
+        # an e-mail after a phone and `-`; a phone cut by an e-mail
+        ("tel 22123456-a@x.comPERSON_1", "tel EMAIL_1PERSON_1"),
+        ("tel 22 123 456-a@x.com ok", "tel EMAIL_1 ok"),
+        # `.` and `/` between a typed placeholder and a value
+        ("ip PERSON_1.10.1.2.3", "ip PERSON_1.IP_ADDRESS_1"),
+        ("cin PERSON_1/12345678", "cin PERSON_1/NATIONAL_ID_1"),
+        # left as they were: letters and digits mixed, an order reference, a short number
+        ("sha 3f2a91827364e5", "sha 3f2a91827364e5"),
+        # a cue doesn't reach past blanked letters: `AB22123456` after `ref` is masked, a phone being likelier
+        ("ref AB22123456", "ref ABPHONE_1"),
+        ("commande22123456", "commande22123456"),  # an order cue glued: an order number, as after a space
+        ("ref22123456abc", "ref22123456abc"),
+        ("iPhone15 pro", "iPhone15 pro"),
+    ],
+)
+def test_a_value_glued_to_a_word_is_found(text: str, masked: str) -> None:
+    """#93: each recognizer ended a value at a word boundary, so a value glued to a word went upstream."""
+    assert Nona().anonymize(text).text == masked
+
+
+def test_a_denylist_term_glued_to_a_typed_placeholder_is_found() -> None:
+    assert (
+        Nona(denylist=["projet zeta"]).anonymize("le projet zetaPERSON_1 ok").text == "le CUSTOM_1PERSON_1 ok"
+    )
+
+
+def test_a_typed_placeholder_restore_never_reads_keeps_its_number() -> None:
+    """#93: `a@x.comـPERSON_1` came back as `…PERSON_2`, though restore never rewrites a name glued to a
+    letter past a tatweel. Judged on the text as it goes upstream."""
+    out = Nona().anonymize_messages(["Sami", "a@x.comـPERSON_1"])
+    assert out.messages[1].text == "EMAIL_1ـPERSON_1"
+    assert Nona.restore(out.messages[1].text, out.mapping) == "a@x.comـPERSON_1"
+
+
+def test_a_denylist_term_glued_to_digits_is_another_word() -> None:
+    """A term is matched as whole words: `zeta2024` isn't `zeta`, as on main."""
+    assert Nona(denylist=["zeta"]).anonymize("projet zeta2024 ok").text == "projet zeta2024 ok"
+
+
+_GLUE = st.sampled_from(["", "", " ", "-", "_", ".", "/", "ـ", "abc", "PERSON_1", "person_1"])
+_VALUE = st.sampled_from(
+    [
+        "22123456",
+        "22 123 456",
+        "+216 22 123 456",
+        "a@x.com",
+        "k_ben@example.tn",
+        "10.0.0.1",
+        "4242424242424242",
+    ]
+)
+
+
+@given(st.lists(st.tuples(_GLUE, _VALUE, _GLUE), min_size=1, max_size=5))
+def test_glued_values_never_fail_and_never_leak(parts: list[tuple[str, str, str]]) -> None:
+    """Review of #106: overlapping widened spans made `anonymize` raise. Every value planted, however glued,
+    is masked: none of it goes upstream in clear. Not a digit glued to a digit: `PERSON_122123456` can't be
+    read as `PERSON_1` and `22123456`. Parts are a word apart, so two values don't make one longer number."""
+    assume(not any(a[-1:].isdigit() and v[0].isdigit() for a, v, _ in parts))
+    text = " et ".join(a + v + b for a, v, b in parts)
+    up = Nona().anonymize(text).text
+    for _, v, _ in parts:
+        assert v not in up, (text, up)
+
+
+@pytest.mark.parametrize("text", ["commande22123456", "iban TN5910006035183598478831 ok", "Merci PERSON_1."])
+def test_no_second_pass_when_nothing_is_blanked(text: str) -> None:
+    """Review of #106: an order cue or an IBAN's country code is left in place, so nothing hides a value."""
+    assert _blanked(normalize(text)) is None
+
+
+def test_the_resolver_redacts_by_default_what_the_policies_redact() -> None:
+    assert {t for t, p in DEFAULT_POLICIES.items() if p is Policy.REDACT} == REDACTED_BY_DEFAULT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "| Ref | 22123456 |",
+        "| Commande | 22123456 |",
+        "facture|22123456",
+        "cmd|n°|22123456",
+        "pour la commande tel22123456",
+    ],
+)
+def test_a_pipe_or_blanked_letters_never_carry_an_order_cue(text: str) -> None:
+    """Security review of #106: the order cue read past `|`, the second pass's blank, so a phone after
+    `| Ref |` in a markdown table went upstream; and past a blanked `tel` after `commande`."""
+    assert "22123456" not in Nona().anonymize(text).text
