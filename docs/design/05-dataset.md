@@ -110,7 +110,7 @@ Fake values must never be the real data of a real person.
 
 The benchmark captures the **payload sent upstream** for each turn (04 §F). For each gold mention:
 
-- **Normalization before comparing:** drop invisible format characters (Unicode Cf: zero-width spaces and joiners, soft hyphens), NFKC, casefold, Eastern Arabic digits → ASCII digits, collapse whitespace. For PHONE, IBAN, RIB, CARD and NATIONAL_ID, compare **digits and letters only** (`22.123.456` ≡ `22123456`).
+- **Normalization before comparing:** drop invisible format characters (Unicode Cf: zero-width spaces and joiners, soft hyphens) and the Arabic tatweel (`ـ`, which only stretches a letter), NFKC, casefold, Eastern Arabic digits → ASCII digits, collapse whitespace. For PHONE, IBAN, RIB, CARD and NATIONAL_ID, compare **digits and letters only** (`22.123.456` ≡ `22123456`).
 - **Leaked:** the normalized mention text appears in the normalized upstream payload of the same turn, at word boundaries (`Sami` does not match inside `Samir`).
 - **Obfuscated** (PERSON): not leaked as written, but its letters appear in order with only separators between them, at word boundaries (`S a m i`, `S.a.m.i`). A model reads it back, so the headline counts it as a leak, and the report shows its share.
 - **Partially leaked:** not leaked, but a token of 3+ characters from the mention (not an honorific) appears at word boundaries. For example, the surname got through.
@@ -152,18 +152,18 @@ for every conversation it appears in, so a code-switched conversation counts onc
 
 | | Target | `dev` | `test` |
 |---|---|---|---|
-| Conversations | | 242 | 305 (56% of 547) |
-| Turns | ≥ 300 in all | 562 | 545 |
-| Conversations of 4+ turns | ≥ 40 in all | 86 | 75 |
-| `fr` | ≥ 15% | 105 (43.4%) | 110 (36.1%) |
-| `en` | ≥ 15% | 57 (23.6%) | 70 (23.0%) |
-| `ar` | ≥ 15% | 42 (17.4%) | 65 (21.3%) |
-| `aeb-Arab` | ≥ 15% | 45 (18.6%) | 65 (21.3%) |
-| `aeb-Latn` | ≥ 15% | 67 (27.7%) | 90 (29.5%) |
-| Code-switched | ≥ 30% | 74 (30.6%) | 95 (31.1%) |
-| `no-pii` | ≥ 10% | 53 (21.9%) | 75 (24.6%) |
-| Hand-written hard cases | about 50 | 0 | 0 |
-| LLM drafts, reviewed | | 0 | 0 |
+| Conversations | | 275 | 353 (56% of 628) |
+| Turns | ≥ 300 in all | 609 | 614 |
+| Conversations of 4+ turns | ≥ 40 in all | 88 | 78 |
+| `fr` | ≥ 15% | 114 (41.5%) | 120 (34.0%) |
+| `en` | ≥ 15% | 62 (22.5%) | 77 (21.8%) |
+| `ar` | ≥ 15% | 46 (16.7%) | 73 (20.7%) |
+| `aeb-Arab` | ≥ 15% | 54 (19.6%) | 76 (21.5%) |
+| `aeb-Latn` | ≥ 15% | 82 (29.8%) | 113 (32.0%) |
+| Code-switched | ≥ 30% | 83 (30.2%) | 106 (30.0%) |
+| `no-pii` | ≥ 10% | 60 (21.8%) | 86 (24.4%) |
+| Hand-written hard cases | about 50 | 21 | 30 |
+| LLM drafts | | 12 | 18 |
 
 How each part is made (every generated part is pinned by `test_generated_parts_are_pinned`):
 
@@ -173,6 +173,10 @@ How each part is made (every generated part is pinned by `test_generated_parts_a
 | `dev` | multi-turn (`dev-0081`…`0137`) | 57, 4–5 turns each | `generate --set multi-turn --seed 2 --count 57 --prefix dev --start 81`: 19 templates, three times each (S3 #41, extended in #58) |
 | `dev` | S4 (`dev-0138`…`0242`) | 105 | `generate --set dev-s4 --seed 4 --count 105 --prefix dev --start 138`: 35 templates, three times each (#74) |
 | `test` | templates (`test-0001`…`0305`) | 305 | `generate --set test --seed 20261128 --count 305 --prefix test`: 61 templates, five times each (#74) |
+| `dev` | hard cases (`dev-hard-01`…`21`) | 21 | Hand-written (#74), see below |
+| `dev` | LLM drafts (`dev-llm-01`…`12`) | 12 | Drafted by an LLM around supplied fake entities, then reviewed (#74) |
+| `test` | hard cases (`test-hard-01`…`30`) | 30 | Hand-written (#74) |
+| `test` | LLM drafts (`test-llm-01`…`18`) | 18 | Drafted by an LLM, then reviewed (#74) |
 
 **The S4 set and the test split (#74).** The S4 templates bring Arabic script (`ar`, `aeb-Arab`) and
 code-switching up to the targets: Darija in Arabic script with clitics glued to names (`ل`, `و`, `ب`), Arabic
@@ -184,6 +188,21 @@ French ones (`car jack`, `grace period`, `bill`, `olivier`, `rose`). The `test` 
 `tn3` and `ar3` pools, which are in no other pool, not in the gazetteer and nowhere in `dev`. So tuning on
 `dev` can't learn the test's names or sentences. Its hash is in `bench/data/test.sha256`, and a test fails if
 the file changes without it. The split is frozen once the owner has validated its Darija items (S4 exit).
+
+**Hard cases and LLM drafts (#74).** The 51 hard cases exercise the #50 lists both ways. Common-word names
+*as names*: after a cue (`kallamt Amal`, `9olt l sana`, `صاحبي كريم`, `قلت لنور`, `khalti Hayet`, `3amm
+Salah`, `الحاجّة رحمة`), and with no cue at all (`سلّملي على كريم`, `ken tchouf amal`, `حضرت أمال`), which
+the owner's rule leaves unmasked in Arabic script and lower-case Arabizi, so they are expected leaks. The same
+words *as words*: fixed expressions (`3id mabrouk`, `رحمة الله`, `نور عينيا`, `fama amal`, `صالح للاستعمال`)
+and the decoys the cue lists mask on purpose (`rajel karim`, `sana jet`, `chouft amal`, `weld 3aziz`: they
+count as over-masking by design). Then Eastern Arabic digits next to look-alikes (a CIN and an order number
+in one sentence, prices, dates), clitics (`ل`, `و`, `لـ` with a tatweel), Arabizi spellings (`Mo7amed`,
+`7amza`, `Med`, `Mou3ez`, `Ra7ma`, `Sa3id`), one person written in two scripts (`Sami` / `سامي`), a street
+named after a public figure (`12 avenue Habib Bourguiba`, a LOCATION), `Sidi Bou Said`, and a public figure
+(`public: true`) next to a private `Amal`. The 30 LLM drafts are realistic requests (reply to, summarise,
+translate or correct a WhatsApp message or an e-mail) written around supplied fake entities; `dev` drafts
+use `tn2`/`ar2` names and `test` drafts `tn3`/`ar3` ones. Every Darija item is to be validated by a native
+speaker with `python -m nona.bench.review` (D3) before the split is frozen.
 
 **History of `dev` (S3.1).** The multi-turn set exists for linking (ADR-0004): a short name before the full one, with the short form detected (`Mme Islem`, or a listed first name) so absorption is measured; two people sharing a first name with `ambiguous: true` references (held-out names, and a `-listed` copy); honorifics; assistant turns that repeat restored names; lowercase Arabizi names; cities (LOCATION); Arabic-script conversations (`ar`, `aeb-Arab`) with clitics glued to names (`لـ`, `وـ`); and no-PII controls with name-like words: `amal`, `sana`, `3amel`, `3ali`, French words that fold to names (`marié`, `claire`, `pierre`, `Grâce`), Darija expressions (`Mabrouk 3lik`, `ya sahbi`, `lazem saber`), a brand after a cue (`m3a Ooredoo`), and Arabic expressions (`رمضان كريم`, `اللهم آمين`, `أمل`).
 
