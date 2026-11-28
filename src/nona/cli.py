@@ -7,6 +7,7 @@ in the milestone that implements them, so the CLI never advertises something tha
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shlex
 import sys
@@ -16,7 +17,19 @@ from pathlib import Path
 from nona import __version__
 
 # Frozen at the end of S4 (05 §1, #75): never used for tuning, run once for the release table (06 §1, NFR-11).
+# Recognized by its committed hash, not by the split's name: `--split ./test` or `--split Test` (on a
+# case-insensitive disk) is the same file, and another folder's `test.jsonl` is not it.
 FROZEN_SPLIT = "test"
+FROZEN_HASH = Path(__file__).resolve().parents[2] / "bench" / "data" / "test.sha256"
+
+
+def is_frozen(dataset: Path) -> bool:
+    """`dataset` holds the frozen split's bytes (`bench/data/test.sha256`, in a checkout only)."""
+    try:
+        digest = FROZEN_HASH.read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        return False
+    return hashlib.sha256(dataset.read_bytes()).hexdigest() == digest
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,11 +99,6 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     unknown = [n for n in names if n not in SYSTEMS]
     if not names or unknown:
         parser.error(f"unknown system(s) {unknown or names}; choose from: {', '.join(sorted(SYSTEMS))}")
-    if args.split == FROZEN_SPLIT and not args.published:
-        parser.error(
-            f"the {FROZEN_SPLIT} split is frozen: it is never used for tuning (05 §1). Tune on dev; pass "
-            "--published only for the run that gives the published numbers"
-        )
     dataset: Path = args.data / f"{args.split}.jsonl"
     if not dataset.is_file() and not args.data.is_absolute():
         from nona.bench.runner import REPO_ROOT
@@ -100,6 +108,11 @@ def _bench(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     if not dataset.is_file():
         print(f"error: no dataset file at {dataset}", file=sys.stderr)
         return 1
+    if not args.published and is_frozen(dataset):
+        parser.error(
+            f"the {FROZEN_SPLIT} split is frozen: it is never used for tuning (05 §1). Tune on dev; pass "
+            "--published only for the run that gives the published numbers"
+        )
     from nona.models import ModelError
 
     for i, name in enumerate(names):

@@ -1,0 +1,3 @@
+# The frozen split is checked byte for byte (`bench/data/test.sha256`, #75): never convert line endings.
+bench/data/*.jsonl -text
+bench/data/*.sha256 -text

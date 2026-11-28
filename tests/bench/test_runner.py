@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -10,7 +11,7 @@ from nona.bench.dataset import Conversation, dumps_jsonl, load_jsonl, parse_conv
 from nona.bench.metrics import Rate
 from nona.bench.runner import causal_payloads, run, summary
 from nona.bench.systems import IdentitySystem, NonaSystem
-from nona.cli import main
+from nona.cli import is_frozen, main
 from nona.core import Entity, EntityType, Nona
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,20 +92,47 @@ def test_bench_reports_a_missing_split(tmp_path: Path, capsys: pytest.CaptureFix
     assert "no dataset file" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("split", ["test", "./test", "../data/test"])
 def test_bench_refuses_the_frozen_split_without_published(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    split: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#75: `test` is never used for tuning, so a run on it has to say it is the published one."""
+    """#75: `test` is never used for tuning, so a run on it has to say it is the published one. Recognized
+    by its bytes, however the path is written."""
     with pytest.raises(SystemExit) as exit_info:
-        main(["bench", "--split", "test", "--out", str(tmp_path)])
+        main(["bench", "--split", split, "--data", str(ROOT / "bench" / "data"), "--out", str(tmp_path)])
     assert exit_info.value.code == 2
     assert "the test split is frozen" in capsys.readouterr().err
-    assert not tmp_path.joinpath("test-identity.json").exists()
+    assert not list(tmp_path.iterdir())
 
 
-def test_bench_runs_the_frozen_split_when_published(tmp_path: Path) -> None:
-    assert main(["bench", "--split", "test", "--published", "--out", str(tmp_path)]) == 0
-    assert json.loads((tmp_path / "test-identity.json").read_text(encoding="utf-8"))["split"] == "test"
+def test_the_committed_test_split_is_the_frozen_one() -> None:
+    assert is_frozen(ROOT / "bench" / "data" / "test.jsonl")
+    assert not is_frozen(DEV)
+
+
+@pytest.fixture
+def frozen_mini(data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The `mini` fixture stands for the frozen split, so the flag is tested without scoring the real one."""
+    digest = hashlib.sha256((data_dir / "mini.jsonl").read_bytes()).hexdigest()
+    (tmp_path / "frozen.sha256").write_text(f"{digest}  mini.jsonl\n", encoding="utf-8")
+    monkeypatch.setattr("nona.cli.FROZEN_HASH", tmp_path / "frozen.sha256")
+    return data_dir
+
+
+def test_bench_runs_the_frozen_split_only_when_published(frozen_mini: Path, tmp_path: Path) -> None:
+    out = tmp_path / "results"
+    args = ["bench", "--split", "mini", "--data", str(frozen_mini), "--out", str(out)]
+    with pytest.raises(SystemExit):
+        main(args)
+    assert main([*args, "--published"]) == 0
+    assert (out / "mini-identity.json").is_file()
+
+
+def test_another_test_file_is_not_frozen(tmp_path: Path) -> None:
+    """Only the committed bytes are frozen: a `test.jsonl` of one's own runs without the flag."""
+    shutil.copy(FIXTURE, tmp_path / "test.jsonl")
+    out = tmp_path / "results"
+    assert main(["bench", "--split", "test", "--data", str(tmp_path), "--out", str(out)]) == 0
 
 
 def test_bench_reports_an_invalid_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

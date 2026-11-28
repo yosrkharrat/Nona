@@ -31,7 +31,7 @@ progress are in the [build plan](docs/design/06-build-plan.md).
 - [x] **S1**: benchmark first: synthetic generator, dev split v0, leak and over-masking metrics, `nona bench`
 - [x] **S2**: structured detection (email, phone, IBAN, RIB, card, IP, CIN) and `anonymize()` / `restore()`
 - [x] **S3**: multi-turn entity linking ([ADR-0004](docs/adr/0004-causal-entity-linking.md), accepted), gazetteer and context rules, linking metrics, detection cache
-- [x] **S4**: names with GLiNER ([ADR-0008](docs/adr/0008-ner-model.md)), full dataset, frozen test split ([datasheet](bench/data/DATASHEET.md))
+- [x] **S4**: names with GLiNER ([ADR-0008](docs/adr/0008-ner-model.md)), full dataset, frozen test split ([datasheet](bench/data/DATASHEET.md)); ORGANIZATION is detected but not measured yet: the dataset has none
 - [ ] **S5**: OpenAI-compatible proxy, instrumented from the start ([ADR-0005](docs/adr/0005-observability.md))
 - [ ] **S6**: streaming restoration
 - [ ] **S7**: Presidio and LLM Guard baselines, utility loss, k6 load test
