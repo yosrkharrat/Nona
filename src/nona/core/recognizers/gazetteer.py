@@ -153,7 +153,9 @@ def _alternation(words: tuple[str, ...]) -> str:
 STRONG_PHRASE = re.compile(
     rf"(?<![^\W_])(?:{_alternation(data.KIN_CUES)})[ \t]*[:,]?[ \t]*\Z|" + _NAME_PHRASE.pattern
 )
-SPEECH_PHRASE = re.compile(rf"(?<![^\W_])(?:{_alternation(data.SPEECH_CUES)})[ \t]*[:,]?[ \t]*\Z")
+SPEECH_PHRASE = re.compile(
+    rf"(?<![^\W_])(?:{_alternation(data.SPEECH_CUES + data.KIN_CUES_AR)})[ \t]*[:,]?[ \t]*\Z"
+)
 # A verb agreeing with a person right after the name, in the same clause, and the article that rules it out.
 _VERB_AFTER = re.compile(rf"[ \t]+(?:{_alternation(data.VERBS_AFTER_NAME)})(?![^\W_])")
 _ARTICLE_BEFORE = re.compile(r"(?<![^\W_])(?:el|al|l)[ \t'\u2019]*\Z")
@@ -241,7 +243,7 @@ _AR_FOLD = str.maketrans({c: group[0] for group in (_ALEFS, _TA_HEH, _YEHS) for 
 # the name Sahbi, but in `sa7bi karim` it is the cue. `Sahbi Ben Salah` stays a name.
 _CONTEXT_WORDS = frozenset(
     _fold_ar(normalize(w).text)
-    for w in data.KIN_CUES + data.SPEECH_CUES + data.VERBS_AFTER_NAME
+    for w in data.KIN_CUES + data.KIN_CUES_AR + data.SPEECH_CUES + data.VERBS_AFTER_NAME
     if " " not in w
 )
 
@@ -319,16 +321,16 @@ class GazetteerRecognizer:
         spans = [to_span(doc, s, e, EntityType.LOCATION, score, self.name) for s, e, score in places]
         i = 0
         while i < len(words):
-            end, cue = _run(doc, words, i)
+            if _cue_word(doc, words, i):
+                i += 1  # `Sa7bi karim`, `Sa7bi, karim` at the start of a message: the cue, then the name
+                continue
+            end, cue = _run(doc, words, i, never)
             if end == i:
                 i += 1
                 continue
             run = words[i:end]
             if cue != "strong" and run[0].start + run[0].clitic in never and len(run) > 1:
                 i += 1  # `3idek mabrouk Sami`: the blessing stays out, the name after it is tried on its own
-                continue
-            if _cue_word(doc, run):
-                i += 1  # `Sa7bi karim` at the start of a message: the cue, then the name
                 continue
             if cue != "strong" and (
                 (len(run) == 1 and run[0].start + run[0].clitic in never)
@@ -345,8 +347,10 @@ class GazetteerRecognizer:
         return spans
 
 
-def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
-    """The end (exclusive) of the name run starting at word `i` (`i` if none), and the cue before it."""
+def _run(doc: NormalizedDoc, words: list[_Word], i: int, never: set[int]) -> tuple[int, str]:
+    """The end (exclusive) of the name run starting at word `i` (`i` if none), and the cue before it. A run
+    stops before the name word of a fixed expression (`never`): `Nour Amal kbir` is `Nour`; and an unlisted
+    word that only opens one (`Ramdhan` in `Khouya, Ramdhan Karim`) is no name."""
     cue = _cue(doc, words, i)
     first = words[i]
     if first.stop:
@@ -360,6 +364,10 @@ def _run(doc: NormalizedDoc, words: list[_Word], i: int) -> tuple[int, str]:
     while j < len(words) and j - i < MAX_RUN and _GAP.fullmatch(doc.text[words[j - 1].end : words[j].start]):
         nxt = words[j]
         if nxt.stop:
+            break
+        if nxt.start + nxt.clitic in never:
+            if j == i + 1 and not first.name:
+                return i, ""
             break
         if nxt.name or _particle(doc, words, j):
             j += 1
@@ -468,16 +476,16 @@ def _score(run: list[_Word], cue: str) -> float:
     return 0.6 if any(w.key in FIRST_TN for w in tunisian) else 0.3
 
 
-def _cue_word(doc: NormalizedDoc, run: list[_Word]) -> bool:
+_CUE_GAP = re.compile(r"[ \t]*[:,][ \t]*|[ \t]+|-")
+
+
+def _cue_word(doc: NormalizedDoc, words: list[_Word], i: int) -> bool:
     """A capitalized one-word cue that folds to a listed name, right before a listed name: `Sa7bi karim`,
-    `SA7BI karim` (a phone capitalizes the first word). `Sahbi Ben Salah` stays a name: `Ben` isn't listed."""
-    return (
-        len(run) > 1
-        and run[0].cap is True
-        and _fold_ar(run[0].text) in _CONTEXT_WORDS
-        and run[1].name
-        and _GAP.fullmatch(doc.text[run[0].end : run[1].start]) is not None
-    )
+    `SA7BI, karim` (a phone capitalizes the first word). `Sahbi Ben Salah` stays a name: `Ben` is unlisted."""
+    if i + 1 >= len(words) or words[i].cap is not True or _fold_ar(words[i].text) not in _CONTEXT_WORDS:
+        return False
+    nxt = words[i + 1]
+    return nxt.name and _CUE_GAP.fullmatch(doc.text[words[i].end : nxt.start]) is not None
 
 
 def _verb_after(doc: NormalizedDoc, run: list[_Word]) -> bool:

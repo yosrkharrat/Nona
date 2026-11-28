@@ -99,13 +99,27 @@ COMMON_WORDS: tuple[str, ...] = (
 # 3 = ع, 7 = ح, 9 = ق, 5 = خ. Matched on the normalized view; Arabic spelling variants (hamza on alef, ta
 # marbuta or heh, alef maqsura or yeh) are handled by the recognizer.
 
-# Kinship and relations: a person comes next. Strong cues. `rajel` and `weld` are kept knowing that
-# `rajel karim` (a generous man) and `weld 3aziz` (a dear boy) get masked.
+# Kinship and relations: a person comes next. Strong cues in Latin letters, where a capital still has to
+# start an unlisted name. `rajel` and `weld` are kept knowing that `rajel karim` (a generous man) and
+# `weld 3aziz` (a dear boy) get masked.
 KIN_CUES: tuple[str, ...] = (
     "khouya", "khou", "okhti", "o5ti", "ou5ti", "5ti", "sa7bi", "sa7bti", "s7abi", "jari", "jarti", "mart",
     "rajel", "weld",
-    "خويا", "أختي", "ختي", "صاحبي", "صاحبتي", "جاري", "جارتي", "مرت", "راجل", "ولد",
 )  # fmt: skip
+# The Arabic forms lift listed names only, like the speech verbs: Arabic has no capitals to tell a name from
+# a word, and `جاري` is also "current" (`حساب جاري`), `ولد` also "born" (review of #97).
+KIN_CUES_AR: tuple[str, ...] = (
+    "خويا",
+    "أختي",
+    "ختي",
+    "صاحبي",
+    "صاحبتي",
+    "جاري",
+    "جارتي",
+    "مرت",
+    "راجل",
+    "ولد",
+)
 
 # Speech and contact verbs, with their preposition: they lift a listed name only (owner's choice, 2026-11-28),
 # so `kallamt Ooredoo` stays unmasked. `chouft` is kept knowing `chouft amal` (I saw hope) gets masked. In
@@ -114,6 +128,7 @@ SPEECH_CUES: tuple[str, ...] = (
     "9olt l", "9otlou", "9al l", "kallamt", "kallemt", "kalamt", "3ayatt l", "3ayyatt l", "telfent l",
     "b3atht l", "ba3tht l", "sa2alt", "sa2elt", "7kit m3a", "stannit", "chouft",
     "قلت ل", "قلت", "كلمت", "عيطت ل", "عيطت", "تلفنت ل", "تلفنت", "بعثت ل", "بعثت", "سألت", "حكيت مع",
+    "شفت",  # `chouft` in Arabic script (review of #97)
 )  # fmt: skip
 
 # Verbs agreeing with a person, right after the name. `ja`/`jet`/`mcha`/`mchet` are kept knowing `sana jet`

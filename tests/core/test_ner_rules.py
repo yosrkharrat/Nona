@@ -537,3 +537,12 @@ def test_a_model_span_on_an_arabic_common_word_name_is_still_retyped(text: str) 
     the model flagged is still retyped to PERSON when it is a listed first name in Arabic script."""
     word = text.split()[0]
     assert detect({word: ("location", 0.6)}, text) == [(word, EntityType.PERSON, 0.6)]
+
+
+@pytest.mark.parametrize("text", ["b3atht l Canada", "chouft Montreal lbare7", "kallamt Tunisie Telecom"])
+def test_a_place_after_a_speech_verb_stays_a_place(text: str) -> None:
+    """Re-review of #97: speech verbs aren't person cues for the model; a place often follows them."""
+    place = text.split(" ", 2)[-1] if text.startswith("b3atht") else text.split()[1]
+    if text.startswith("kallamt"):
+        place = "Tunisie Telecom"
+    assert all(t is not EntityType.PERSON for _, t, _ in detect({place: ("location", 0.9)}, text))

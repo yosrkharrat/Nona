@@ -256,7 +256,7 @@ def test_more_blessings_and_amounts(text: str) -> None:
         ("jari Hassen", "Hassen"),
         ("mart Sami tji ghodwa", "Sami"),
         ("rajel nour", "nour"),
-        ("خويا كريم", "كريم"),
+        ("خويا كريم", "كريم"),  # Arabic forms lift listed names (see the review cases of #97)
         ("صاحبتي نور", "نور"),
         ("جاري سليم", "سليم"),
     ],
@@ -410,6 +410,19 @@ def test_fixed_expressions_give_way_to_names(text: str, name: str) -> None:
         ("kallamt Pierre", [("Pierre", P)]),
         ("rdv m3a bechir", []),  # owner's common-word list: a lowercase common name needs a strong cue
         ("khouya bechir", [("bechir", P)]),
+        # re-review of #97
+        ("جاري التحميل", []),  # Arabic kinship words lift listed names only: `جاري` is also "in progress"
+        ("حساب جاري رقم 12", []),
+        ("ولد اليوم", []),
+        ("راجل طيب", []),
+        ("جاري سليم", [("سليم", P)]),
+        ("خويا رمضان كريم", []),  # a greeting after a kinship word
+        # the greeting stays; `Sa7bi,` alone may be Sahbi addressed, masked at 0.5 as on main
+        ("Sa7bi, Ramdhan Karim", [("Sa7bi", P)]),
+        ("Khouya, Ramdhan Karim", []),
+        ("Nour Amal kbir", [("Nour", P)]),  # the run stops before the expression's word
+        ("Sa7bi, karim 3andou karhba", [("karim", P)]),  # the cue with a comma
+        ("شفت كريم اليوم", [("كريم", P)]),  # `chouft` in Arabic script
     ],
 )
 def test_review_cases_of_97(text: str, expected: list[tuple[str, EntityType]]) -> None:
